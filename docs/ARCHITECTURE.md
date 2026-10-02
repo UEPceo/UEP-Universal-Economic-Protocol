@@ -35,7 +35,7 @@ The testnet maintains:
 - a nullifier set;
 - accepted transactions;
 - pending/conflicting transactions;
-- deterministic snapshots.
+- deterministic snapshots, signed by Ed25519 snapshot authorities (optional k-of-n), hash-chained (`prevSnapshotHash`), with faucet mints signed by a separate faucet key.
 
 ## Cryptographic boundary
 

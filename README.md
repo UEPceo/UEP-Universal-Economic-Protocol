@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.4.2-public-iot-m2m`
+> **Version:** `0.4.3-public-iot-m2m`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -140,37 +140,52 @@ The active public hash is a **reference hardening backend**, not a claim that pr
 
 ---
 
-## 5. Security hardening in v0.4.1 and v0.4.2
+## 5. Security hardening in v0.4.1 – v0.4.3
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 and v0.4.1. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.2.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md) (previous: [`PUBLIC-SECURITY-REMEDIATION-v0.4.1.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 and v0.4.1. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.3.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md) (previous: [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
 - Transaction input notes are resolved against the receiving ledger's existing unspent note set. Notes carried inside a transaction are evidence, not an issuance authority.
 - The public testnet transaction format uses **one input note per transaction**, because the current envelope carries a single nullifier. A spend needs one note that covers amount plus fee; multi-input aggregation is intentionally not claimed until a nullifier vector is introduced.
 - **v0.4.2:** outputs are bound to the transaction: output 0 pays exactly `amount` to the recipient, and the optional output 1 returns exactly `input − amount − fee` to the sender. The transaction nonce must be the consumed note's nonce, so the nullifier is anchored to that note. Sender, recipient and treasury must be distinct accounts.
-- Snapshots carry an HMAC integrity record. `UepLedger.restore(snapshot, authority)` requires the external `snapshotAuthoritySecret`; keep it outside the snapshot and outside source control. If the secret is lost, the snapshot cannot be restored by design.
-- **v0.4.2:** the integrity tag is checked first (constant-time), then restore re-derives the whole state and rejects any snapshot that `faucet()`/`submit()` could not have produced: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags, per-account balances against unspent notes (plus treasury fee income) and per-asset minted supply. Snapshot format version 2 adds `formatVersion` and `supply`; older snapshots must be re-taken.
+- **v0.4.3:** snapshots are signed with **Ed25519** (`node:crypto`, no new dependencies) instead of a shared HMAC secret. `UepLedger.restore(snapshot, trust)` takes only **public keys**; verifiers never need a private key. An optional **k-of-n threshold** (for example 2-of-3) requires `k` valid signatures from distinct listed authorities; the default is 1-of-1 for the local testnet.
+- **v0.4.3:** snapshots form a **hash chain** (`sequence`, `prevSnapshotHash`). Restore can be pinned to a known previous snapshot hash or to a checkpoint (`checkpointOf()`), and `UepLedger.restoreChain()` verifies an ordered series; a reordered, rolled-back or rewritten history is rejected even when it is correctly signed.
+- **v0.4.3:** every faucet mint is signed by a **dedicated faucet (mint) key** that must differ from every snapshot key. Restore rejects unsigned mints, mints signed by any other key (including a snapshot key) and notes that are neither a signed mint nor a transaction output; supply is derived from the signed mints. The snapshot authority therefore cannot invent issuance.
+- v0.4.2 invariants still apply on restore: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags and per-account balances against unspent notes (plus treasury fee income). Snapshot **format version 3** is required; v1/v2 snapshots are rejected with `INVALID_SNAPSHOT_VERSION` and must be re-taken.
 - Pending reconciliation never settles or applies a queued spend: invalid envelopes are rejected, valid ones stay queued (`LOCAL_VALID`, flagged on conflict) until applied through `submit()`.
+
+**Residual trust model (testnet):** whoever holds the snapshot authority private keys controls what their node signs, and whoever holds the faucet key controls testnet issuance on that node. Signatures, the hash chain and checkpoints make tampering by anyone else detectable and keep the two roles separate; they do not make a key holder honest. This is the trust model of the local testnet, not production consensus.
 
 ### Marketplace and IoT/M2M
 
-- **v0.4.2:** reservations are not free by default. Each order carries a reservation deposit of 1% of its gross amount (minimum 1 unit), held with the order and released on settlement, cancellation or expiry. Configure it with `reservationDeposit` (fixed) or `reservationDepositBps`.
-- IoT settlement requires an authenticated buyer or the configured settlement arbiter. Machine/provider deactivation requires an admin authorization callback.
-- IoT HOLD funds the full required amount, including reservation deposit and sponsored gas fee.
+- **v0.4.3:** reservations cost something. Only identities with a **registered Ed25519 key** (`registerIdentity`) can reserve, and every reservation carries the buyer's signature (`signReservation`). The **deposit** (default 1% of gross, minimum 1 unit; `reservationDeposit` / `reservationDepositBps`) is **locked from the buyer's marketplace balance at `reserve()`**; without funds there is no reservation.
+- When the order is funded, the deposit **counts toward the payment** (`fundOrder(orderId, order.fundingDue)`). An unfunded reservation that **expires** forfeits the deposit to the provider. A signed **buyer cancellation** within `cancellationGraceMs` (default 2 minutes) refunds it; after the window it goes to the provider. Provider or admin cancellation, and expiry of a funded but undelivered order, refund the buyer in full.
+- Per-identity limit on concurrent open reservations (`maxActiveReservationsPerIdentity`, default 8) and a short TTL (`reservationTtlMs`, default 10 minutes); `expire()` is only possible after the TTL. `valueAccounting(asset)` checks conservation across every deposit path.
+- IoT settlement requires an authenticated buyer or the configured settlement arbiter. Machine/provider deactivation requires an admin authorization callback. IoT `requestService()` requires the buyer's reservation signature, and `hold()` funds the remainder after the locked deposit, including any sponsored gas fee.
 
 These controls are testnet protections, not a claim of production consensus or production ZK security.
 
 ### Snapshot example
 
 ```ts
-const authority = process.env.UEP_SNAPSHOT_AUTHORITY!;
-const ledger = new UepLedger({ networkId, domainId, connected: true, allowFaucet: true, snapshotAuthoritySecret: authority });
+import { generateEd25519KeyPair } from "./src/core/ed25519.ts";
+import { UepLedger, checkpointOf } from "./src/testnet/ledger.ts";
+
+// Authority node: holds its private keys (keep them outside source control).
+const snapshotKey = generateEd25519KeyPair();
+const faucetKey = generateEd25519KeyPair(); // must differ from every snapshot key
+const ledger = new UepLedger({ networkId, domainId, connected: true, allowFaucet: true,
+  snapshotSigningKeys: [snapshotKey.privateKey], faucetSigningKey: faucetKey.privateKey });
 const snapshot = ledger.snapshot();
-const restored = UepLedger.restore(snapshot, authority);
+
+// Verifier: public keys only, optionally pinned to a known checkpoint.
+const trust = { authorities: [snapshotKey.publicKeyHex], threshold: 1, faucetPublicKeys: [faucetKey.publicKeyHex] };
+const restored = UepLedger.restore(snapshot, trust);
+const next = UepLedger.restore(ledger.snapshot(), { ...trust, checkpoint: checkpointOf(snapshot) });
 ```
 
-Do not commit `UEP_SNAPSHOT_AUTHORITY` or any real deployment secret.
+Do not commit private keys or any real deployment secret.
 
 ---
 
@@ -295,6 +310,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── CHANGELOG.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.1.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.2.md
+├── PUBLIC-SECURITY-REMEDIATION-v0.4.3.md
 ├── package.json
 ├── package-lock.json
 ├── tsconfig.json
@@ -317,6 +333,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 │   │   ├── address.ts
 │   │   ├── assets.ts
 │   │   ├── security-policy.ts
+│   │   ├── ed25519.ts        # Ed25519 helpers (node:crypto) for snapshots, mints, buyer signatures
 │   │   ├── spend-proof.ts
 │   │   ├── status.ts
 │   │   ├── zk-witness-contract.ts
@@ -432,6 +449,8 @@ SETTLEMENT
 ```
 
 The design deliberately charges the Marketplace fee only at successful settlement. Failed, cancelled or expired orders do not become Marketplace fee income.
+
+Since v0.4.3 the reservation step is signed and funded: a registered buyer signs the reservation, the reservation deposit is locked from the buyer's balance, and funding pays the remainder (`grossAmount + gasFee − deposit`). The deposit is refunded on a buyer cancellation within the grace window and on provider/admin cancellation; it goes to the provider when an unfunded reservation expires or the buyer cancels after the grace window. A funded order that expires undelivered is refunded in full.
 
 ---
 

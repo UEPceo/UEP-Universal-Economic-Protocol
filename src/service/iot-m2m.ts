@@ -230,7 +230,13 @@ export class IoTM2MService {
     machine.active = false;
   }
 
-  requestService(input: { requestId?: string; idempotencyKey?: string; buyerId: string; listingId: string; machineId: string; quantity: bigint }): IoTServiceRequest & { order: ServiceOrder; contract: IoTContract } {
+  /**
+   * Request an IoT service. The buyer must be a registered marketplace identity and
+   * `authorization` must be the buyer's signReservation() signature over
+   * { listingId, buyerId, quantity, idempotencyKey }. The reservation deposit is
+   * locked from the buyer's marketplace balance.
+   */
+  requestService(input: { requestId?: string; idempotencyKey: string; authorization: string; buyerId: string; listingId: string; machineId: string; quantity: bigint }): IoTServiceRequest & { order: ServiceOrder; contract: IoTContract } {
     const machine = this.machine(input.machineId);
     if (!machine.active) throw new Error("IOT_MACHINE_INACTIVE");
     const listing = this.marketplace.getListing(input.listingId);
@@ -240,21 +246,18 @@ export class IoTM2MService {
     if (!provider.active) throw new Error("IOT_PROVIDER_INACTIVE");
     if (!input.buyerId) throw new Error("IOT_BUYER_REQUIRED");
     if (input.quantity <= 0n) throw new Error("IOT_INVALID_QUANTITY");
+    if (!input.idempotencyKey) throw new Error("IOT_IDEMPOTENCY_KEY_REQUIRED");
 
-    const idemKey = input.idempotencyKey ? `${input.buyerId}:${input.idempotencyKey}` : undefined;
-    if (idemKey) {
-      const previous = this.requestIdempotency.get(idemKey);
-      if (previous) return this.requestBundle(previous);
-    }
+    const reservation = { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, signature: input.authorization };
+    // Fail closed before touching any state: registered buyer + valid signature.
+    this.marketplace.assertReservationAuthorized(reservation);
+    const idemKey = `${input.buyerId}:${input.idempotencyKey}`;
+    const previous = this.requestIdempotency.get(idemKey);
+    if (previous) return this.requestBundle(previous);
 
     const requestId = input.requestId ?? id("iotreq", `${input.buyerId}|${input.listingId}|${input.machineId}|${input.quantity}|${this.now()}`);
     if (this.requests.has(requestId)) throw new Error("IOT_REQUEST_ALREADY_EXISTS");
-    const order = this.marketplace.acceptOrder({
-      listingId: input.listingId,
-      buyerId: input.buyerId,
-      quantity: input.quantity,
-      idempotencyKey: input.idempotencyKey,
-    });
+    const order = this.marketplace.reserve(reservation);
     const request: IoTServiceRequest = {
       requestId,
       buyerId: input.buyerId,
@@ -280,7 +283,7 @@ export class IoTM2MService {
     };
     this.requests.set(requestId, request);
     this.contracts.set(contract.contractId, contract);
-    if (idemKey) this.requestIdempotency.set(idemKey, requestId);
+    this.requestIdempotency.set(idemKey, requestId);
     return { ...request, order, contract };
   }
 
@@ -288,8 +291,9 @@ export class IoTM2MService {
     const request = this.request(requestId);
     const contract = this.contractForRequest(request.requestId);
     const order = this.marketplace.getOrder(contract.orderId, request.buyerId);
-    const required = order.grossAmount + (order.gasFee ?? 0n) + order.reservationDeposit;
-    return this.marketplace.fundOrder(contract.orderId, required, `iot-hold:${request.buyerId}:${requestId}`);
+    // The reservation deposit already locked at request time counts toward the payment.
+    const due = order.grossAmount + (order.gasFee ?? 0n) - order.reservationDeposit;
+    return this.marketplace.fundOrder(contract.orderId, due, `iot-hold:${request.buyerId}:${requestId}`);
   }
 
   simulateExecution(requestId: string, measurements: Record<string, string>, observedAt = this.now(), signer?: KeyObject | string): IoTTelemetry {

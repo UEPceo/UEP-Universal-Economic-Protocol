@@ -13,3 +13,4 @@ export * from "./reconciliation.ts";
 export * from "./address.ts";
 export * from "./assets.ts";
 export * from "./security-policy.ts";
+export * from "./ed25519.ts";

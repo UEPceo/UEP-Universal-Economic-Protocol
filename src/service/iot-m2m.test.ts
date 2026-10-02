@@ -3,6 +3,18 @@ import { describe, it } from "node:test";
 import { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
 import { createIoTMachineIdentity, IoTM2MService, IOT_M2M_CATEGORY } from "./iot-m2m.ts";
 import { encodeCanonicalCbor } from "./iot-m2m-codec.ts";
+import { enrollIdentity, iotAuthorization } from "../marketplace/testkit.ts";
+
+let autoRequest = 0;
+/** Buyer-signed IoT request; the buyer is enrolled and credited in the listing asset if needed. */
+function request(iot: IoTM2MService, input: { buyerId: string; listingId: string; machineId: string; quantity: bigint; idempotencyKey?: string; requestId?: string }) {
+  const m = iot.marketplace;
+  enrollIdentity(m, input.buyerId);
+  const asset = m.getListing(input.listingId).asset;
+  if (m.availableBalance(asset, input.buyerId) < 10_000n) m.creditAccount(input.buyerId, asset, 10_000n);
+  const idempotencyKey = input.idempotencyKey ?? `iot-auto-${++autoRequest}`;
+  return iot.requestService({ ...input, idempotencyKey, authorization: iotAuthorization(m, { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey }) });
+}
 
 function setup() {
   let now = 1_000_000;
@@ -17,12 +29,13 @@ function setup() {
 describe("UEP IoT/M2M service", () => {
   it("runs provider -> machine -> request -> contract -> HOLD -> telemetry -> verification -> settlement", () => {
     const { iot, listing } = setup();
-    const requested = iot.requestService({ buyerId: "buyer-1", listingId: listing.listingId, machineId: "machine-01", quantity: 1n, idempotencyKey: "req-1" });
+    const requested = request(iot, { buyerId: "buyer-1", listingId: listing.listingId, machineId: "machine-01", quantity: 1n, idempotencyKey: "req-1" });
     assert.equal(requested.order.status, "ACCEPTED");
     assert.equal(requested.contract.machineId, "machine-01");
     const held = iot.hold(requested.requestId);
     assert.equal(held.status, "HELD");
-    assert.equal(held.heldAmount, 101n); // gross 100 + default 1% reservation deposit
+    assert.equal(held.heldAmount, 100n); // gross 100: the 1% deposit locked at request time counts toward it
+    assert.equal(iot.marketplace.availableBalance("EUR", "buyer-1"), 10_000n - 100n);
     const telemetry = iot.simulateExecution(requested.requestId, { temperatureC: "21.50", status: "OK" });
     const delivered = iot.deliverTelemetry(requested.requestId, telemetry);
     assert.equal(delivered.status, "DELIVERED");
@@ -37,8 +50,8 @@ describe("UEP IoT/M2M service", () => {
 
   it("is idempotent for repeated service requests", () => {
     const { iot, listing } = setup();
-    const a = iot.requestService({ buyerId: "buyer-1", listingId: listing.listingId, machineId: "machine-01", quantity: 1n, idempotencyKey: "same" });
-    const b = iot.requestService({ buyerId: "buyer-1", listingId: listing.listingId, machineId: "machine-01", quantity: 1n, idempotencyKey: "same" });
+    const a = request(iot, { buyerId: "buyer-1", listingId: listing.listingId, machineId: "machine-01", quantity: 1n, idempotencyKey: "same" });
+    const b = request(iot, { buyerId: "buyer-1", listingId: listing.listingId, machineId: "machine-01", quantity: 1n, idempotencyKey: "same" });
     assert.equal(a.requestId, b.requestId);
     assert.equal(a.order.orderId, b.order.orderId);
   });
@@ -46,7 +59,7 @@ describe("UEP IoT/M2M service", () => {
   it("rejects unregistered providers and machines", () => {
     const { iot, listing } = setup();
     assert.throws(() => iot.registerProvider({ providerId: "iot-provider-1", displayName: "duplicate" }), /IOT_PROVIDER_ALREADY_REGISTERED/);
-    assert.throws(() => iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "missing", quantity: 1n }), /IOT_MACHINE_NOT_REGISTERED/);
+    assert.throws(() => request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "missing", quantity: 1n }), /IOT_MACHINE_NOT_REGISTERED/);
   });
 
   it("rejects listing/provider or machine/provider mismatches", () => {
@@ -54,12 +67,12 @@ describe("UEP IoT/M2M service", () => {
     iot.registerProvider({ providerId: "provider-2", displayName: "Other" });
     iot.registerMachine({ machineId: "machine-02", providerId: "provider-2", serviceType: "temperature-sampling", model: "OTHER", endpointRef: "sim://machine-02" });
     const listing = marketplace.publishListing({ providerId: "iot-provider-1", title: "Humidity", description: "Humidity sample", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 50n, capacity: 2n });
-    assert.throws(() => iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "machine-02", quantity: 1n }), /MACHINE_PROVIDER_MISMATCH/);
+    assert.throws(() => request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "machine-02", quantity: 1n }), /MACHINE_PROVIDER_MISMATCH/);
   });
 
   it("requires HOLD before simulated execution and verification before settlement", () => {
     const { iot, listing } = setup();
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
     assert.throws(() => iot.simulateExecution(r.requestId, { status: "OK" }), /IOT_EXECUTION_REQUIRES_HOLD/);
     iot.hold(r.requestId);
     const t = iot.simulateExecution(r.requestId, { status: "OK" });
@@ -71,7 +84,7 @@ describe("UEP IoT/M2M service", () => {
 
   it("rejects telemetry tampering, wrong machine and replayed sequence", () => {
     const { iot, listing } = setup();
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
     iot.hold(r.requestId);
     const t = iot.simulateExecution(r.requestId, { status: "OK" });
     const tampered = { ...t, measurements: { status: "FAIL" } };
@@ -84,10 +97,10 @@ describe("UEP IoT/M2M service", () => {
 
   it("rejects telemetry from another request/contract and stale telemetry", () => {
     const { iot, listing, advance } = setup();
-    const r1 = iot.requestService({ buyerId: "buyer-1", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    const r1 = request(iot, { buyerId: "buyer-1", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
     iot.hold(r1.requestId);
     const t = iot.simulateExecution(r1.requestId, { status: "OK" });
-    const r2 = iot.requestService({ buyerId: "buyer-2", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    const r2 = request(iot, { buyerId: "buyer-2", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
     iot.hold(r2.requestId);
     assert.throws(() => iot.verifyTelemetry(r2.requestId, t), /IOT_TELEMETRY_REQUEST_MISMATCH/);
     advance(61_000);
@@ -96,7 +109,7 @@ describe("UEP IoT/M2M service", () => {
 
   it("settlement is replay-safe and charges the marketplace fee once", () => {
     const { iot, listing } = setup();
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
     iot.hold(r.requestId);
     const t = iot.simulateExecution(r.requestId, { status: "OK" });
     iot.deliverTelemetry(r.requestId, t);
@@ -118,7 +131,7 @@ describe("UEP IoT/M2M hardening", () => {
     iot.registerProvider({ providerId: "signed-provider", displayName: "Signed IoT" });
     iot.registerMachine({ machineId: "signed-machine", providerId: "signed-provider", serviceType: "temperature", model: "SIGNED-1", endpointRef: "sim://signed", publicKeyHex: identity.publicKeyHex });
     const listing = marketplace.publishListing({ providerId: "signed-provider", title: "Signed temperature", description: "Signed telemetry", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 100n, capacity: 2n });
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "signed-machine", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "signed-machine", quantity: 1n });
     iot.hold(r.requestId);
     const telemetry = iot.simulateExecution(r.requestId, { temperatureC: "21.50" }, now, identity.privateKey);
     const verification = iot.verifyTelemetry(r.requestId, telemetry);
@@ -131,14 +144,14 @@ describe("UEP IoT/M2M hardening", () => {
     const identity = createIoTMachineIdentity();
     // Register a second machine with a real Ed25519 identity.
     iot.registerMachine({ machineId: "signed-machine", providerId: "iot-provider-1", serviceType: "temperature", model: "SIGNED-1", endpointRef: "sim://signed", publicKeyHex: identity.publicKeyHex });
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "signed-machine", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "signed-machine", quantity: 1n });
     iot.hold(r.requestId);
     assert.throws(() => iot.simulateExecution(r.requestId, { status: "OK" }), /IOT_SIGNED_TELEMETRY_REQUIRED/);
   });
 
   it("uses deterministic CBOR for the telemetry payload and exposes clear next actions", () => {
     const { iot, listing } = setup();
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
     assert.equal(iot.serviceStatus(r.requestId).nextAction, "HOLD");
     iot.hold(r.requestId);
     const t = iot.simulateExecution(r.requestId, { temperatureC: "21.50", status: "OK" });
@@ -151,7 +164,7 @@ describe("UEP IoT/M2M hardening", () => {
 
   it("enforces the tighter future timestamp window", () => {
     const { iot, listing } = setup();
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
     iot.hold(r.requestId);
     const t = iot.simulateExecution(r.requestId, { status: "OK" }, 1_030_001);
     assert.throws(() => iot.verifyTelemetry(r.requestId, t), /IOT_TELEMETRY_FUTURE_TIMESTAMP/);
@@ -161,7 +174,7 @@ describe("UEP IoT/M2M hardening", () => {
 describe("IoT authorization hardening", () => {
   it("requires an authenticated buyer/arbiter to settle", () => {
     const { iot, listing } = setup();
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
     iot.hold(r.requestId);
     const t = iot.simulateExecution(r.requestId, { status: "OK" });
     iot.deliverTelemetry(r.requestId, t); iot.verifyTelemetry(r.requestId, t);
@@ -187,15 +200,30 @@ describe("IoT authorization hardening", () => {
     assert.throws(() => iot.registerMachine({ machineId: "m2", providerId: "p", serviceType: "x", model: "m1", endpointRef: "sim://m2" }), /IOT_PROVIDER_INACTIVE/);
   });
 
-  it("includes reservation deposit and gas fee in IoT hold", () => {
+  it("IoT hold funds the remainder after the locked reservation deposit", () => {
     let now = 1_000_000;
     const marketplace = new DigitalServicesMarketplace({ now: () => now, reservationDeposit: 25n });
     const iot = new IoTM2MService(marketplace, { now: () => now });
     iot.registerProvider({ providerId: "p", displayName: "P" });
     iot.registerMachine({ machineId: "m", providerId: "p", serviceType: "x", model: "m1", endpointRef: "sim://m" });
     const listing = marketplace.publishListing({ providerId: "p", title: "iot", description: "iot", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 100n, capacity: 1n });
-    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "m", quantity: 1n });
+    const r = request(iot, { buyerId: "buyer", listingId: listing.listingId, machineId: "m", quantity: 1n });
+    assert.equal(r.order.reservationDeposit, 25n);
+    assert.equal(marketplace.lockedDeposit("EUR", "buyer"), 25n);
     const held = iot.hold(r.requestId);
-    assert.equal(held.heldAmount, 125n);
+    assert.equal(held.heldAmount, 100n);
+    assert.equal(marketplace.availableBalance("EUR", "buyer"), 10_000n - 100n);
+    assert.equal(iot.hold(r.requestId).heldAmount, 100n); // idempotent
+    assert.equal(marketplace.valueAccounting("EUR").conserved, true);
+  });
+
+  it("IoT requests are fail-closed: unregistered or wrongly signed buyers cannot reserve", () => {
+    const { iot, listing, marketplace } = setup();
+    assert.throws(() => iot.requestService({ buyerId: "ghost", listingId: listing.listingId, machineId: "machine-01", quantity: 1n, idempotencyKey: "k", authorization: "00".repeat(64) }), /IDENTITY_NOT_REGISTERED/);
+    enrollIdentity(marketplace, "buyer-x", { asset: "EUR", amount: 1_000n });
+    const otherSig = iotAuthorization(marketplace, { listingId: listing.listingId, buyerId: "buyer-x", quantity: 2n, idempotencyKey: "k" });
+    assert.throws(() => iot.requestService({ buyerId: "buyer-x", listingId: listing.listingId, machineId: "machine-01", quantity: 1n, idempotencyKey: "k", authorization: otherSig }), /RESERVATION_SIGNATURE_INVALID/);
+    assert.equal(marketplace.getListing(listing.listingId).available, 10n);
+    assert.equal(marketplace.lockedDeposit("EUR", "buyer-x"), 0n);
   });
 });

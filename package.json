@@ -1,6 +1,6 @@
 {
   "name": "uep-public-testnet-marketplace",
-  "version": "0.4.2-public-iot-m2m",
+  "version": "0.4.3-public-iot-m2m",
   "private": false,
   "type": "module",
   "description": "Public reproducible UEP testnet Marketplace implementation with IoT/M2M service integration.",

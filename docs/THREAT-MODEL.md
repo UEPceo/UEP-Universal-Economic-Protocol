@@ -31,6 +31,26 @@ delivery manipulation.
 Attempts to bypass or duplicate Marketplace fees, Paymaster reservations or
 Treasury allocation.
 
+### Snapshot forger
+
+Attempts to restore a snapshot that was not signed by enough snapshot authorities,
+replays or reorders an older signed snapshot, rewrites history behind a known
+checkpoint, or adds issuance that the dedicated faucet key did not sign.
+
+### Reservation griefer
+
+Attempts to lock Marketplace capacity without funds, with an unregistered or
+impersonated identity, or beyond the per-identity concurrency limit.
+
+## Residual trust (testnet)
+
+Whoever holds the snapshot authority private keys controls what their own node
+signs, and whoever holds the faucet key controls testnet issuance on that node.
+Ed25519 signatures, the k-of-n threshold, the hash chain and checkpoints make
+tampering by anyone else detectable and keep the snapshot and mint roles
+separate. They do not make a key holder honest. This is the local testnet trust
+model, not production consensus or production key custody.
+
 ## Out of scope
 
 The public repository does not claim to solve:

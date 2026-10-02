@@ -52,10 +52,11 @@ test("input value is bound to the amount plus fee", async () => {
 
 test("snapshot and restore are executable", async () => {
   const owner = await identityFromMnemonic(await generateMnemonic(128));
-  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotAuthoritySecret: "public-testnet-audit-secret-v1" });
+  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
   ledger.faucet(owner.accountId, "asset:test:eur", 500n);
   const snap = ledger.snapshot();
-  const restored = UepLedger.restore(snap, "public-testnet-audit-secret-v1");
+  // Verifiers only need the public keys.
+  const restored = UepLedger.restore(snap, { authorities: ledger.snapshotAuthorityPublicKeys(), faucetPublicKeys: [ledger.faucetPublicKey()!] });
   assert.equal(restored.stateRoot().toHex(), ledger.stateRoot().toHex());
   assert.equal(restored.balanceOf(owner.accountId, encodeStringToFr("asset:test:eur")), 500n);
 });

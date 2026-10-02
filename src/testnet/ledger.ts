@@ -19,7 +19,8 @@ import { TREASURY_ID } from "../network/profiles.ts";
 import { SecurityPolicy, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
 import { DevelopmentSpendProofProvider, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import type { KeyObject } from "node:crypto";
+import { generateEd25519KeyPair, publicKeyHexOf, sha256Hex, signEd25519, stableStringify, toPrivateKey, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
 
 export type SubmitError =
   | { code: "WRONG_NETWORK"; message: string }
@@ -47,21 +48,127 @@ function ak(account: Fr, asset: Fr): AccountKey {
   return account.toHex() + "|" + asset.toHex();
 }
 
-export type UepLedgerSnapshot = ReturnType<UepLedger["snapshot"]>;
+/** Snapshot format version. v3 (0.4.3): Ed25519 authority signatures, hash chain, signed faucet mints. */
+export const SNAPSHOT_FORMAT_VERSION = 3;
+/** `prevSnapshotHash` of the first snapshot in a ledger's chain. */
+export const GENESIS_SNAPSHOT_HASH = "0".repeat(64);
+const SNAPSHOT_DOMAIN = "UEP-SNAPSHOT-v3";
+const MINT_DOMAIN = "UEP-FAUCET-MINT-v1";
+const CHAIN_DOMAIN = "UEP-HISTORY-CHAIN-v1";
 
-/** Snapshot format version. v2 (0.4.2) adds `formatVersion` and per-asset minted `supply`. */
-export const SNAPSHOT_FORMAT_VERSION = 2;
+/** A faucet issuance record, signed by the dedicated faucet (mint) key. */
+export type MintRecord = {
+  index: number;
+  networkId: string;
+  domainId: string;
+  account: string;
+  assetId: string;
+  amount: string;
+  commitment: string;
+  signature: string;
+};
 
-function snapshotPayload(data: Omit<UepLedgerSnapshot, "integrity">): string {
-  return JSON.stringify(data, (_key, value) => typeof value === "bigint" ? `${value}n` : value);
+export type SnapshotSignature = { publicKey: string; signature: string };
+
+/** Trust anchors for restore(). Only public keys: verifiers never need private keys. */
+export type SnapshotTrust = {
+  /** Snapshot authority public keys (n). */
+  authorities: PublicKeyLike[];
+  /** Distinct valid authority signatures required (k). Default 1. */
+  threshold?: number;
+  /** Faucet (mint) public key(s). Required when the snapshot contains mints; must not be a snapshot authority key. */
+  faucetPublicKeys?: PublicKeyLike[];
+  /** The snapshot must directly follow this snapshot hash. */
+  previousSnapshotHash?: string;
+  /** A known earlier (or identical) checkpoint the snapshot must extend. */
+  checkpoint?: SnapshotCheckpoint;
+};
+
+/** Private keys handed to a restored ledger so an authority node can keep signing. Optional. */
+export type LedgerSigningKeys = {
+  snapshotSigningKeys?: PrivateKeyLike[];
+  faucetSigningKey?: PrivateKeyLike;
+};
+
+/** Compact commitment to a snapshot and to its transaction / mint history prefix. */
+export type SnapshotCheckpoint = {
+  sequence: number;
+  snapshotHash: string;
+  txCount: number;
+  txChainHash: string;
+  mintCount: number;
+  mintChainHash: string;
+};
+
+export type UepLedgerSnapshotPayload = ReturnType<UepLedger["snapshotPayload"]>;
+export type UepLedgerSnapshot = UepLedgerSnapshotPayload & { snapshotHash: string; signatures: SnapshotSignature[] };
+
+/** Canonical message signed by the faucet key for one mint record. */
+export function mintMessage(m: Omit<MintRecord, "signature">): string {
+  return stableStringify({ domain: MINT_DOMAIN, index: m.index, networkId: m.networkId, domainId: m.domainId, account: m.account, assetId: m.assetId, amount: m.amount, commitment: m.commitment });
+}
+
+function payloadOf(snap: UepLedgerSnapshotPayload & { snapshotHash?: unknown; signatures?: unknown }): UepLedgerSnapshotPayload {
+  const { snapshotHash: _h, signatures: _s, ...payload } = snap as any;
+  return payload as UepLedgerSnapshotPayload;
+}
+
+/** SHA-256 over the domain tag and the canonical payload (everything except `snapshotHash` and `signatures`). */
+export function snapshotHash(snap: UepLedgerSnapshotPayload & { snapshotHash?: unknown; signatures?: unknown }): string {
+  return sha256Hex(`${SNAPSHOT_DOMAIN}\n${stableStringify(payloadOf(snap))}`);
+}
+
+function chainHash(items: string[]): string {
+  let h = sha256Hex(`${CHAIN_DOMAIN}\n`);
+  for (const item of items) h = sha256Hex(`${h}\n${item}`);
+  return h;
+}
+
+function txChainHash(txs: UepLedgerSnapshotPayload["txs"], count: number): string {
+  return chainHash(txs.slice(0, count).map((t) => stableStringify(t)));
+}
+
+function mintChainHash(mints: MintRecord[], count: number): string {
+  return chainHash(mints.slice(0, count).map((m) => stableStringify(m)));
+}
+
+/** Checkpoint of a snapshot: its hash plus hash chains over its transaction and mint history. */
+export function checkpointOf(snap: UepLedgerSnapshot): SnapshotCheckpoint {
+  return {
+    sequence: snap.sequence,
+    snapshotHash: snapshotHash(snap),
+    txCount: snap.txs.length,
+    txChainHash: txChainHash(snap.txs, snap.txs.length),
+    mintCount: snap.mints.length,
+    mintChainHash: mintChainHash(snap.mints, snap.mints.length),
+  };
 }
 
 /**
- * HMAC-SHA256 integrity tag of a snapshot payload (everything except `integrity`).
- * Requires the external snapshot authority secret.
+ * (Re)sign a snapshot payload with the given snapshot authority private keys.
+ * Replaces existing signatures. Requires private keys (authority tooling only).
  */
-export function signSnapshotPayload(data: Omit<UepLedgerSnapshot, "integrity">, snapshotAuthoritySecret: string | Uint8Array): string {
-  return createHmac("sha256", Buffer.from(snapshotAuthoritySecret)).update(snapshotPayload(data)).digest("hex");
+export function signSnapshot(snap: UepLedgerSnapshotPayload & { snapshotHash?: unknown; signatures?: unknown }, privateKeys: PrivateKeyLike[]): UepLedgerSnapshot {
+  const payload = payloadOf(snap);
+  const hash = snapshotHash(payload);
+  return { ...payload, snapshotHash: hash, signatures: privateKeys.map((k) => ({ publicKey: publicKeyHexOf(toPrivateKey(k)), signature: signEd25519(hash, k) })) };
+}
+
+/** Add one co-signature (e.g. the second authority of a 2-of-3 set). */
+export function cosignSnapshot(snap: UepLedgerSnapshot, privateKey: PrivateKeyLike): UepLedgerSnapshot {
+  const hash = snapshotHash(snap);
+  return { ...snap, snapshotHash: hash, signatures: [...(snap.signatures ?? []), { publicKey: publicKeyHexOf(toPrivateKey(privateKey)), signature: signEd25519(hash, privateKey) }] };
+}
+
+function distinctKeyHexes(keys: PublicKeyLike[] | undefined, code: string): string[] {
+  const out: string[] = [];
+  for (const k of keys ?? []) {
+    let hex: string;
+    try { hex = publicKeyHexOf(k); } catch { throw new Error(code); }
+    if (out.includes(hex)) throw new Error(code);
+    out.push(hex);
+  }
+  return out;
 }
 
 /**
@@ -112,7 +219,14 @@ export class UepLedger {
   readonly domainId: string;
   readonly connected: boolean;
   readonly allowFaucet: boolean;
-  private readonly snapshotAuthoritySecret: Buffer;
+  private snapshotSigners: KeyObject[] = [];
+  private faucetSigner: KeyObject | undefined;
+  /** Signed faucet issuance log. Supply is derived from it. */
+  mints: MintRecord[] = [];
+  /** Sequence of the last snapshot produced or restored (0 = none). */
+  snapshotSequence = 0;
+  /** Hash of the last snapshot produced or restored (genesis = 64 zeros). */
+  lastSnapshotHash = GENESIS_SNAPSHOT_HASH;
   state: SparseMerkleTree;
   nullifiers: NullifierSet;
   balances = new Map<AccountKey, bigint>();
@@ -121,7 +235,7 @@ export class UepLedger {
   pending: UepTransaction[] = [];
   noteCounter = 0n;
   lastReconcileAt = 0;
-  /** Total minted (faucet) value per asset (asset hex -> amount). */
+  /** Total minted (faucet) value per asset (asset hex -> amount), derived from `mints`. */
   supply = new Map<string, bigint>();
 
   constructor(opts: {
@@ -129,14 +243,26 @@ export class UepLedger {
     domainId: string;
     connected: boolean;
     allowFaucet: boolean;
-    /** External snapshot authority secret. Keep outside the snapshot. */
-    snapshotAuthoritySecret?: string | Uint8Array;
+    /**
+     * Snapshot authority Ed25519 private keys held by this node (all of them sign each snapshot).
+     * Default: one ephemeral key (1-of-1 local testnet). Pass `[]` for a verify-only node.
+     */
+    snapshotSigningKeys?: PrivateKeyLike[];
+    /**
+     * Dedicated faucet (mint) Ed25519 private key, distinct from every snapshot key.
+     * Default: an ephemeral key when `allowFaucet` is true. Pass `null` for no mint capability.
+     */
+    faucetSigningKey?: PrivateKeyLike | null;
   }) {
+    if ((opts as { snapshotAuthoritySecret?: unknown }).snapshotAuthoritySecret !== undefined) throw new Error("SNAPSHOT_SECRET_UNSUPPORTED: v0.4.3 uses Ed25519 snapshotSigningKeys");
     this.networkId = opts.networkId;
     this.domainId = opts.domainId;
     this.connected = opts.connected;
     this.allowFaucet = opts.allowFaucet;
-    this.snapshotAuthoritySecret = Buffer.from(opts.snapshotAuthoritySecret ?? randomBytes(32));
+    this.installSigningKeys(
+      opts.snapshotSigningKeys ?? [generateEd25519KeyPair().privateKey],
+      opts.faucetSigningKey === undefined ? (opts.allowFaucet ? generateEd25519KeyPair().privateKey : undefined) : (opts.faucetSigningKey ?? undefined),
+    );
     this.state = new SparseMerkleTree(ACCOUNT_DEPTH);
     this.nullifiers = new NullifierSet();
   }
@@ -175,13 +301,43 @@ export class UepLedger {
     if (!this.connected) throw new Error("Node is not connected");
     const rec = findAsset(this.networkId, assetIdStr);
     if (!rec) throw new Error("Unknown TESTNET asset");
+    if (!this.faucetSigner) throw new Error("FAUCET_KEY_REQUIRED");
+    if (amount <= 0n || amount >= 2n ** 64n) throw new Error("FAUCET_AMOUNT_INVALID");
     const assetId = encodeStringToFr(assetIdStr);
+    if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("FAUCET_AMOUNT_INVALID");
     const blinding = hLeaf(account, new Fr(++this.noteCounter));
     const note = makeNote(account, assetId, amount, blinding);
+    const unsigned = { index: this.mints.length, networkId: this.networkId, domainId: this.domainId, account: account.toHex(), assetId: assetId.toHex(), amount: amount.toString(), commitment: note.commitment.toHex() };
+    this.mints.push({ ...unsigned, signature: signEd25519(mintMessage(unsigned), this.faucetSigner) });
     this.notes.push(note);
     this.setBalance(account, assetId, this.balanceOf(account, assetId) + amount);
     this.supply.set(assetId.toHex(), (this.supply.get(assetId.toHex()) ?? 0n) + amount);
     return note;
+  }
+
+  private installSigningKeys(snapshotKeys: PrivateKeyLike[], faucetKey: PrivateKeyLike | undefined): void {
+    const signers = snapshotKeys.map((k) => toPrivateKey(k));
+    const hexes = signers.map((k) => publicKeyHexOf(k));
+    if (new Set(hexes).size !== hexes.length) throw new Error("SNAPSHOT_SIGNING_KEYS_DUPLICATE");
+    const faucet = faucetKey === undefined ? undefined : toPrivateKey(faucetKey);
+    if (faucet && hexes.includes(publicKeyHexOf(faucet))) throw new Error("FAUCET_KEY_NOT_DISTINCT");
+    this.snapshotSigners = signers;
+    this.faucetSigner = faucet;
+  }
+
+  /** Snapshot authority public keys of this node (hex SPKI DER). Share these with verifiers. */
+  snapshotAuthorityPublicKeys(): string[] {
+    return this.snapshotSigners.map((k) => publicKeyHexOf(k));
+  }
+
+  /** Faucet (mint) public key of this node (hex SPKI DER), if it can mint. */
+  faucetPublicKey(): string | undefined {
+    return this.faucetSigner ? publicKeyHexOf(this.faucetSigner) : undefined;
+  }
+
+  /** Checkpoint of the last snapshot this ledger produced or restored. */
+  lastCheckpoint(): { sequence: number; snapshotHash: string } {
+    return { sequence: this.snapshotSequence, snapshotHash: this.lastSnapshotHash };
   }
 
   /**
@@ -602,9 +758,12 @@ export class UepLedger {
     return { settlements, root: settlementRoot(settlements), queued: queued.map((t) => ({ ...t })), rejected };
   }
 
-  snapshot() {
-    const payload = {
+  /** Unsigned snapshot payload for the next snapshot in this ledger's chain (does not advance the chain). */
+  snapshotPayload() {
+    return {
       formatVersion: SNAPSHOT_FORMAT_VERSION,
+      sequence: this.snapshotSequence + 1,
+      prevSnapshotHash: this.lastSnapshotHash,
       networkId: this.networkId,
       domainId: this.domainId,
       connected: this.connected,
@@ -613,43 +772,96 @@ export class UepLedger {
       state: this.state.toJSON(),
       nullifiers: this.nullifiers.toJSON(),
       balances: [...this.balances.entries()].map(([k, v]) => [k, v.toString()] as const),
-      supply: [...this.supply.entries()].map(([k, v]) => [k, v.toString()] as const),
+      mints: this.mints.map((m) => ({ ...m })),
       notes: this.notes.map(serializeNote),
       txs: this.txs.map(serializeTx),
       pending: this.pending.map(serializeTx),
       noteCounter: this.noteCounter.toString(),
       lastReconcileAt: this.lastReconcileAt,
     };
-    const integrity = signSnapshotPayload(payload, this.snapshotAuthoritySecret);
-    return { ...payload, integrity };
   }
 
   /**
-   * Restore a snapshot. The integrity tag is verified first (constant-time),
-   * then the full state is re-derived and every invariant is checked. A
-   * snapshot is accepted only if it could have been produced by faucet() and
-   * submit() under the same rules submit() enforces. Errors are specific
-   * `INVALID_SNAPSHOT_*` codes.
+   * Produce the next signed snapshot: signed by every snapshot authority key this
+   * node holds and linked to the previous snapshot by `prevSnapshotHash`.
    */
-  static restore(data: UepLedgerSnapshot, snapshotAuthoritySecret: string | Uint8Array): UepLedger {
-    const fail = (code: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}`); };
-    if (!data || data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.nullifiers.seen) || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || !data.policy || typeof data.integrity !== "string") fail("SHAPE");
-    if (data.formatVersion !== SNAPSHOT_FORMAT_VERSION || !Array.isArray(data.supply)) fail("VERSION");
-    const { integrity, ...payload } = data;
-    const expected = Buffer.from(signSnapshotPayload(payload, snapshotAuthoritySecret), "hex");
-    const given = /^[0-9a-f]{64}$/.test(integrity) ? Buffer.from(integrity, "hex") : Buffer.alloc(0);
-    if (given.length !== expected.length || !timingSafeEqual(given, expected)) fail("INTEGRITY");
+  snapshot(): UepLedgerSnapshot {
+    if (this.snapshotSigners.length === 0) throw new Error("SNAPSHOT_SIGNING_KEY_REQUIRED");
+    const signed = signSnapshot(this.snapshotPayload(), this.snapshotSigners);
+    this.snapshotSequence = signed.sequence;
+    this.lastSnapshotHash = signed.snapshotHash;
+    return signed;
+  }
+
+  /**
+   * Restore a snapshot against public trust anchors only.
+   *  1. Format v3 is required (older formats are rejected).
+   *  2. At least `threshold` distinct snapshot authorities must have signed the
+   *     snapshot hash; any invalid signature by a listed authority is rejected.
+   *  3. Chain continuity: optional `previousSnapshotHash` / `checkpoint` must be
+   *     extended (a reordered or rewritten history is rejected even if signed).
+   *  4. Every faucet mint carries a valid signature by a trusted faucet key that
+   *     is distinct from the snapshot authorities; every non-output note is minted.
+   *  5. The full state is re-derived and every v0.4.2 invariant is checked.
+   * A restored ledger can only sign snapshots or mint if `keys` are passed.
+   */
+  static restore(data: UepLedgerSnapshot, trust: SnapshotTrust, keys: LedgerSigningKeys = {}): UepLedger {
+    const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
+    if (!data || typeof data !== "object") fail("SHAPE");
+    if (data.formatVersion !== SNAPSHOT_FORMAT_VERSION) {
+      fail("VERSION", `snapshot formatVersion ${String((data as { formatVersion?: unknown }).formatVersion ?? 1)} is no longer supported; v0.4.3 requires formatVersion ${SNAPSHOT_FORMAT_VERSION} (Ed25519-signed, hash-chained). Re-create the snapshot with v0.4.3.`);
+    }
+    if (data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.nullifiers.seen) || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || !Array.isArray(data.mints) || !data.policy || !Array.isArray(data.signatures)) fail("SHAPE");
+    if (!Number.isSafeInteger(data.sequence) || data.sequence < 1 || typeof data.prevSnapshotHash !== "string" || !/^[0-9a-f]{64}$/.test(data.prevSnapshotHash)) fail("SHAPE");
+
+    // Trust anchors (public keys only).
+    if (!trust || !Array.isArray(trust.authorities) || trust.authorities.length === 0) fail("TRUST", "at least one snapshot authority public key is required");
+    const authorities = distinctKeyHexes(trust.authorities, "INVALID_SNAPSHOT_TRUST: authority keys must be distinct Ed25519 public keys");
+    const threshold = trust.threshold ?? 1;
+    if (!Number.isSafeInteger(threshold) || threshold < 1 || threshold > authorities.length) fail("TRUST", "threshold must be between 1 and the number of authorities");
+    const faucetKeys = distinctKeyHexes(trust.faucetPublicKeys, "INVALID_SNAPSHOT_TRUST: faucet keys must be distinct Ed25519 public keys");
+    if (faucetKeys.some((k) => authorities.includes(k))) fail("TRUST", "faucet keys must be distinct from snapshot authority keys");
+
+    // 1-2. Hash and k-of-n authority signatures.
+    const hash = snapshotHash(data);
+    if (data.snapshotHash !== hash) fail("HASH");
+    const signers = new Set<string>();
+    for (const sig of data.signatures) {
+      if (!sig || typeof sig.publicKey !== "string" || typeof sig.signature !== "string") fail("SIGNATURE");
+      let hex: string;
+      try { hex = publicKeyHexOf(sig.publicKey); } catch { continue; }
+      if (!authorities.includes(hex)) continue; // signatures by unknown keys carry no weight
+      if (!verifyEd25519(hash, sig.signature, hex)) fail("SIGNATURE");
+      signers.add(hex);
+    }
+    if (signers.size < threshold) fail("THRESHOLD", `${signers.size} distinct valid authority signature(s), ${threshold} required`);
+
+    // 3. Chain continuity.
+    if ((data.sequence === 1) !== (data.prevSnapshotHash === GENESIS_SNAPSHOT_HASH)) fail("CHAIN");
+    if (trust.previousSnapshotHash !== undefined && data.prevSnapshotHash !== trust.previousSnapshotHash) fail("CHAIN", "prevSnapshotHash does not match the expected previous snapshot");
+    const cp = trust.checkpoint;
+    if (cp) {
+      if (data.sequence < cp.sequence) fail("CHAIN", "snapshot is older than the trusted checkpoint");
+      if (data.sequence === cp.sequence && hash !== cp.snapshotHash) fail("CHAIN", "snapshot conflicts with the trusted checkpoint");
+      if (data.sequence === cp.sequence + 1 && data.prevSnapshotHash !== cp.snapshotHash) fail("CHAIN", "snapshot does not extend the trusted checkpoint");
+      if (data.txs.length < cp.txCount || txChainHash(data.txs, cp.txCount) !== cp.txChainHash) fail("HISTORY", "transaction history diverges from the trusted checkpoint");
+      if (data.mints.length < cp.mintCount || mintChainHash(data.mints, cp.mintCount) !== cp.mintChainHash) fail("HISTORY", "mint history diverges from the trusted checkpoint");
+    }
 
     const l = new UepLedger({
       networkId: data.networkId,
       domainId: data.domainId,
       connected: data.connected,
       allowFaucet: data.allowFaucet,
-      snapshotAuthoritySecret,
+      snapshotSigningKeys: [],
+      faucetSigningKey: null,
     });
+    // Optional private keys for an authority node resuming its own chain.
+    if (keys.snapshotSigningKeys?.some((k) => !authorities.includes(publicKeyHexOf(toPrivateKey(k))))) throw new Error("SNAPSHOT_SIGNING_KEY_NOT_TRUSTED");
+    if (keys.faucetSigningKey !== undefined && !faucetKeys.includes(publicKeyHexOf(toPrivateKey(keys.faucetSigningKey)))) throw new Error("FAUCET_KEY_NOT_TRUSTED");
+    l.installSigningKeys(keys.snapshotSigningKeys ?? [], keys.faucetSigningKey);
     l.state = SparseMerkleTree.fromJSON(data.state);
     l.balances = new Map(data.balances.map(([k, v]) => [k, BigInt(v)]));
-    l.supply = new Map(data.supply.map(([k, v]) => [k, BigInt(v)]));
     l.notes = data.notes.map(deserializeNote);
     l.txs = data.txs.map(deserializeTx);
     l.pending = data.pending.map(deserializeTx);
@@ -683,8 +895,23 @@ export class UepLedger {
     const registeredAssets = assetsForNetwork(l.networkId).map((a) => encodeStringToFr(a.assetId));
     const outputCommitments = new Set<string>();
     for (const tx of l.txs) for (const c of tx.outputCommitments) outputCommitments.add(c.toHex());
-    // Notes that are not the output of any transaction are faucet mints.
-    const available = new Set<string>([...noteByCommitment.keys()].filter((c) => !outputCommitments.has(c)));
+    // Notes that are not the output of any transaction must be signed faucet mints.
+    const mintedCommitments = new Set<string>();
+    const minted = new Map<string, bigint>();
+    if (data.mints.length > 0 && faucetKeys.length === 0) fail("MINT_KEY", "snapshot contains mints but no trusted faucet public key was supplied");
+    data.mints.forEach((m, i) => {
+      if (!m || m.index !== i || m.networkId !== l.networkId || m.domainId !== l.domainId || typeof m.commitment !== "string" || typeof m.amount !== "string" || !/^[0-9]+$/.test(m.amount)) fail("MINT_SHAPE");
+      const { signature, ...unsigned } = m;
+      if (!faucetKeys.some((k) => verifyEd25519(mintMessage(unsigned), signature, k))) fail("MINT_SIGNATURE", `mint ${i} is unsigned or not signed by a trusted faucet key`);
+      const note = noteByCommitment.get(m.commitment);
+      if (!note || outputCommitments.has(m.commitment) || note.owner.toHex() !== m.account || note.assetId.toHex() !== m.assetId || note.amount.toString() !== m.amount) fail("MINT_NOTE");
+      if (mintedCommitments.has(m.commitment)) fail("MINT_DUPLICATE");
+      mintedCommitments.add(m.commitment);
+      minted.set(m.assetId, (minted.get(m.assetId) ?? 0n) + BigInt(m.amount));
+    });
+    l.mints = data.mints.map((m) => ({ ...m }));
+    l.supply = new Map(minted);
+    const available = new Set<string>(mintedCommitments);
     const consumed = new Set<string>();
     const txIds = new Set<string>();
     const feesByAsset = new Map<string, bigint>();
@@ -728,6 +955,9 @@ export class UepLedger {
     // 5. A note is spent iff it was consumed by a committed transaction.
     for (const n of l.notes) if (n.spent !== consumed.has(n.commitment.toHex())) fail("SPENT_FLAG");
 
+    // Every note is either a signed faucet mint or the output of a committed transaction.
+    for (const c of noteByCommitment.keys()) if (!outputCommitments.has(c) && !mintedCommitments.has(c)) fail("UNMINTED_NOTE");
+
     // 6. Balances equal unspent notes per (owner, asset), plus fee income for the treasury.
     const expectedBalances = new Map<string, bigint>();
     for (const n of l.notes) if (!n.spent) expectedBalances.set(ak(n.owner, n.assetId), (expectedBalances.get(ak(n.owner, n.assetId)) ?? 0n) + n.amount);
@@ -739,15 +969,33 @@ export class UepLedger {
       if ((expectedBalances.get(k) ?? 0n) !== (l.balances.get(k) ?? 0n)) fail("NOTE_BALANCE");
     }
 
-    // 7. Supply: minted notes and total balances per asset equal the recorded supply.
-    const minted = new Map<string, bigint>();
-    for (const n of l.notes) if (!outputCommitments.has(n.commitment.toHex())) minted.set(n.assetId.toHex(), (minted.get(n.assetId.toHex()) ?? 0n) + n.amount);
+    // 7. Supply: total balances per asset equal the signed mint total.
     const totals = new Map<string, bigint>();
     for (const [k, v] of l.balances) { const assetHex = k.split("|")[1]!; totals.set(assetHex, (totals.get(assetHex) ?? 0n) + v); }
-    for (const assetHex of new Set([...minted.keys(), ...totals.keys(), ...l.supply.keys()])) {
-      const supply = l.supply.get(assetHex) ?? 0n;
-      if ((minted.get(assetHex) ?? 0n) !== supply || (totals.get(assetHex) ?? 0n) !== supply) fail("SUPPLY");
+    for (const assetHex of new Set([...minted.keys(), ...totals.keys()])) {
+      if ((minted.get(assetHex) ?? 0n) !== (totals.get(assetHex) ?? 0n)) fail("SUPPLY");
     }
+
+    l.snapshotSequence = data.sequence;
+    l.lastSnapshotHash = hash;
     return l;
+  }
+
+  /**
+   * Restore the last snapshot of an ordered chain, verifying every link:
+   * each snapshot must be signed per `trust`, directly follow its predecessor
+   * and extend its predecessor's transaction and mint history.
+   */
+  static restoreChain(snapshots: UepLedgerSnapshot[], trust: SnapshotTrust, keys: LedgerSigningKeys = {}): UepLedger {
+    if (!Array.isArray(snapshots) || snapshots.length === 0) throw new Error("INVALID_SNAPSHOT_CHAIN: empty chain");
+    let restored: UepLedger | undefined;
+    let prev: UepLedgerSnapshot | undefined;
+    for (const [i, snap] of snapshots.entries()) {
+      const linkTrust: SnapshotTrust = prev ? { ...trust, previousSnapshotHash: snapshotHash(prev), checkpoint: checkpointOf(prev) } : trust;
+      if (prev && snap?.sequence !== prev.sequence + 1) throw new Error("INVALID_SNAPSHOT_CHAIN: sequence gap or reorder");
+      restored = UepLedger.restore(snap, linkTrust, i === snapshots.length - 1 ? keys : {});
+      prev = snap;
+    }
+    return restored!;
   }
 }

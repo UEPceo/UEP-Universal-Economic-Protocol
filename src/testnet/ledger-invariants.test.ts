@@ -14,19 +14,21 @@ import { computeTxCommitment, txIdFromCommitment, type UepTransaction } from "..
 import { DevelopmentSpendProofProvider } from "../core/spend-proof.ts";
 import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
-import { UepLedger, signSnapshotPayload, type UepLedgerSnapshot } from "./ledger.ts";
+import { UepLedger, signSnapshot, type UepLedgerSnapshot } from "./ledger.ts";
+import { generateEd25519KeyPair } from "../core/ed25519.ts";
 import { TESTNET, TREASURY_ID } from "../network/profiles.ts";
 
-const AUTH = "public-testnet-audit-secret-v1";
+const SNAPSHOT_KEY = generateEd25519KeyPair();
+const FAUCET_KEY = generateEd25519KeyPair();
+const AUTH = { authorities: [SNAPSHOT_KEY.publicKeyHex], faucetPublicKeys: [FAUCET_KEY.publicKeyHex] };
 const EUR = "asset:test:eur";
 const asset = encodeStringToFr(EUR);
 
-const newLedger = () => new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotAuthoritySecret: AUTH });
+const newLedger = () => new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey });
 const identity = async () => identityFromMnemonic(await generateMnemonic(128));
 
 function resign(snap: UepLedgerSnapshot): UepLedgerSnapshot {
-  const { integrity: _ignored, ...payload } = snap;
-  return { ...payload, integrity: signSnapshotPayload(payload, AUTH) };
+  return signSnapshot(snap, [SNAPSHOT_KEY.privateKey]);
 }
 
 /** Re-authorize a modified spend with the sender's own secrets (an authenticated but dishonest sender). */
@@ -176,18 +178,18 @@ test("B05: restore rejects authority-signed snapshots that break internal invari
     (l as any).setBalance(a.accountId, asset, l.balanceOf(a.accountId, asset) + 1_000_000n);
     assert.throws(() => UepLedger.restore(l.snapshot(), AUTH), /INVALID_SNAPSHOT_NOTE_BALANCE/);
   }
-  // Value minted outside the faucet: note + balance without a supply record.
+  // Value created outside the faucet: note + balance without a signed mint record.
   {
     const { l, a } = await ledgerWithHistory();
     l.notes.push(makeNote(a.accountId, asset, 1_000_000n, hLeaf(a.accountId, new Fr(424242n))));
     (l as any).setBalance(a.accountId, asset, l.balanceOf(a.accountId, asset) + 1_000_000n);
-    assert.throws(() => UepLedger.restore(l.snapshot(), AUTH), /INVALID_SNAPSHOT_SUPPLY/);
+    assert.throws(() => UepLedger.restore(l.snapshot(), AUTH), /INVALID_SNAPSHOT_UNMINTED_NOTE/);
   }
-  // Supply record altered.
+  // Signed mint record altered (amount no longer matches its faucet signature).
   {
     const { l } = await ledgerWithHistory();
-    l.supply.set(asset.toHex(), 1n);
-    assert.throws(() => UepLedger.restore(l.snapshot(), AUTH), /INVALID_SNAPSHOT_SUPPLY/);
+    l.mints[0]!.amount = "1";
+    assert.throws(() => UepLedger.restore(l.snapshot(), AUTH), /INVALID_SNAPSHOT_MINT_SIGNATURE/);
   }
   // Spent flag flipped back to unspent on a consumed note.
   {
@@ -222,12 +224,14 @@ test("B05: restore rejects authority-signed snapshots that break internal invari
     delete snap.policy;
     assert.throws(() => UepLedger.restore(resign(snap), AUTH), /INVALID_SNAPSHOT_SHAPE/);
   }
-  // Legacy (pre-0.4.2) format without version / supply.
+  // Legacy formats (v1 without version, v2 HMAC) are rejected with a clear error.
   {
     const { l } = await ledgerWithHistory();
     const snap = structuredClone(l.snapshot()) as any;
-    delete snap.formatVersion; delete snap.supply;
-    assert.throws(() => UepLedger.restore(resign(snap), AUTH), /INVALID_SNAPSHOT_VERSION/);
+    delete snap.formatVersion;
+    assert.throws(() => UepLedger.restore(resign(snap), AUTH), /INVALID_SNAPSHOT_VERSION: snapshot formatVersion 1 is no longer supported/);
+    snap.formatVersion = 2;
+    assert.throws(() => UepLedger.restore(resign(snap), AUTH), /INVALID_SNAPSHOT_VERSION: snapshot formatVersion 2 is no longer supported/);
   }
 });
 

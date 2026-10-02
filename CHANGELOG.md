@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.4.3-public-iot-m2m — 2026-10-02
+
+Snapshot authority (UEP-B05) and reservation economics (UEP-A10) redesign, following the open items of v0.4.2. See [`PUBLIC-SECURITY-REMEDIATION-v0.4.3.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md) for the per-finding status and [`docs/API.md`](./docs/API.md) for the changed signatures.
+
+### Snapshots and issuance (UEP-B05)
+
+- The shared-secret HMAC is replaced by **Ed25519** signatures (`node:crypto`; no new dependencies). `UepLedger.restore(snapshot, trust, keys?)` takes the authority **public** keys; verifiers never need a private key.
+- Optional **k-of-n** snapshot authorities (`threshold`, e.g. 2-of-3). Restore requires `k` valid signatures from distinct listed authorities; duplicates count once. Default 1-of-1. `cosignSnapshot()` adds a co-signature.
+- **Hash chain:** every snapshot carries `sequence` and `prevSnapshotHash`. Restore can be pinned to `previousSnapshotHash` or a `checkpoint` (`checkpointOf()`: snapshot hash plus transaction/mint history hash chains); `UepLedger.restoreChain()` verifies an ordered series. Reordered, rolled-back or rewritten histories are rejected even when correctly signed.
+- **Dedicated faucet (mint) key:** every `faucet()` mint is an Ed25519-signed `MintRecord`; the faucet key must differ from every snapshot key. Restore rejects unsigned or wrong-key mints (including mints signed by a snapshot key) and notes that are neither a signed mint nor a transaction output. Supply is derived from signed mints.
+- Snapshot **format version 3**; v1/v2 snapshots are rejected with a clear `INVALID_SNAPSHOT_VERSION` message. All v0.4.2 restore invariants are kept.
+- A ledger restored without private keys is verify-only (cannot sign snapshots or mint).
+- Residual trust model documented (README, threat model): key holders control their own node; this is the testnet trust model.
+
+### Reservations cost something (UEP-A10)
+
+- Only identities with a registered Ed25519 key (`registerIdentity`) can reserve; reservations and buyer cancellations carry the buyer's signature (`signReservation`, `signCancellation`). Fail-closed: unregistered, unsigned or wrongly signed requests lock nothing.
+- The deposit (default 1% of gross, minimum 1 unit, configurable) is **locked from the buyer's marketplace balance at `reserve()`**; no reservation without funds. Testnet funding rail: `creditAccount()`.
+- Funding pays `grossAmount + gasFee − deposit` (`order.fundingDue`): the deposit counts toward the payment. Provider net payouts are credited at settlement.
+- Unfunded expiry forfeits the deposit to the provider; buyer cancellation within `cancellationGraceMs` (default 2 min) refunds it, later forfeits it. Provider/admin cancellation and expiry of a funded undelivered order refund the buyer in full. `expire()` is only possible after the TTL.
+- Per-identity concurrent reservation limit (`maxActiveReservationsPerIdentity`, default 8) and TTL (`reservationTtlMs`, default 10 min) validated. `valueAccounting(asset)` checks conservation across every path.
+- A signed request authorizes one reservation (idempotent replay); an existing `orderId` can no longer be returned to another caller (`ORDER_ID_CONFLICT`).
+- IoT `requestService()` requires the buyer's signature and an idempotency key; `hold()` funds the remainder. `simulate:20k` registers, funds and signs for every buyer and checks conservation.
+
+### Compatibility breaks
+
+- `UepLedger` option `snapshotAuthoritySecret` removed (throws `SNAPSHOT_SECRET_UNSUPPORTED`); new `snapshotSigningKeys` / `faucetSigningKey`.
+- `UepLedger.restore(snapshot, secret)` → `restore(snapshot, trust, keys?)`. `signSnapshotPayload()` removed; snapshot `integrity` and `supply` fields removed; format 3 required.
+- `faucet()` requires a faucet key and a positive amount.
+- `acceptOrder()` / `reserve()` require a registered buyer, `idempotencyKey`, `signature` and funds for the deposit.
+- `fundOrder()` amount is now `grossAmount + gasFee − reservationDeposit` (was `+ reservationDeposit`); `heldAmount` is `grossAmount + gasFee`.
+- Buyer `cancel()` requires a signature and may forfeit the deposit; `expire()` before TTL throws `RESERVATION_NOT_EXPIRED`.
+- `checkoutQuote().buyerTotal` no longer adds the deposit on top (new `dueAtFunding`).
+- IoT `requestService()` requires `idempotencyKey` and `authorization`.
+
+### Tests
+
+- New `snapshot-authority.test.ts` (11): verify-only restore, wrong key, 2-of-3 with one signature, duplicate signer, chain break / reorder / rollback, rewritten history vs. checkpoint, unsigned mint, foreign-key mint, forged history signed by the snapshot key with a fake mint, key separation and legacy secret refused, authority node resuming its chain.
+- New `reservation-deposit.test.ts` (12): unregistered identity, wrong key / altered terms, reserve without funds, funded path, expiry forfeit, funded expiry refund, cancel within grace refunds, cancel after grace forfeits, signed buyer cancel / provider and admin refunds, concurrency limit and defaults, replay locks once, conservation across every path including paymaster gas.
+- Existing ledger, Marketplace, IoT and scale tests migrated to the new APIs.
+
+### Known open issues
+
+- Key holders control their own node (testnet trust model); no key rotation/revocation; checkpoints are distributed out of band; a checkpoint more than one snapshot back is checked by history prefix, not by intermediate links (use `restoreChain`).
+- Identity registration is self-service (no Sybil resistance beyond the deposit); `creditAccount` is a testnet funding stub, not a payment rail; provider/admin actor ids are still caller-supplied strings; `fundOrder` is not separately signed.
+- Unchanged from v0.4.2: local-note-set membership, single-input spends, unauthenticated/unbounded pending queue, development MAC and mutable `requireProof`, no dispute flow, listing IDOR, fee rounding, ZK witness range checks.
+
+### Verification
+
+- `npm test`: protocol suite 49/49, Marketplace/IoT suite 57/57 (Node 22 and Node 24).
+- `npm run test:scale`: 3/3; `npm run test:iot`: 16/16; smoke test and quickstart pass.
+- `npm run simulate:20k`: 20,000/20,000 signed, funded main-flow settlements, 0 errors, value conserved.
+
 ## 0.4.2-public-iot-m2m — 2026-10-02
 
 Ledger, snapshot and Marketplace hardening following the external adversarial audit of v0.4.1 (`50017ea`). See [`PUBLIC-SECURITY-REMEDIATION-v0.4.2.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md) for the per-finding status.
