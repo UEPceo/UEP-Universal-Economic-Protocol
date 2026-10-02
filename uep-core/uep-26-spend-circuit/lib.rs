@@ -36,9 +36,22 @@ pub struct SpendArithmeticCircuit {
     pub treasury_new: Fr,
 }
 
-/// Fee policy: fee = floor(amount * 10 / 10_000)  (0.1%).
-pub fn expected_fee(amount: u64) -> u64 {
+/// Minimum protocol fee for any positive amount (same as the public core, `MIN_PROTOCOL_FEE`).
+pub const MIN_PROTOCOL_FEE: u64 = 1;
+
+/// Proportional part of the protocol fee: floor(amount * 10 / 10_000) (0.1%).
+pub fn proportional_fee(amount: u64) -> u64 {
     amount.saturating_mul(10) / 10_000
+}
+
+/// Fee policy, identical to the public core `creatorFee`:
+/// fee = max(MIN_PROTOCOL_FEE, floor(amount * 10 / 10_000)) for amount > 0.
+/// The circuit rejects amount = 0.
+pub fn expected_fee(amount: u64) -> u64 {
+    if amount == 0 {
+        return 0;
+    }
+    proportional_fee(amount).max(MIN_PROTOCOL_FEE)
 }
 
 pub fn enforce_u64(cs: ConstraintSystemRef<Fr>, x: &FpVar<Fr>) -> Result<(), SynthesisError> {
@@ -64,17 +77,25 @@ pub fn enforce_fee_policy(
     amount: &FpVar<Fr>,
     fee: &FpVar<Fr>,
 ) -> Result<(), SynthesisError> {
-    // fee * 10000 + r = amount * 10, with 0 <= r <= 9999.
+    // A spend moves a positive amount (the public core rejects zero-amount transfers).
+    amount.enforce_not_equal(&FpVar::zero())?;
+
+    // q = floor(amount * 10 / 10_000): q * 10000 + r = amount * 10, with 0 <= r <= 9999.
+    let q = FpVar::new_witness(cs.clone(), || {
+        let a = amount.value().map(fr_low_u64).unwrap_or(0);
+        Ok(Fr::from(proportional_fee(a)))
+    })?;
+    enforce_u64(cs.clone(), &q)?;
     let r = FpVar::new_witness(cs.clone(), || {
         let a = amount.value().unwrap_or(Fr::from(0u64));
-        let f = fee.value().unwrap_or(Fr::from(0u64));
-        Ok(a * Fr::from(10u64) - f * Fr::from(10_000u64))
+        let qv = q.value().unwrap_or(Fr::from(0u64));
+        Ok(a * Fr::from(10u64) - qv * Fr::from(10_000u64))
     })?;
-    (fee * Fr::from(10_000u64) + &r).enforce_equal(&(amount * Fr::from(10u64)))?;
+    (&q * Fr::from(10_000u64) + &r).enforce_equal(&(amount * Fr::from(10u64)))?;
 
     // Strict upper bound: r + s = 9999 with s a 14-bit non-negative witness.
     // Together with the bit-width limits this forces 0 <= r <= 9999
-    // (a bare 14-bit range would allow r in [10000, 16383] and accept fee-1).
+    // (a bare 14-bit range would allow r in [10000, 16383] and accept q-1).
     let s = FpVar::new_witness(cs.clone(), || {
         let rv = r.value().unwrap_or(Fr::from(0u64));
         Ok(Fr::from(9999u64) - rv)
@@ -87,8 +108,16 @@ pub fn enforce_fee_policy(
             bit.enforce_equal(&ark_r1cs_std::boolean::Boolean::constant(false))?;
         }
     }
-    let _ = cs;
+
+    // Fee floor (same rule as the public core): fee = q + [q == 0] = max(1, q).
+    let floor_bit = FpVar::from(q.is_zero()?);
+    (&q + &floor_bit).enforce_equal(fee)?;
     Ok(())
+}
+
+fn fr_low_u64(x: Fr) -> u64 {
+    use ark_ff::PrimeField;
+    x.into_repr().0[0]
 }
 
 impl ConstraintSynthesizer<Fr> for SpendArithmeticCircuit {
@@ -182,6 +211,60 @@ mod arithmetic_tests {
         let cs = ConstraintSystem::<Fr>::new_ref();
         c.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn c4_small_amount_pays_minimum_fee() {
+        for amount in [1u64, 2, 500, 999] {
+            assert_eq!(expected_fee(amount), 1);
+            let c = honest(amount, 10_000, 0, 0);
+            let cs = ConstraintSystem::<Fr>::new_ref();
+            c.generate_constraints(cs.clone()).unwrap();
+            assert!(cs.is_satisfied().unwrap(), "amount {amount}");
+        }
+        assert_eq!(expected_fee(1000), 1);
+        assert_eq!(expected_fee(1999), 1);
+        assert_eq!(expected_fee(2000), 2);
+    }
+
+    #[test]
+    fn c4_small_amount_zero_fee_rejected() {
+        let mut c = honest(500, 10_000, 0, 0);
+        c.fee = Fr::from(0u64);
+        c.sender_new = Fr::from(10_000u64 - 500);
+        c.treasury_new = Fr::from(0u64);
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        c.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn c4_small_amount_fee_two_rejected() {
+        let mut c = honest(500, 10_000, 0, 0);
+        c.fee = Fr::from(2u64);
+        c.sender_new = Fr::from(10_000u64 - 500 - 2);
+        c.treasury_new = Fr::from(2u64);
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        c.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn c4_zero_amount_rejected() {
+        let c = SpendArithmeticCircuit {
+            amount: Fr::from(0u64),
+            fee: Fr::from(1u64),
+            sender_old: Fr::from(10u64),
+            sender_new: Fr::from(9u64),
+            recipient_old: Fr::from(0u64),
+            recipient_new: Fr::from(0u64),
+            treasury_old: Fr::from(0u64),
+            treasury_new: Fr::from(1u64),
+        };
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        // amount != 0 has no witness for amount = 0: synthesis fails or the system is unsatisfied.
+        let r = c.generate_constraints(cs.clone());
+        assert!(r.is_err() || !cs.is_satisfied().unwrap());
     }
 
     #[test]

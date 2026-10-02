@@ -8,8 +8,7 @@ describe("UEP-38.12 Byzantine height lock", () => {
     assert.ok(findBundledUepZk());
   });
 
-  // INTEGRATION CONFLICT (C-3: this test proves a spend below 1000 units; the public core charges a minimum fee of 1 unit since v0.4.4, but the UEP-26 circuit enforces floor(amount/1000) with no minimum, so the proof cannot be built). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("honest replica will not vote two proposals at the same height", () => {
+  it("honest replica will not vote two proposals at the same height", () => {
     const lab = new P4QuorumLab(4);
     const a = lab.buildProposal(1000n, 1);
     const b = lab.buildProposal(500n, 1);
@@ -24,8 +23,7 @@ describe("UEP-38.12 Byzantine height lock", () => {
     );
   });
 
-  // INTEGRATION CONFLICT (C-3: this test proves a spend below 1000 units; the public core charges a minimum fee of 1 unit since v0.4.4, but the UEP-26 circuit enforces floor(amount/1000) with no minimum, so the proof cannot be built). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("late replica catch-up from certified commit", () => {
+  it("late replica catch-up from certified commit", () => {
     const lab = new P4QuorumLab(4);
     const env = lab.buildProposal(1000n, 1);
     const online = lab.replicas.slice(0, 3);

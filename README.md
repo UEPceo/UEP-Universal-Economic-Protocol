@@ -20,11 +20,12 @@ The repository is intended for developers, researchers, security testers and ear
 | Item | Status |
 |---|---|
 | Version | `0.4.7-public-iot-m2m` on `main` (latest tag `v0.4.6-public-iot-m2m`) |
-| Tests | protocol **79/79**, Marketplace + IoT/M2M **104/104**, scale **3/3**, IoT **23/23** |
+| Tests | protocol **83/83**, Marketplace + IoT/M2M **104/104**, scale **3/3**, IoT **23/23** |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
-| Research labs | Experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
+| Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 6 |
+| Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
-| CI | `npm run test:all` on Node.js 22.x and 24.x |
+| CI | Blocking: `npm run test:all` (core, Rust, labs without known issues) on Node.js 22.x and 24.x. Non-blocking: the lab files with known issues |
 | Network | Local, single-node, in-process **testnet only** |
 | External review | Independent adversarial assessments of each release up to v0.4.6; open items in [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) |
 
@@ -157,7 +158,7 @@ Release v0.3.2 followed external review `UEP-RR-2026-10-02-001`. The previous pu
 - snapshot/restore is covered by a regression test;
 - already-applied transactions cannot be overturned by a later reconciliation conflict.
 
-The active public hash is a **reference hardening backend**, not a claim that production UEP ZK circuits will use SHA-256. Production cryptographic migration remains a separate protocol milestone.
+The SHA-256-based backend introduced in v0.3.2 was a reference hardening backend. It has since been replaced by **Poseidon over BN254** (see §12); it is kept in `src/core/hash.ts` only as an inactive reference.
 
 ---
 
@@ -173,7 +174,7 @@ These public testnet releases harden the ledger, the IoT/M2M service layer and M
 - **v0.4.3:** snapshots are signed with **Ed25519** (`node:crypto`, no new dependencies) instead of a shared HMAC secret. `UepLedger.restore(snapshot, trust)` takes only **public keys**; verifiers never need a private key. An optional **k-of-n threshold** (for example 2-of-3) requires `k` valid signatures from distinct listed authorities; the default is 1-of-1 for the local testnet.
 - **v0.4.3:** snapshots form a **hash chain** (`sequence`, `prevSnapshotHash`). Restore can be pinned to a known previous snapshot hash or to a checkpoint (`checkpointOf()`), and `UepLedger.restoreChain()` verifies an ordered series; a reordered, rolled-back or rewritten history is rejected even when it is correctly signed.
 - **v0.4.3:** every faucet mint is signed by a **dedicated faucet (mint) key** that must differ from every snapshot key. Restore rejects unsigned mints, mints signed by any other key (including a snapshot key) and notes that are neither a signed mint nor a transaction output; supply is derived from the signed mints. The snapshot authority therefore cannot invent issuance.
-- v0.4.2 invariants still apply on restore: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags and per-account balances against unspent notes (plus treasury fee income). Snapshot **format version 5** is required since v0.4.5; older snapshots are rejected with `INVALID_SNAPSHOT_VERSION` and testnet state must be re-created (see the migration note below).
+- v0.4.2 invariants still apply on restore: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags and per-account balances against unspent notes (plus treasury fee income). Snapshot **format version 6** is required since the move to the Poseidon protocol hash (format 5 was required from v0.4.5); older snapshots are rejected with `INVALID_SNAPSHOT_VERSION` and testnet state must be re-created (see the migration notes below).
 - Pending reconciliation never settles or applies a queued spend: invalid envelopes are rejected, valid ones stay queued (`LOCAL_VALID`, flagged on conflict) until applied through `submit()`.
 - **v0.4.4:** every spend carries an Ed25519 **sender signature** by the account's spend key (`deriveSpendKey(secret, salt)`). `submit()` requires it even when the development ownership proof is disabled.
 - **v0.4.5:** **key-derived accounts.** The account id commits to the spend public key (`0x02 ‖ SHA-256(tag ‖ key)[0..31]`), and every note owner is such an id. A spend reveals the key and signs the envelope. Any replica checks that the key hashes to the sender and to the input note's owner, without the sender's secret and **without a key registry**: the v0.4.4 trust-on-snapshot spend-key registry is removed. Restore checks that every note owner is a key-derived id and that every committed spend's key matches its sender and input owner.
@@ -199,6 +200,8 @@ accountId  = 0x02 ‖ keyHash   (the ledger's note owner / sender / recipient id
 `encodeAccountAddress`, `decodeAccountAddress` / `parseAccountAddress` (errors `ADDRESS_CHECKSUM`, `ADDRESS_VERSION`, `ADDRESS_NETWORK`, `ADDRESS_HRP`, `ADDRESS_LENGTH`, `ADDRESS_FORMAT`, `ADDRESS_LEGACY_V1`), `ledger.addressOf()`, and `faucet()` / `prepareSpend()` accept addresses.
 
 **Migration note.** v1 addresses (`uep:<network>:<hex>`, accounts derived as `H(secret, salt)`) are **invalid** from v0.4.5 on. The same mnemonic derives a new key-derived account and address. Testnet state, snapshots and vaults created with v0.4.4 or earlier cannot be carried over: re-create the testnet state (faucet the new addresses again). This is a testnet; no value migrates.
+
+**Migration note (Poseidon hash, snapshot format 6).** Note commitments, nullifiers, the state and nullifier roots and transaction ids are now computed with Poseidon over BN254. Snapshots in format 5 or earlier are rejected (`INVALID_SNAPSHOT_VERSION`): re-create the testnet state. Mnemonics, spend keys, account ids and `uep1…` addresses do not change.
 
 **Residual trust model (testnet):** whoever holds the snapshot authority private keys controls what their node signs, and whoever holds the faucet key controls testnet issuance on that node. Signatures, the hash chain and checkpoints make tampering by anyone else detectable and keep the two roles separate; they do not make a key holder honest. This is the trust model of the local testnet, not production consensus.
 
@@ -287,7 +290,7 @@ npm run test:all
 
 `npm run test:all` runs, in order and stopping at the first failure:
 
-1. `npm test`: protocol/testnet (79), Marketplace + IoT/M2M (104, including the 23 IoT and 3 scale tests);
+1. `npm test`: protocol/testnet (83), Marketplace + IoT/M2M (104, including the 23 IoT and 3 scale tests);
 2. `npm run smoke:testnet`: prints `SMOKE OK`;
 3. `npm run quickstart`: the first-transaction example;
 4. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`;
@@ -295,7 +298,7 @@ npm run test:all
 6. `npm run build:uep-zk`: builds the research Groth16 prover `uep-zk` from source into `uep-core/target/`;
 7. `npm run test:lab`: the research labs in `src/lab/`, `src/agent/` and the service/API lab in `src/service/` (see [`docs/LABS.md`](./docs/LABS.md)).
 
-Steps 1–4 need no network access and take about a minute. Steps 5–7 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs the same command on Node.js 22.x and 24.x. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
+Steps 1–4 need no network access and take about a minute. Steps 5–7 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs the same command on Node.js 22.x and 24.x as a blocking job, and runs the lab files with known issues (`scripts/lab-known-issues.json`) in a separate non-blocking job, so the badge reflects the core. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
 
 ### Minimal reproducible verification
 
@@ -399,7 +402,7 @@ Repository layout:
 ├── tsconfig.json
 ├── .gitignore
 ├── .gitattributes
-├── .github/workflows/ci.yml  # CI: npm run test:all (Node 22.x / 24.x)
+├── .github/workflows/ci.yml  # CI: npm run test:all (Node 22.x / 24.x) + non-blocking known-issue labs
 ├── .github/ISSUE_TEMPLATE/   # bug report / feature request forms; security goes to SECURITY.md
 ├── .github/pull_request_template.md
 │
@@ -602,6 +605,8 @@ The internal project contains additional ZK research and implementation work, bu
 - private proving infrastructure;
 - internal ZK worker deployment configuration;
 - confidential audit material.
+
+**Protocol hash.** The testnet core hashes note commitments, nullifiers and the sparse Merkle tree with **Poseidon over BN254** (x^5, t = 3, 8 full + 57 partial rounds, circomlib-compatible constants; `src/core/poseidon.ts`), checked against the `uep-core/vectors` test vectors. It is the same hash the research spend circuit uses, so there is one canonical protocol hash. This changes commitments, nullifiers and roots (snapshot format 6); account ids and addresses are unchanged. Using a circuit-friendly hash is not a production ZK claim.
 
 The research Groth16 spend circuit (UEP-26) and its TypeScript bridge are published as **labs** under `uep-core/` and `src/lab/` (see [`docs/LABS.md`](./docs/LABS.md)). They use development keys generated from fixed seeds on each run, have no trusted setup, and do not provide production soundness. They are not used by the testnet transaction path.
 

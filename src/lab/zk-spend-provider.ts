@@ -113,7 +113,7 @@ export class LocalRustFixtureProvider implements ZkSpendProofProvider {
   }
 
   async verify(proof: ZkSpendProof, expected: SpendPublicInputs): Promise<boolean> {
-    return verifyZkSpendProofAgainstExpected(proof, expected);
+    return verifyZkSpendProofAgainstExpected(proof, expected, LAB_ZK_DOMAIN_ID);
   }
 }
 
@@ -168,44 +168,58 @@ export class PoseidonWalletProvider implements ZkSpendProofProvider {
   }
 
   async verify(proof: ZkSpendProof, expected: SpendPublicInputs): Promise<boolean> {
-    return verifyZkSpendProofAgainstExpected(proof, expected);
+    return verifyZkSpendProofAgainstExpected(proof, expected, LAB_ZK_DOMAIN_ID);
   }
 }
 
+/** Domain number used by the lab prover profile (uep-zk `domain_id` default). */
+export const LAB_ZK_DOMAIN_ID = 1n;
+
 /**
  * Independent SNARK verify with external expected publics.
- * 1) expected hex must equal proof.publicInputsHex
- * 2) Groth16 verify(vk, proof, those publics)
+ * 1) expected hex must equal proof.publicInputsHex[0..11] (economic publics)
+ * 2) proof.publicInputsHex[12] (domain_id) must equal the verifier's expected domain
+ * 3) Groth16 verify(vk, proof, those publics)
  */
 export function verifyZkSpendProofAgainstExpected(
   proof: ZkSpendProof,
   expected: SpendPublicInputs,
+  expectedDomainId: bigint,
 ): boolean {
   if (proof.kind !== "zk-spend") return false;
   if (!proof.proofHex || !proof.vkHex || !proof.publicInputsHex) return false;
   if (proof.publicInputsHex.length !== 13) return false;
+  if (typeof expectedDomainId !== "bigint" || expectedDomainId < 0n) return false;
   const expHex = publicInputsToHex(expected);
   // Indices 0..11 are the economic publics; index 12 is domain_id (UEP-38.34).
-  // NOTE: this legacy path does not compare domain_id against an expected domain.
   if (diffPublicInputHex(expHex, proof.publicInputsHex.slice(0, 12)).length > 0) return false;
+  // Domain binding: a proof made for another domain is rejected.
+  let domain: bigint;
+  try {
+    domain = BigInt("0x" + normalizeFrHex(proof.publicInputsHex[12]!).replace(/^0x/i, ""));
+  } catch {
+    return false;
+  }
+  if (domain !== expectedDomainId) return false;
   return zkVerifyHex(proof.vkHex, proof.proofHex, proof.publicInputsHex.map(normalizeFrHex)).ok;
 }
 
-/** @deprecated use verifyZkSpendProofAgainstExpected with explicit publics */
-export function verifyZkSpendProofIndependent(proof: ZkSpendProof): boolean {
+/** @deprecated use verifyZkSpendProofAgainstExpected with explicit publics and domain */
+export function verifyZkSpendProofIndependent(proof: ZkSpendProof, expectedDomainId: bigint): boolean {
   const rec = reconcileProofPublicInputs(proof);
   if (!rec.proofHex || !rec.vkHex || !rec.publicInputsHex) return false;
-  return zkVerifyHex(rec.vkHex, rec.proofHex, rec.publicInputsHex.map(normalizeFrHex)).ok;
+  return verifyZkSpendProofAgainstExpected(rec, rec.publicInputs, expectedDomainId);
 }
 
 export function verifyProofBindsTransaction(
   proof: ZkSpendProof,
   tx: TxFieldBinding,
+  expectedDomainId: bigint = LAB_ZK_DOMAIN_ID,
 ): boolean {
   const b = assertProofBindsTxFields(proof, tx);
   if (!b.ok) return false;
   const rec = reconcileProofPublicInputs(proof);
-  return verifyZkSpendProofAgainstExpected(proof, rec.publicInputs);
+  return verifyZkSpendProofAgainstExpected(proof, rec.publicInputs, expectedDomainId);
 }
 
 export const defaultZkProvider: ZkSpendProofProvider = new WitnessOnlyProvider();

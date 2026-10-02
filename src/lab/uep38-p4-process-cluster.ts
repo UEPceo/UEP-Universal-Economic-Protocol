@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { generateP4Bootstrap, type P4Bootstrap } from "./uep38-p4-process-node.ts";
 import { SmtEconomicState } from "./uep37-smt-economic-state.ts";
 import { labParty, proveWithoutApply } from "./uep38-zk-state-transition.ts";
+import { findBundledUepZk } from "./uep-zk-runner.ts";
 
 /**
  * Process nodes only apply proofs under a pinned verifying key (UEP_P4_VK_HEX).
@@ -70,15 +71,19 @@ export class P4ProcessCluster {
     this.depth = depth;
     this.dir = join(tmpdir(), `uep-p4-${process.pid}`);
     mkdirSync(this.dir, { recursive: true });
-    const bundled = join(process.cwd(), "uep-core/uep-26-spend-circuit/bin/uep-zk");
-    const runBin = process.env.UEP_ZK_BIN || "/tmp/uep-zk";
+    // Child nodes use the same uep-zk binary as this process (built from source),
+    // copied to a per-run path; never a shared /tmp copy from an older build.
     if (!process.env.UEP_ZK_BIN) {
-      try {
-        copyFileSync(bundled, runBin);
-        chmodSync(runBin, 0o755);
-        process.env.UEP_ZK_BIN = runBin;
-      } catch {
-        /* parent prove path may already have a binary */
+      const built = findBundledUepZk();
+      if (built) {
+        const runBin = join(tmpdir(), `uep-zk-p4-${process.pid}`);
+        try {
+          copyFileSync(built, runBin);
+          chmodSync(runBin, 0o755);
+          process.env.UEP_ZK_BIN = runBin;
+        } catch {
+          process.env.UEP_ZK_BIN = built;
+        }
       }
     }
     ensureDevVkPinned(depth);
@@ -124,7 +129,7 @@ export class P4ProcessCluster {
           UEP_P4_DATA_DIR: join(this.dir, `data-${id}`),
           UEP_P4_CAROL: process.env.UEP_P4_CAROL ?? "",
           UEP_P4_ERIN: process.env.UEP_P4_ERIN ?? "",
-          UEP_ZK_BIN: process.env.UEP_ZK_BIN ?? "/tmp/uep-zk",
+          UEP_ZK_BIN: process.env.UEP_ZK_BIN ?? "",
           UEP_P4_VK_HEX: process.env.UEP_P4_VK_HEX ?? "",
         },
         stdio: ["pipe", "pipe", "pipe"],

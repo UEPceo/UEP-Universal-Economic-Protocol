@@ -77,8 +77,8 @@ describe("UEP-37.2 Poseidon golden (uep-zk)", () => {
     requireZk();
     const r = runUepZk(["circuit-id"]);
     assert.equal(r.status, 0, r.stderr || r.stdout);
-    assert.match(r.stdout, /UEP-27-SPEND-POSEIDON-D32-v2-domain/); // circuit frozen in UEP-38.35 (13 publics, domain_id)
-    assert.match(r.stdout, /constraints=153098/);
+    assert.match(r.stdout, /UEP-27-SPEND-POSEIDON-D32-v3-feefloor/); // v3: 13 publics, domain_id, fee floor
+    assert.match(r.stdout, /constraints=153956/);
   });
 
   it("every note-commit golden matches live uep-zk", () => {
@@ -120,25 +120,18 @@ describe("UEP-37.2 Poseidon golden (uep-zk)", () => {
     }
   });
 
-  it("TS pure noteCommitment is NOT claimed equal to Poseidon (backend honesty)", () => {
-    // UEP-25 placeholder must differ or at least not be advertised as Poseidon
-    assert.equal(isPoseidonBackendActive(), false);
-    assert.equal(leafEncodingMeta().poseidonBitIdentical, false);
+  it("TS core noteCommitment equals the circuit's Poseidon leaf (one canonical hash)", () => {
+    assert.equal(isPoseidonBackendActive(), true);
+    assert.equal(leafEncodingMeta().poseidonBitIdentical, true);
     const g = loadGolden();
-    const c = g.notes[0]!;
-    const tsLeaf = noteCommitment(
-      Fr.from("0x" + c.owner),
-      Fr.from("0x" + c.asset),
-      Fr.from("0x" + c.amount),
-      Fr.from("0x" + c.blinding),
-    ).toHex();
-    // Structural: if someone swaps backend to Poseidon later, this may start matching.
-    // Until then, divergence is expected and documents the gap.
-    if (tsLeaf === c.expectedLeaf) {
-      // Only acceptable if backend was upgraded to Poseidon
-      assert.equal(isPoseidonBackendActive(), true);
-    } else {
-      assert.notEqual(tsLeaf, c.expectedLeaf);
+    for (const c of g.notes) {
+      const tsLeaf = noteCommitment(
+        Fr.from("0x" + c.owner),
+        Fr.from("0x" + c.asset),
+        Fr.from("0x" + c.amount),
+        Fr.from("0x" + c.blinding),
+      ).toHex();
+      assert.equal(tsLeaf, c.expectedLeaf);
     }
   });
 

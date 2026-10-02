@@ -19,7 +19,7 @@ For the layer-by-layer architecture and the current status of each layer, see [`
 | Item | Status |
 |---|---|
 | Current version | `0.4.7-public-iot-m2m` on `main` (latest tag `v0.4.6-public-iot-m2m`) |
-| Tests | protocol 79/79, Marketplace + IoT/M2M 104/104, scale 3/3, IoT 23/23 (`npm run test:all` runs everything) |
+| Tests | protocol 83/83, Marketplace + IoT/M2M 104/104, scale 3/3, IoT 23/23 (`npm run test:all` runs everything) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process, not a throughput claim) |
 | CI | GitHub Actions on Node.js 22.x and 24.x |
 | Network | Local, single-node, in-process testnet |

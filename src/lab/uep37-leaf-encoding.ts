@@ -12,11 +12,9 @@
  *   account index = lowBits(ownerId, DEPTH)   // DEPTH canonical = 32
  *
  * Hash permutation:
- *   - Production / circuit: Poseidon BN254 t=3 α=5 (UepPoseidon / uep-zk)
- *   - TypeScript default: UEP-25 algebraic placeholder (NOT Poseidon)
- *
- * Until TS uses a bit-identical Poseidon backend (or roots are verified via uep-zk),
- * consensus SMT roots in pure-TS are STRUCTURAL, not circuit-equivalent.
+ *   - Circuit: Poseidon BN254 t=3 α=5 (UepPoseidon / uep-zk)
+ *   - TypeScript core: the same Poseidon BN254 (src/core/poseidon.ts, snapshot format 6),
+ *     so pure-TS leaves are bit-identical to the circuit's (checked in uep37.1/uep37.2).
  */
 
 import { Fr } from "../core/field.ts";

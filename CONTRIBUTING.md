@@ -40,7 +40,7 @@ npm run test:lab       # research labs (src/lab, src/agent, service/API lab), se
 
 Lab code is experimental. Changes to protocol rules belong in `src/core` and `src/testnet` first; labs import those modules rather than copying them.
 
-CI runs `npm run test:all` on Node.js 22.x and 24.x.
+CI runs `npm run test:all` on Node.js 22.x and 24.x; this job is blocking. The lab files listed in `scripts/lab-known-issues.json` run in a separate non-blocking job (`npm run test:lab:known`).
 
 ## Good public contributions
 

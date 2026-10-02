@@ -1,17 +1,19 @@
 use crate::{BPS_DENOM, FEE_BPS};
 
-/// Protocol fee policy.
-///
-/// Current integer-unit policy:
-/// fee = floor(amount * 10 / 10_000) = floor(amount / 1_000).
-///
-/// The floor policy is explicit. Amounts below 1,000 units therefore pay zero.
-/// Before a production network, the denomination/dust policy must be frozen.
+/// Minimum protocol fee for any positive amount (same as the public core).
+pub const MIN_PROTOCOL_FEE: u64 = 1;
+
+/// Protocol fee policy, identical to the public core and the UEP-26 circuit:
+/// fee = max(1, floor(amount * 10 / 10_000)) for amount > 0, and 0 for amount = 0.
+/// Small transfers cannot round down to a zero fee.
 pub fn creator_fee(amount: u64) -> u64 {
-    ((amount as u128 * FEE_BPS as u128) / BPS_DENOM as u128) as u64
+    if amount == 0 {
+        return 0;
+    }
+    let proportional = ((amount as u128 * FEE_BPS as u128) / BPS_DENOM as u128) as u64;
+    proportional.max(MIN_PROTOCOL_FEE)
 }
 
 pub fn exact_fee_equation(amount: u64, fee: u64) -> bool {
-    fee as u128 * BPS_DENOM as u128 == amount as u128 * FEE_BPS as u128
-        || fee == creator_fee(amount)
+    fee == creator_fee(amount)
 }

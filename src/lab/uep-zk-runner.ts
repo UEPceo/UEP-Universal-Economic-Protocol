@@ -14,10 +14,11 @@ export function findBundledUepZk(): string | null {
   const candidates = [
     process.env.UEP_ZK_BIN,
     // Built from source by `npm run build:uep-zk` (no prebuilt binary is committed).
+    process.env.CARGO_TARGET_DIR ? join(process.env.CARGO_TARGET_DIR, "release/uep-zk") : undefined,
     join(__dirname, "../../uep-core/target/release/uep-zk"),
     join(__dirname, "../../uep-core/uep-26-spend-circuit/bin/uep-zk"),
     join(process.cwd(), "uep-core/uep-26-spend-circuit/bin/uep-zk"),
-    "/tmp/uep-zk",
+    // No shared /tmp fallback: a stale copy there could be an older circuit.
   ].filter(Boolean) as string[];
   for (const c of candidates) {
     if (existsSync(c)) return c;

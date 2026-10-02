@@ -44,10 +44,12 @@ fn overflow_is_rejected() {
 }
 
 #[test]
-fn fee_policy_is_explicit_for_micro_amounts() {
-    for amount in 0..1000 {
-        assert_eq!(creator_fee(amount), 0);
+fn fee_policy_has_a_one_unit_floor_for_micro_amounts() {
+    assert_eq!(creator_fee(0), 0);
+    for amount in 1..2000 {
+        assert_eq!(creator_fee(amount), 1);
     }
+    assert_eq!(creator_fee(2000), 2);
 }
 
 #[test]

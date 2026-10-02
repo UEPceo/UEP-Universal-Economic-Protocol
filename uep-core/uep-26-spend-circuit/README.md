@@ -6,13 +6,13 @@
 
 | | |
 |---|---|
-| Tag | `UEP-27-SPEND-POSEIDON-D32-v2-domain` |
-| Constraints | 153_098 (D=32, measured 2026-10-01) |
+| Tag | `UEP-27-SPEND-POSEIDON-D32-v3-feefloor` |
+| Constraints | 153_956 (D=32, `uep-zk count-constraints`) |
 | Public inputs | 13 (domain_id is input 13) |
-| circuit_hash | `0x246ac9fafaef8b814f31ed9b86ee731f9cee9a7c14e9b35ca4b13ff7b1237a0a` |
+| circuit_hash (= circuit_metadata_id) | `0x421950477d1a7899a01050404db3ffa86ddd95540df116cb6226969f43f20822` |
 
 ## API
 
 `setup` / `prove` / `verify` / `serialize_*` / `verify_independent`
 
-D=4 measures 45_802. The previous D=32 count, 152_621, is the 12-input circuit and is no longer current.
+D=4 measures 46_660. v3 adds the protocol fee floor: fee = max(1, floor(amount / 1000)) and amount > 0, the same rule as the public core (`src/core/fee.ts`). Earlier counts (153_098 for v2-domain, 152_621 for the 12-input circuit) are no longer current.

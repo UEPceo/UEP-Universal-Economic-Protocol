@@ -99,7 +99,7 @@ export type StateWitnessJson = {
 
 /**
  * Build a structural (TS hash backend) membership witness for a leaf at index.
- * Path uses SparseMerkleTree from smt.ts — NOT Poseidon H_MERKLE until smt-root ships.
+ * Path uses SparseMerkleTree from smt.ts, hashed with the core Poseidon backend.
  */
 export function verifyStructuralWitness(w: StateWitnessJson): boolean {
   if (w.siblings.length !== w.depth || w.indexBits.length !== w.depth) return false;

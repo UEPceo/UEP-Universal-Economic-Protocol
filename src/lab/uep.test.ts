@@ -40,15 +40,14 @@ function dummyTx(partial: Partial<UepTransaction> & { nullifier: Fr; txId?: Fr }
 }
 
 describe("UEP-25 hash vectors (ark-bn254)", () => {
-  // INTEGRATION CONFLICT (C-1: public core uses the SHA-256->BN254 reference hash since v0.3.2; the UEP-25 algebraic placeholder was retired). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("matches native algebraic placeholder", () => {
-    assert.equal(h(Domain.Account, new Fr(1), new Fr(2)).n, 32n);
-    assert.equal(h(Domain.Nullifier, new Fr(1), new Fr(2)).n, 63n);
-    assert.equal(h(Domain.MerkleNode, new Fr(1), new Fr(2)).n, 104n);
-    assert.equal(h(Domain.Leaf, new Fr(1), new Fr(2)).n, 155n);
-    assert.equal(h(Domain.Transaction, new Fr(1), new Fr(2)).n, 216n);
-    assert.equal(h(Domain.Account, new Fr(7), new Fr(11)).n, 497n);
-    assert.equal(h(Domain.Nullifier, new Fr(7), new Fr(9)).n, 501n);
+  // The algebraic UEP-25 placeholder was retired; the protocol hash is Poseidon BN254
+  // (uep-21 vectors PV-003..PV-007).
+  it("matches the Poseidon BN254 domain vectors", () => {
+    assert.equal(h(Domain.Account, new Fr(1), new Fr(2)).toHex(), "2532efcfe78ab9af5e8c8e4ee0b167d6cb0e36610b6f0a63f24355aa3c3913d8");
+    assert.equal(h(Domain.Nullifier, new Fr(1), new Fr(2)).toHex(), "2ad927924b3ad565b8672e32fd2d67d45496bd17d39b2c1e560092a939594f4b");
+    assert.equal(h(Domain.MerkleNode, new Fr(1), new Fr(2)).toHex(), "0581acb2e2c47e75eac65918e47495a3fdc38cd2c8bff2f65419082a5fd4bb83");
+    assert.equal(h(Domain.Leaf, new Fr(1), new Fr(2)).toHex(), "2046fd805613ec436c2ec436be6e3bc4867693510f55193052f06bcac7b229fc");
+    assert.equal(h(Domain.Transaction, new Fr(1), new Fr(2)).toHex(), "1d8e9b7b988bea72be2170e46368fa1e5d8d64ee7a6ec8d34eaf7d650544df91");
   });
 
   it("separates domains", () => {
@@ -64,10 +63,10 @@ describe("UEP-25 hash vectors (ark-bn254)", () => {
 });
 
 describe("fee policy", () => {
-  // INTEGRATION CONFLICT (C-3: public core applies a minimum protocol fee of 1 unit since v0.4.4; the lab and the UEP-26 circuit use floor(amount/1000) with no minimum). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("is floor(amount * 10 / 10000)", () => {
-    for (let a = 0n; a < 1000n; a++) assert.equal(creatorFee(a), 0n);
-    assert.equal(creatorFee(1000n), 1n);
+  it("is max(1, floor(amount * 10 / 10000)) for positive amounts (core and circuit)", () => {
+    assert.equal(creatorFee(0n), 0n);
+    for (let a = 1n; a < 2000n; a++) assert.equal(creatorFee(a), 1n);
+    assert.equal(creatorFee(2000n), 2n);
     assert.equal(creatorFee(100_000n), 100n);
   });
 });
@@ -128,14 +127,10 @@ describe("notes", () => {
 });
 
 describe("addresses", () => {
-  // INTEGRATION CONFLICT (C-4: v1 addresses are rejected since v0.4.5 (key-derived v2 addresses)). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("roundtrip and bind network", () => {
+  // v1 addresses stay retired (public core v0.4.5): encoding throws, decoding returns null.
+  it("v1 addresses are retired", () => {
     const id = hAccount(new Fr(1), new Fr(2));
-    const a = UepAddressV1.encode("uep-testnet-1", id);
-    const d = UepAddressV1.decode(a);
-    assert.ok(d);
-    assert.equal(d!.networkId, "uep-testnet-1");
-    assert.ok(d!.accountId.eq(id));
+    assert.throws(() => UepAddressV1.encode("uep-testnet-1", id), /ADDRESS_LEGACY_V1/);
     assert.equal(UepAddressV1.decode("uep:uep-testnet-1:zzzz"), null);
   });
 });

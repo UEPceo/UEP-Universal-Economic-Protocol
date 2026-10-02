@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { findBundledUepZk } from "./uep-zk-runner.ts";
 import { P4ProcessCluster, waitEvent } from "./uep38-p4-process-cluster.ts";
 import { P4_PROCESS_VERSION } from "./uep38-p4-process-node.ts";
+import { scheduledLeader } from "./uep37-leader-schedule.ts";
 
 describe("UEP-38.10 P4 one OS process per node", () => {
   it("version", () => {
@@ -68,14 +69,14 @@ describe("UEP-38.15 disk lastCommit", () => {
 });
 
 describe("UEP-38.16 multi-height commit log", () => {
-  // INTEGRATION CONFLICT (C-3: this test proves a spend below 1000 units; the public core charges a minimum fee of 1 unit since v0.4.4, but the UEP-26 circuit enforces floor(amount/1000) with no minimum, so the proof cannot be built). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("two spends persist and reload in order", async () => {
+  it("two spends persist and reload in order", async () => {
     const c = new P4ProcessCluster();
     try {
       await c.start(4, 4);
       await c.propose(1000n, 1);
       await c.waitHeight(1, 45000);
-      await c.propose(500n, 2);
+      // Height 2 has a different scheduled leader (round-robin over sorted ids).
+      await c.propose(500n, 2, scheduledLeader(2, c.nodes.map((n) => n.id)));
       await c.waitHeight(2, 45000);
       const live = await c.waitApplied(undefined, 15000);
       const id = c.nodes[0]!.id;

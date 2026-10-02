@@ -118,7 +118,7 @@ describe("UEP-37.3 Poseidon leaves + StateWitness", () => {
     assert.equal(w.leaf, s.getPoseidonLeaf("s0"));
   });
 
-  it("poseidon-zk stateRoot differs from structural mode", () => {
+  it("poseidon-zk stateRoot equals structural mode (one canonical Poseidon hash in core and circuit)", () => {
     const bal = { s0: 100n, r0: 0n };
     const p = SmtEconomicState.genesis(bal, {
       testOnlyDepth: 8,
@@ -130,7 +130,9 @@ describe("UEP-37.3 Poseidon leaves + StateWitness", () => {
       isTestFixture: true,
       leafMode: "structural",
     });
-    assert.notEqual(p.stateRoot(), st.stateRoot());
+    // Before the core moved to Poseidon BN254 the two modes produced different roots.
+    // Now the TS core hash and the circuit's leaf hash are the same function.
+    assert.equal(p.stateRoot(), st.stateRoot());
   });
 
   it("multi-node poseidon-zk leaves converge", () => {

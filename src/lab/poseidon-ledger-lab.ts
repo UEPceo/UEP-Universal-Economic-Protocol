@@ -21,7 +21,7 @@ import {
   assertProofBindsTxFields,
   normalizeFrHex,
 } from "./zk-public-inputs.ts";
-import { verifyZkSpendProofAgainstExpected, type ZkSpendProof } from "./zk-spend-provider.ts";
+import { LAB_ZK_DOMAIN_ID, verifyZkSpendProofAgainstExpected, type ZkSpendProof } from "./zk-spend-provider.ts";
 
 export const LAB_NETWORK_ID = "uep-poseidon-lab-1";
 export const LAB_DOMAIN_ID = "LAB";
@@ -190,5 +190,5 @@ export function labVerify(
   },
 ): boolean {
   if (!assertProofBindsTxFields(proof, economic).ok) return false;
-  return verifyZkSpendProofAgainstExpected(proof, proof.publicInputs);
+  return verifyZkSpendProofAgainstExpected(proof, proof.publicInputs, LAB_ZK_DOMAIN_ID);
 }

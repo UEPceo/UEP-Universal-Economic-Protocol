@@ -2,8 +2,9 @@
  * UEP-37.3 — SMT economic state with optional Poseidon leaves (uep-zk).
  *
  * leafMode:
- * - "structural": TS hash backend leaves (UEP-25) — fast lab
- * - "poseidon-zk": real Poseidon note_commitment via uep-zk for each balance leaf
+ * - "structural": TS core hash leaves (Poseidon BN254 since snapshot format 6) — fast lab
+ * - "poseidon-zk": Poseidon note_commitment via uep-zk for each balance leaf
+ *   (same function as the TS core, so both modes give the same root)
  *
  * stateRoot():
  * - structural → SMT root (TS hMerkle)

@@ -1,17 +1,18 @@
 /**
  * UEP domain-separated hash backends.
  *
- * PUBLIC ALPHA v0.3.2: the active Testnet/Marketplace backend is an ordered
- * SHA-256-to-BN254-field reference hash. It replaces the old UEP-25 algebraic
- * placeholder because that placeholder was commutative and algebraically
- * invertible. This is a public-reference hardening step, not a claim that
- * production UEP ZK circuits will use SHA-256.
+ * Since the research-labs integration the active backend is Poseidon over BN254
+ * (width 3, alpha 5, circomlib-compatible constants), the same hash the UEP-26 spend
+ * circuit and `uep-core/uep-21-poseidon` use. Domain composition (UEP-26 freeze):
+ *   H(d, a, b) = Poseidon(Poseidon(Fr(d), a), b)
  *
- * Production Poseidon parameters remain a separate protocol/circuit milestone.
+ * The previous ordered SHA-256-to-BN254 reference backend (v0.3.2 – v0.4.7) remains
+ * available as `Sha256FieldReferenceHash` for reading old fixtures; it is not active.
  * Poseidon2 is not used.
  */
 import { createHash } from "node:crypto";
 import { Fr } from "./field.ts";
+import { poseidonDomainHash } from "./poseidon.ts";
 
 /** Domain separators (numeric tags). Const object keeps Node strip-types happy. */
 export const Domain = {
@@ -29,8 +30,8 @@ export interface UepHashBackend {
   h(domain: Domain, a: Fr, b: Fr): Fr;
 }
 
-/** Public alpha reference backend. */
-export const Uep25PrototypeHash: UepHashBackend = {
+/** Previous public reference backend (v0.3.2 – v0.4.7): ordered SHA-256 to BN254 field. Not active. */
+export const Sha256FieldReferenceHash: UepHashBackend = {
   name: "uep-public-sha256-field-v1",
   isPoseidon2: false,
   h(domain: Domain, a: Fr, b: Fr): Fr {
@@ -52,6 +53,18 @@ export const Uep25PrototypeHash: UepHashBackend = {
   },
 };
 
+/** @deprecated Old name of the SHA-256 reference backend. */
+export const Uep25PrototypeHash: UepHashBackend = Sha256FieldReferenceHash;
+
+/** Active backend: Poseidon BN254 t=3 alpha=5 with the UEP-26 domain composition. */
+export const PoseidonBn254Hash: UepHashBackend = {
+  name: "uep-poseidon-bn254-x5-3-v1",
+  isPoseidon2: false,
+  h(domain: Domain, a: Fr, b: Fr): Fr {
+    return new Fr(poseidonDomainHash(domain, a.n, b.n));
+  },
+};
+
 /**
  * Poseidon2 is deliberately not implemented here.
  * UEP-21 froze Poseidon (not Poseidon2) BN254 width-3 via arkworks.
@@ -65,13 +78,13 @@ export const Poseidon2Backend: UepHashBackend = {
   h(): Fr {
     throw new Error(
       "UEP-26: Poseidon2 is excluded (not interchangeable with frozen Poseidon BN254 t=3 α=5). " +
-        "The public alpha uses the ordered SHA-256 field backend; production circuit design remains separate. " +
+        "The protocol uses Poseidon BN254 t=3 α=5 (PoseidonBn254Hash). " +
         "Do not invent a Poseidon2 round structure.",
     );
   },
 };
 
-let active: UepHashBackend = Uep25PrototypeHash;
+let active: UepHashBackend = PoseidonBn254Hash;
 
 export function getHashBackend(): UepHashBackend {
   return active;

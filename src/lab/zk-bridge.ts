@@ -6,6 +6,7 @@
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PoseidonSpendRequestJson } from "./poseidon-spend-request.ts";
@@ -35,13 +36,11 @@ function candidateBinaries(): string[] {
   return [
     env,
     // Built from source by `npm run build:uep-zk` (no prebuilt binary is committed).
+    process.env.CARGO_TARGET_DIR ? path.join(process.env.CARGO_TARGET_DIR, "release/uep-zk") : undefined,
     path.join(repoRoot, "uep-core/target/release/uep-zk"),
-    path.join(repoRoot, "uep-core/uep-26-spend-circuit/bin/uep-zk"),
-    path.join("/tmp/uep-target/release/uep-zk"),
     path.join(repoRoot, "uep-core/uep-26-spend-circuit/bin/uep-zk"),
     path.join(repoRoot, "uep-core/uep-26-spend-circuit/target/release/uep-zk"),
     path.join(repoRoot, "uep-core/uep-26-spend-circuit/target/debug/uep-zk"),
-    path.join("/tmp/uep-target/debug/uep-zk"),
     "uep-zk",
   ].filter(Boolean) as string[];
 }
@@ -65,7 +64,7 @@ function isExecutable(c: string): boolean {
 
 /** Copy binary to /tmp and return runnable path. */
 function materializeUepZk(src: string): string | null {
-  const dest = "/tmp/uep-zk";
+  const dest = path.join(os.tmpdir(), `uep-zk-${process.pid}`);
   try {
     fs.copyFileSync(src, dest);
     fs.chmodSync(dest, 0o755);

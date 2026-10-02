@@ -7,7 +7,8 @@
  * several suites start real OS processes and TCP meshes.
  *
  * Files listed in scripts/lab-known-issues.json are skipped by default and
- * reported; run with --include-known to execute them too.
+ * reported; run with --include-known to execute them too, or --only-known to run
+ * just those files (the non-blocking CI job does this).
  *
  * The ZK suites need the `uep-zk` helper. If UEP_ZK_BIN is unset and
  * uep-core/target/release/uep-zk exists, it is used; otherwise run
@@ -19,7 +20,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const includeKnown = process.argv.includes("--include-known");
+const onlyKnown = process.argv.includes("--only-known");
+const includeKnown = onlyKnown || process.argv.includes("--include-known");
 const only = process.argv.filter((a) => !a.startsWith("--")).slice(2);
 const known = JSON.parse(fs.readFileSync(path.join(root, "scripts/lab-known-issues.json"), "utf8"));
 const knownMap = new Map(known.files.map((k) => [k.file, k.reason]));
@@ -47,6 +49,7 @@ function walk(dir) {
 const serviceLab = (f) => !f.endsWith("/iot-m2m.test.ts");
 let files = [...walk("src/lab"), ...walk("src/agent"), ...walk("src/service").filter(serviceLab)].sort();
 if (only.length) files = files.filter((f) => only.some((o) => f.includes(o)));
+if (onlyKnown) files = files.filter((f) => knownMap.has(f));
 
 let passed = 0;
 let failed = 0;

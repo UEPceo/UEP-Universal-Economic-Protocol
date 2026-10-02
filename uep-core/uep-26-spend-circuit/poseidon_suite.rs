@@ -244,7 +244,7 @@ mod tests {
         assert!(cs.is_satisfied().unwrap());
         let n = cs.num_constraints();
         println!("Poseidon D=32 constraints: {}", n);
-        assert_eq!(n, 153_098);
+        assert_eq!(n, crate::circuit_id::CIRCUIT_CONSTRAINTS);
     }
 
     #[test]
@@ -326,7 +326,7 @@ mod tests {
         println!("Poseidon D=32 constraints (post-binding): {}", n);
         // Exact freeze: update if intentionally changed after binding hardening
         // First run may differ from pre-binding 149491 — assert and print.
-        assert_eq!(n, 153_098, "D=32 constraint count regression: expected 153098, got {n}");
+        assert_eq!(n, crate::circuit_id::CIRCUIT_CONSTRAINTS, "D=32 constraint count regression: got {n}");
     }
 
     // ---- UEP-26.10 adversarial hardening ----

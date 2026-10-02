@@ -52,7 +52,7 @@ UEP is not simply a blockchain, a cryptocurrency or a marketplace. The goal is a
 |---|---|---|---|
 | **A. Core protocol** | Implemented (testnet) | `src/core`: transactions and TxIDs, nonces, notes, commitments, nullifiers, state roots, state transition, 0.1% fee with a 1-unit floor, value conservation | Multi-input spends (nullifier vector) |
 | **B. Economic state / ledger** | Implemented (testnet) | `src/testnet/ledger.ts`: 254-bit SMT, note-commitment Merkle tree, Ed25519 k-of-n hash-chained snapshots, signed mints, validated pending queue; per-asset hardening (v0.4.7): canonical asset ids, per-asset issuer keys, per-asset policy limits and fee floors, atomic multi-note payments | True multi-input spends (nullifier vector); open asset registry and unit model (pending design decisions) |
-| **C. Cryptography / ZK** | Partial | SHA-256-to-BN254 reference hash (not Poseidon), Ed25519 via `node:crypto`, SMT, note tree, ZK witness contract (not wired), development spend MAC. Labs: Poseidon BN254 and the UEP-26 Groth16 spend circuit (`uep-core/`, `src/lab/`, experimental, see [`LABS.md`](./LABS.md)) | Production circuits and Poseidon, witness range checks (UEP-A22), production keys and ceremony |
+| **C. Cryptography / ZK** | Partial | Poseidon BN254 protocol hash (`src/core/poseidon.ts`, the same hash as the spend circuit; snapshot format 6), Ed25519 via `node:crypto`, SMT, note tree, ZK witness contract (not wired), development spend MAC. Labs: the UEP-26 Groth16 spend circuit (`uep-core/`, `src/lab/`, experimental, see [`LABS.md`](./LABS.md)) | Production circuits, a 254-level circuit tree and in-circuit key-derived account ids (see [`LABS.md`](./LABS.md)), witness range checks (UEP-A22), production keys and ceremony |
 | **D. Consensus & network** | Future | A `local://` testnet profile only. Labs: local multi-process consensus experiments in `src/lab/` (experimental) | Replication, consensus, P2P |
 | **E. Marketplace** | Implemented (testnet) | `src/marketplace`: listings, funded reservations, HOLD, delivery, disputes with an arbiter, settlement, treasury, paymaster, reputation; balances indexed per asset and identity, optional asset-registry mode and signed credits (v0.4.7) | Marketplace snapshot/restore; service schemas and SLA; a real payment rail |
 | **F. Service plane** | Partial | Signed identities, IoT provider and machine registries, listings as the service registry, `attachCategoryService()` | A decoupled layer with typed registries and identity states; a generic execution interface |
@@ -146,7 +146,7 @@ Known limits: one input note per transaction (UEP-C04). Since v0.4.7 `preparePay
 ```text
 CRYPTOGRAPHIC FOUNDATION
         │
-        ├── Implemented (testnet): SHA-256→BN254 reference hash, Ed25519,
+        ├── Implemented (testnet): Poseidon BN254 protocol hash, Ed25519,
         │                          SMT, note tree, commitments, nullifiers
         │
         ├── Testnet: development spend MAC + mandatory Ed25519 sender signature
@@ -156,7 +156,7 @@ CRYPTOGRAPHIC FOUNDATION
 
 The public release uses deterministic field/hash/commitment primitives and the
 reference development spend-MAC path, plus Ed25519 (`node:crypto`) signatures for
-sender spend keys, snapshots, mints, Marketplace actions and IoT telemetry. The active hash is a SHA-256-to-field reference backend, not Poseidon. The ZK witness contract is not wired into the transaction path and has no range checks yet (UEP-A22). The repository deliberately does not claim a production Groth16/Nova deployment. A development circuit is never treated as production ZK.
+sender spend keys, snapshots, mints, Marketplace actions and IoT telemetry. The active hash is Poseidon over BN254 (x^5, t = 3, circomlib-compatible constants), checked against the `uep-core/vectors` test vectors; the older SHA-256-to-field backend is kept only as an inactive reference. The ZK witness contract is not wired into the transaction path and has no range checks yet (UEP-A22). The repository deliberately does not claim a production Groth16/Nova deployment. A development circuit is never treated as production ZK.
 
 ### D. Consensus & network — Future
 

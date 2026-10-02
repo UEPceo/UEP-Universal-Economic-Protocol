@@ -138,7 +138,8 @@ export function buildReceipt(args: {
 }
 
 /** Minimum amount such that creatorFee(amount) > 0 under floor(amount/1000). */
-export const ECON_01_MIN_MEANINGFUL_AMOUNT = 1000n;
+/** With the 1-unit fee floor every positive amount pays a protocol fee. */
+export const ECON_01_MIN_MEANINGFUL_AMOUNT = 1n;
 
 export function isEconomicallyMeaningfulAmount(amount: bigint): boolean {
   return creatorFee(amount) > 0n;

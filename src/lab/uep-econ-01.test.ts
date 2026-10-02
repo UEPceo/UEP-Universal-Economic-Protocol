@@ -29,13 +29,14 @@ function asView(n: {
 }
 
 describe("UEP-ECON-01 economically meaningful transaction", () => {
-  // INTEGRATION CONFLICT (C-3: minimum protocol fee of 1 unit in the public core vs no minimum in the circuit). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("fee policy: amount 1000 → fee 1; amount 999 → fee 0", () => {
+  it("fee policy: amount 1000 → fee 1; amount 999 → fee 1 (1-unit floor)", () => {
     assert.equal(creatorFee(1000n), 1n);
-    assert.equal(creatorFee(999n), 0n);
+    assert.equal(creatorFee(999n), 1n);
+    assert.equal(creatorFee(0n), 0n);
     assert.equal(isEconomicallyMeaningfulAmount(1000n), true);
-    assert.equal(isEconomicallyMeaningfulAmount(999n), false);
-    assert.equal(ECON_01_MIN_MEANINGFUL_AMOUNT, 1000n);
+    assert.equal(isEconomicallyMeaningfulAmount(999n), true);
+    assert.equal(isEconomicallyMeaningfulAmount(0n), false);
+    assert.equal(ECON_01_MIN_MEANINGFUL_AMOUNT, 1n);
   });
 
   it("local structural: transfer 5000 accrues treasury and conserves supply", () => {
@@ -142,8 +143,7 @@ describe("UEP-ECON-01 economically meaningful transaction", () => {
     assert.notEqual(before.stateRoot, after.stateRoot);
   });
 
-  // INTEGRATION CONFLICT (C-3: minimum protocol fee of 1 unit in the public core vs no minimum in the circuit). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("sub-threshold amount is valid TX but not economicallyMeaningful (fee=0)", () => {
+  it("small amount pays the 1-unit fee floor and is economically meaningful", () => {
     const cluster = new MultiNodeCluster(4, 3803, {
       useSmtState: true,
       smtDepth: 8,
@@ -152,7 +152,7 @@ describe("UEP-ECON-01 economically meaningful transaction", () => {
     const leader = cluster.leaderForNextHeight();
     const before = snapshotEconomic(asView(cluster.node(leader)));
     const amount = 500n;
-    assert.equal(creatorFee(amount), 0n);
+    assert.equal(creatorFee(amount), 1n);
 
     assert.ok(
       cluster.proposeAggregateFrom(leader, [
@@ -170,9 +170,9 @@ describe("UEP-ECON-01 economically meaningful transaction", () => {
       after,
     });
     assert.equal(receipt.conservationHolds, true);
-    assert.equal(receipt.feeNonZero, false);
-    assert.equal(receipt.economicallyMeaningful, false);
-    assert.equal(cluster.node("mn-0").economic.treasuryBalance, 0n);
+    assert.equal(receipt.feeNonZero, true);
+    assert.equal(receipt.economicallyMeaningful, true);
+    assert.equal(cluster.node("mn-0").economic.treasuryBalance, 1n);
   });
 
   it("insufficient funds: no state change, no false receipt", () => {

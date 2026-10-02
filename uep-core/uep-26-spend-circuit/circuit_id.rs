@@ -11,10 +11,10 @@ use sha2::{Digest, Sha256};
 use crate::hash_gadget::{D_TX, ENCODING_VERSION};
 use crate::smt_gadget::SMT_DEPTH;
 
-pub const CIRCUIT_TAG: &str = "UEP-27-SPEND-POSEIDON-D32-v2-domain";
+pub const CIRCUIT_TAG: &str = "UEP-27-SPEND-POSEIDON-D32-v3-feefloor";
 pub const CIRCUIT_DEPTH: usize = SMT_DEPTH;
-/// Pre-domain count. Recount after the domain public input is compiled.
-pub const CIRCUIT_CONSTRAINTS: usize = 153_098;
+/// D=32 constraint count, measured with `uep-zk count-constraints` (v3: domain_id public input + fee floor).
+pub const CIRCUIT_CONSTRAINTS: usize = 153_956;
 pub const NUM_PUBLIC_INPUTS: usize = 13;
 pub const PUBLIC_INPUT_NAMES: [&str; NUM_PUBLIC_INPUTS] = [
     "old_state_root",
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn public_schema_includes_all_names() {
         assert_eq!(PUBLIC_INPUT_NAMES.len(), NUM_PUBLIC_INPUTS);
-        assert_eq!(CIRCUIT_CONSTRAINTS, 153_098);
+        assert_eq!(CIRCUIT_CONSTRAINTS, 153_956);
         let bytes = public_schema_bytes();
         for name in PUBLIC_INPUT_NAMES {
             assert!(bytes.windows(name.len()).any(|w| w == name.as_bytes()));

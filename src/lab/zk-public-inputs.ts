@@ -11,7 +11,7 @@
  *
  * Legacy UEP-25 `computeTxCommitment` (network + notes) remains for MAC path only.
  * ZK path MUST use the circuit publics from the prover: 12 economic publics plus
- * domain_id (index 12) since UEP-38.34 (circuit tag ...-D32-v2-domain).
+ * domain_id (index 12) since UEP-38.34 (circuit tag ...-D32-v2-domain and later).
  */
 
 import { Fr } from "../core/field.ts";

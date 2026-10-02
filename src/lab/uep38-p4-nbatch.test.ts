@@ -24,8 +24,7 @@ describe("UEP-38.22 N disjoint spends in one height", () => {
     assert.equal(P4_PROCESS_VERSION, "38.35");
   });
 
-  // INTEGRATION CONFLICT (C-3: this test proves a spend below 1000 units; the public core charges a minimum fee of 1 unit since v0.4.4, but the UEP-26 circuit enforces floor(amount/1000) with no minimum, so the proof cannot be built). Pending a maintainer decision; see docs/LABS.md.
-  it.skip("three spends proved in parallel, four replicas same root", async () => {
+  it("three spends proved in parallel, four replicas same root", async () => {
     const spends = [
       { who: "alice", amount: 1000n },
       { who: "carol", amount: 700n },

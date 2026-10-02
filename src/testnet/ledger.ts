@@ -83,8 +83,12 @@ function ak(account: Fr, asset: Fr): AccountKey {
  * v5 (0.4.5): key-derived account ids (UEP-ADDR-002). The spend-key registry is
  * removed; every note owner must be a key-derived id and every spend's revealed
  * key must hash to its sender and input-note owner.
+ * v6 (unreleased, research-labs integration): the protocol hash is Poseidon BN254
+ * (UEP-26 domain composition) instead of the SHA-256 field reference hash. Account
+ * ids, note commitments, nullifiers, SMT and note-tree roots all change, so v5 state
+ * cannot be restored.
  */
-export const SNAPSHOT_FORMAT_VERSION = 5;
+export const SNAPSHOT_FORMAT_VERSION = 6;
 /** Default bound of the pending (offline / conflict) queue. */
 export const DEFAULT_MAX_PENDING_TRANSACTIONS = 1024;
 /** Upper limit accepted for `maxPendingTransactions`. */
@@ -1229,7 +1233,7 @@ export class UepLedger {
     const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
     if (!data || typeof data !== "object") fail("SHAPE");
     if (data.formatVersion !== SNAPSHOT_FORMAT_VERSION) {
-      fail("VERSION", `snapshot formatVersion ${String((data as { formatVersion?: unknown }).formatVersion ?? 1)} is no longer supported; v0.4.5 requires formatVersion ${SNAPSHOT_FORMAT_VERSION} (key-derived accounts, UEP-ADDR-002). Older testnet state uses invalid account ids; re-create it with v0.4.5.`);
+      fail("VERSION", `snapshot formatVersion ${String((data as { formatVersion?: unknown }).formatVersion ?? 1)} is no longer supported; this release requires formatVersion ${SNAPSHOT_FORMAT_VERSION} (Poseidon BN254 protocol hash). Older testnet state uses other account ids, commitments and roots; re-create it.`);
     }
     if (data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.nullifiers.seen) || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || !Array.isArray(data.mints) || !data.policy || !Array.isArray(data.signatures)) fail("SHAPE");
     if ((data as { spendKeys?: unknown }).spendKeys !== undefined) fail("SPEND_KEY", "v0.4.5 snapshots carry no spend-key registry; ownership is bound by key-derived account ids");

@@ -7,14 +7,15 @@ This repository contains two kinds of code:
 | **Public reference testnet** | `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/service/iot-m2m*`, `src/network` | Hardened testnet code (see `CHANGELOG.md`). This is the source of truth for protocol rules. |
 | **Research labs** | `src/lab`, `src/agent`, the service/API lab in `src/service`, `uep-core/` (Rust) | Experimental. Local, in-process or local multi-process only. **Not** a network, **not** production, no security claim. |
 
-The labs are published so that the whole project can be built and tested in one
-place. They do not change the public protocol rules: where a lab depends on a
+These components were internal lab experiments during the project's early stage.
+They are now public, as **experimental** code, so that the whole project can be
+built and tested in one place. They do not change the public protocol rules: where a lab depends on a
 protocol primitive (fees, hashes, SMT, notes, addresses), it imports the public
 hardened implementation from `src/core`.
 
 No native token is introduced. The protocol fee stays at 0.1% and the
-Marketplace fee at 3%. The liquidity-pool lab (`src/lab/liquidity.ts`) has a 0.3%
-swap-fee parameter inside its simulation. It is not a protocol fee and nothing in
+Marketplace fee at 3%. The liquidity-pool lab (`src/lab/liquidity.ts`) has its own
+swap fee inside its simulation (see "Liquidity-pool lab fee" below). Nothing in
 the testnet charges it. All keys used by the labs are generated locally at run time
 or are trivial fixed test vectors (for example `secret = 1`, `salt = 2`); none has
 any value. The Groth16 keys produced by `uep-zk` are development keys: there is no
@@ -47,28 +48,61 @@ npm run test:rust     # cargo test for uep-21, uep-25, uep-26 (needs Rust and cr
 npm run build:uep-zk  # builds uep-core/target/release/uep-zk from source
 npm run test:lab      # lab suites (needs the uep-zk binary)
 npm run test:lab -- uep36   # only files whose path contains "uep36"
+npm run test:lab:known      # only the files with known issues (non-blocking in CI)
 ```
 
 No prebuilt binary is committed. `uep-zk` is always built from source. Lab benchmarks write their reports to `artifacts/`, which is git-ignored.
 
-## Known differences between the labs and the public core
+## Liquidity-pool lab fee
 
-These are open design points. Until they are decided, the public core is
-authoritative and the affected lab checks are skipped with a note in the test.
+Simulation only. The constant-product pool lab charges a **0.3% total swap fee**
+on the input, split in two configurable parts (`feePpm`, `protocolFeePpm`, in
+parts per million):
 
-1. **Hash.** The public core uses an ordered SHA-256→BN254 reference hash. The ZK
-   circuit and the Poseidon labs use Poseidon BN254. A coordinated migration is
-   pending.
-2. **State tree layout.** The public ledger keys its SMT with the full 254-bit
-   field value. The UEP-26 circuit and the consensus SMT labs use their own fixed
-   tree depth. Aligning them is pending.
-3. **Fee for small amounts.** The public core charges a minimum protocol fee of
-   one unit (0.1% with a 1-unit floor). The circuit computes `floor(amount/1000)`
-   with no minimum. Lab tests that prove a spend below 1,000 units therefore
-   cannot build a proof and are skipped.
-4. **Account ids.** Public accounts are key-derived (v0.4.5). The circuit proves
-   the older `H_ACCOUNT(secret, salt)` binding.
-5. **Address v1.** Retired in the public core; labs use v2.
+| Part | Default | Where it goes |
+|---|---|---|
+| Protocol share | 0.1% (`protocolFeePpm = 1000`) | Leaves the pool and is accounted per asset in `protocolFeesA/B` (the protocol treasury in the simulation) |
+| Liquidity-provider share | 0.2% (`feePpm - protocolFeePpm = 2000`) | Stays in the reserves, so the pool invariant `k` grows for the liquidity providers |
+
+Why: 0.3% is the usual constant-product fee level, high enough to pay liquidity
+providers for price risk and low enough not to push volume away. The protocol
+share uses the same 0.1% rate as the protocol fee, so a swap never charges the
+protocol more than a normal transfer does, and two thirds of the fee stays with
+the people who provide the liquidity. The parameters are validated
+(`0 <= protocolFeePpm <= feePpm < 1_000_000`); the output is rounded down, in
+favour of the pool. There is no native token, and this fee is not part of the
+public testnet rules.
+
+## Differences between the labs and the public core
+
+Status of the design points found when the labs were published. Where something
+is still open, the public core is authoritative and the affected lab checks are
+skipped with a note in the test.
+
+1. **Hash: resolved.** There is one canonical protocol hash: Poseidon over BN254
+   (x^5, t = 3, 8 full + 57 partial rounds, circomlib-compatible constants), in
+   `src/core/poseidon.ts`. The core's note commitments, nullifiers and SMT hashing
+   use it, and so do the ZK circuit and the labs. It is checked against the
+   `uep-core/vectors` (uep-21) test vectors. The older ordered SHA-256→BN254 hash
+   is kept only as an inactive reference (`Sha256FieldReferenceHash`). Snapshot
+   format 6 marks the change (see `CHANGELOG.md`).
+2. **State tree layout: open.** The public ledger keys its SMT with the full
+   254-bit field value. The UEP-26 circuit and the consensus SMT labs keep a
+   32-level tree keyed by the low bits of the key and reject key collisions. A
+   254-level circuit costs about 1.0M constraints (6–7× the current 154k), which
+   makes proving in the lab suite impractical; it stays a lab limitation.
+3. **Fee for small amounts: resolved.** Core and circuit (v3,
+   `UEP-27-SPEND-POSEIDON-D32-v3-feefloor`) both use `fee = max(1, floor(amount/1000))`,
+   and the circuit rejects `amount = 0`. The UEP-25 reference state machine uses
+   the same rule.
+4. **Account ids: open.** Public accounts are key-derived (SHA-256 of the Ed25519
+   spend key, v0.4.5). The circuit still proves the older Poseidon
+   `H_ACCOUNT(secret, salt)` binding, because proving key ownership in the circuit
+   needs a circuit-friendly signature (for example EdDSA over BabyJubJub). The two
+   tests that need the shared derivation stay skipped.
+5. **Address v1: resolved.** Retired in the public core and in the labs; labs use v2.
+6. **Domain binding: resolved.** The ZK verification helpers require the expected
+   `domain_id` and reject a proof for another domain (public input 12).
 
 ## Lab test status
 
@@ -76,4 +110,13 @@ Some lab suites have known failures that come from the labs themselves (for
 example, later lab milestones changed rules that older lab tests still assume).
 They are listed in [`scripts/lab-known-issues.json`](../scripts/lab-known-issues.json)
 with a reason, skipped by `npm run test:lab`, and can be run with
-`node scripts/test-lab.mjs --include-known`.
+`npm run test:lab:known` (only those files) or
+`node scripts/test-lab.mjs --include-known` (everything). In CI they run in a
+separate non-blocking job, so the CI badge reflects the core.
+
+Individual lab tests that are still skipped, each with a note in the test:
+
+- two `zk-witness-contract` tests that need one account-id derivation in the core
+  and the circuit (point 4 above);
+- two tests that pin the SHA-256 of a prebuilt `uep-zk` binary; the binary is
+  built from source and its hash depends on the toolchain and platform.

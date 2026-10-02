@@ -78,7 +78,7 @@ describe("zk witness contract 28.4", () => {
     assert.equal(SPEND_PUBLIC_INPUT_NAMES.length, 12);
   });
 
-  // INTEGRATION CONFLICT (C-4: public core derives account ids from the Ed25519 spend key since v0.4.5; the UEP-26 circuit proves H_ACCOUNT(secret, salt)). Pending a maintainer decision; see docs/LABS.md.
+  // INTEGRATION CONFLICT (C-4: public core derives account ids from the Ed25519 spend key since v0.4.5; the UEP-26 circuit proves H_ACCOUNT(secret, salt)). Account-id unification needs a circuit-friendly spend signature; see docs/LABS.md (known difference: account ids).
   it.skip("builds with unified noteBlinding and passes crypto+tree checks", () => {
     const inst = makeInstance();
     assert.equal(inst.witness.contractVersion, ZK_WITNESS_CONTRACT_VERSION);
@@ -117,7 +117,7 @@ describe("zk witness contract 28.4", () => {
     assert.equal(validateZkSpendInstance(badIdx, { checkCrypto: true }).ok, false);
   });
 
-  // INTEGRATION CONFLICT (C-4: public core derives account ids from the Ed25519 spend key since v0.4.5; the UEP-26 circuit proves H_ACCOUNT(secret, salt)). Pending a maintainer decision; see docs/LABS.md.
+  // INTEGRATION CONFLICT (C-4: public core derives account ids from the Ed25519 spend key since v0.4.5; the UEP-26 circuit proves H_ACCOUNT(secret, salt)). Account-id unification needs a circuit-friendly spend signature; see docs/LABS.md (known difference: account ids).
   it.skip("WitnessOnlyProvider proves after validation", async () => {
     const inst = makeInstance();
     const provider = new WitnessOnlyProvider();

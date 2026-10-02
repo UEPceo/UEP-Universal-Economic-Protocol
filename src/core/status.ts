@@ -19,7 +19,7 @@ export const PROTOCOL = {
   coreName: "UEP-25 prototype",
   coreMilestone: "UEP-25",
   requestedCore: "uep-crypto-core-v0.4 (archive not present)",
-  hashBackend: "UEP public SHA-256-to-BN254-field reference backend (NOT Poseidon, NOT Poseidon2)",
+  hashBackend: "Poseidon BN254 t=3 alpha=5, UEP-26 domain composition (NOT Poseidon2)",
   hashStatus: "IMPLEMENTED" as ImplementationStatus,
   poseidon2Status: "CONCEPTUAL" as ImplementationStatus,
   groth16Status: "TESTED" as ImplementationStatus, // Rust core; wallet provider still NOT WIRED
@@ -35,4 +35,4 @@ export const PROTOCOL = {
 } as const;
 
 export const HASH_DISCLAIMER =
-  "This public alpha uses an ordered SHA-256-to-BN254-field reference hash. It is not the production Poseidon backend and is not Poseidon2. Production circuit migration remains a separate coordinated protocol milestone.";
+  "The protocol hash is Poseidon over BN254 (t=3, alpha=5, circomlib-compatible constants) with the UEP-26 domain composition, the same hash as the research spend circuit. It is not Poseidon2. Testnet only: no production proving keys or ceremony.";

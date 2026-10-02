@@ -1,13 +1,36 @@
 # Changelog
 
-## Unreleased — research labs integration
+## Unreleased — research labs integration and Poseidon protocol hash
 
-Publishes the project's research labs next to the testnet so that everything builds and tests with one command. The testnet, Marketplace and IoT/M2M code and their rules are unchanged; no native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged. See [`docs/LABS.md`](./docs/LABS.md).
+Publishes the project's research labs next to the testnet so that everything builds and tests with one command, and moves the testnet core to the same Poseidon hash as the research spend circuit. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged. See [`docs/LABS.md`](./docs/LABS.md).
 
-- Add `src/lab/` (execution engine, node protocol and transport, local consensus experiments, economic labs, address and payment-request labs, network adaptation simulation, ZK bridge), `src/agent/`, a service/API lab in `src/service/`, and the Rust crates and design notes in `uep-core/`. All are experimental. Lab benchmark output goes to `artifacts/`, which is git-ignored.
-- Labs import the hardened primitives from `src/core` instead of carrying their own copies. Where a lab design differs from the core (hash, tree layout, small-amount fee, account ids, v1 addresses), the core wins and the affected lab checks are skipped with a note. The open points are listed in `docs/LABS.md`.
-- `uep-zk` is built from source (`npm run build:uep-zk`); no prebuilt binary is committed.
-- `npm run test:all` now also runs `test:rust`, `build:uep-zk` and `test:lab`. CI installs Rust 1.85.1 and caches the cargo build.
+### Research labs
+
+- Add `src/lab/` (execution engine, node protocol and transport, local consensus experiments, economic labs, address and payment-request labs, network adaptation simulation, ZK bridge), `src/agent/`, a service/API lab in `src/service/`, and the Rust crates and design notes in `uep-core/`. These were internal lab experiments during the project's early stage; they are now public as experimental code. Lab benchmark output goes to `artifacts/`, which is git-ignored.
+- Labs import the hardened primitives from `src/core` instead of carrying their own copies. The differences found between the labs and the core are resolved toward the safer design (hash, small-amount fee, v1 addresses, domain binding) or documented as open (circuit tree depth, in-circuit account ids); see `docs/LABS.md`.
+- `uep-zk` is built from source (`npm run build:uep-zk`); no prebuilt binary is committed. Lab code no longer falls back to a shared `/tmp/uep-zk` copy.
+- Liquidity-pool lab (simulation only): the 0.3% swap fee is split into a 0.1% protocol share, accounted per asset for the treasury, and a 0.2% liquidity-provider share that stays in the pool. Both are configurable (`feePpm`, `protocolFeePpm`) and validated.
+
+### Protocol hash (testnet core)
+
+- Note commitments, nullifiers, the sparse Merkle tree, the note tree and transaction commitments use **Poseidon over BN254** (x^5, t = 3, 8 full + 57 partial rounds, circomlib-compatible constants; `src/core/poseidon.ts`, backend `uep-poseidon-bn254-x5-3-v1`). It is checked against the uep-21 vectors in `uep-core/vectors` and matches the spend circuit's leaves. Non-canonical field inputs are rejected (`POSEIDON_INPUT_NOT_CANONICAL`). The previous SHA-256-to-field backend stays in `src/core/hash.ts` as an inactive reference (`Sha256FieldReferenceHash`).
+- **Snapshot format version 6.** Formats 3–5 are rejected with `INVALID_SNAPSHOT_VERSION`.
+
+### Research spend circuit (UEP-26)
+
+- Circuit v3 (`UEP-27-SPEND-POSEIDON-D32-v3-feefloor`, 153_956 constraints at D=32): the fee must be `max(1, floor(amount / 1000))`, the same rule as the core, and `amount = 0` is rejected. The UEP-25 reference state machine uses the same rule.
+- The TypeScript verification helpers require the expected `domain_id` and reject a proof for another domain.
+
+### Compatibility
+
+- **Behaviour change:** testnet state, snapshots (format 5 or earlier) and stored commitments, nullifiers, roots or transaction ids from earlier versions are not valid any more; re-create the testnet state. Mnemonics, spend keys, account ids and `uep1…` addresses are unchanged.
+- **Behaviour change (labs):** proofs from the v2 circuit do not verify against v3 keys; `verifyZkSpendProofAgainstExpected()` takes an `expectedDomainId` argument.
+- `npm run test:protocol` has 83 tests (4 new Poseidon vector tests) and takes about a minute, since Poseidon in TypeScript is slower than SHA-256.
+
+### CI
+
+- `npm run test:all` now also runs `test:rust`, `build:uep-zk` and `test:lab`; it is the blocking CI job on Node.js 22.x and 24.x with Rust 1.85.1 and a cargo cache.
+- The lab files with known issues (`scripts/lab-known-issues.json`, mostly multi-process timing) run in a separate non-blocking job, so the CI badge reflects the core.
 
 ## 0.4.7-public-iot-m2m — 2026-10-02
 

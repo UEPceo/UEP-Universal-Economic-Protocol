@@ -106,7 +106,7 @@ describe("UEP-28.7 public input binding", () => {
     };
     const other = { ...pub, amount: Fr.from(2n) };
     // Will fail hex mismatch before SNARK
-    assert.equal(verifyZkSpendProofAgainstExpected(proof, other), false);
+    assert.equal(verifyZkSpendProofAgainstExpected(proof, other, 1n), false);
   });
 
   it("prove-spend-json publics bind to request economics (needs uep-zk)", () => {
@@ -143,9 +143,26 @@ describe("UEP-28.7 public input binding", () => {
     assert.equal(fromHex.recipientId.n, 33n);
     assert.equal(fromHex.assetId.n, 1n);
     assert.equal(fromHex.treasuryId.n, 44n);
-    // sender_id is H_ACCOUNT(secret,salt) in Poseidon — may differ from TS hAccount (UEP-25)
-    // So we only assert economic fields that are plain integers in the request.
+    // One canonical hash: the TS core H_ACCOUNT equals the circuit's Poseidon H_ACCOUNT.
+    assert.equal(fromHex.senderId.n, senderId.n);
     assert.equal(zkVerifyHex(art.vkHex!, art.proofHex!, art.publicInputsHex).ok, true);
+
+    // Domain binding: the verifier rejects a valid proof made for another domain.
+    const proof: ZkSpendProof = {
+      kind: "zk-spend",
+      protocolVersion: "t",
+      circuitTag: "t",
+      publicInputs: fromHex,
+      publicInputsHex: art.publicInputsHex.map(normalizeFrHex),
+      vkHex: art.vkHex!,
+      proofHex: art.proofHex!,
+      backend: "test",
+    };
+    assert.equal(verifyZkSpendProofAgainstExpected(proof, fromHex, 1n), true);
+    assert.equal(verifyZkSpendProofAgainstExpected(proof, fromHex, 2n), false);
+    const otherDomain = [...art.publicInputsHex];
+    otherDomain[12] = normalizeFrHex("02");
+    assert.equal(zkVerifyHex(art.vkHex!, art.proofHex!, otherDomain).ok, false);
 
     // Foreign amount must fail SNARK
     const bad = [...art.publicInputsHex];

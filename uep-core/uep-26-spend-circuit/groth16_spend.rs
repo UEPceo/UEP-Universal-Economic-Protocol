@@ -289,9 +289,9 @@ mod tests {
     #[test]
     fn circuit_identity_constants() {
         assert_eq!(CIRCUIT_DEPTH, 32);
-        assert_eq!(CIRCUIT_CONSTRAINTS, 153_098);
+        assert_eq!(CIRCUIT_CONSTRAINTS, 153_956);
         assert_eq!(NUM_PUBLIC_INPUTS, 13);
-        assert_eq!(CIRCUIT_CONSTRAINTS, 153_098);
+        assert_eq!(CIRCUIT_CONSTRAINTS, 153_956);
         let _ = circuit_metadata_id();
     }
 }

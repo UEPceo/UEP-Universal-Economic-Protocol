@@ -35,11 +35,11 @@ describe("UEP-37.1 leaf encoding + SMT semantics", () => {
     assert.equal(CANONICAL_SMT_DEPTH, 32);
   });
 
-  it("meta declares hash backend is NOT Poseidon bit-identical by default", () => {
+  it("meta declares the core hash backend is Poseidon BN254 (bit-identical with the circuit)", () => {
     const m = leafEncodingMeta();
-    assert.equal(m.poseidonBitIdentical, false);
-    assert.equal(activeHashBackendKind(), "public-sha256-field"); // public core backend since v0.3.2
-    assert.equal(isPoseidonBackendActive(), false);
+    assert.equal(m.poseidonBitIdentical, true);
+    assert.equal(activeHashBackendKind(), "poseidon-bn254");
+    assert.equal(isPoseidonBackendActive(), true);
   });
 
   it("note_commitment matches nested H_LEAF formula", () => {
@@ -141,7 +141,7 @@ describe("UEP-37.1 leaf encoding + SMT semantics", () => {
     assert.ok(cluster.node("mn-0").economic instanceof SmtEconomicState);
     const eco = cluster.node("mn-0").economic as SmtEconomicState;
     assert.equal(eco.depth, 32);
-    assert.equal(eco.meta().poseidonBitIdentical, false);
+    assert.equal(eco.meta().poseidonBitIdentical, true);
 
     const prop = cluster.proposeAggregateFrom("mn-0", [
       { txs: [{ id: "n1", from: "s0", to: "r0", amount: 2n }] },

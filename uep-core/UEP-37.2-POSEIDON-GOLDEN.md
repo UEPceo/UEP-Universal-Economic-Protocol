@@ -1,4 +1,4 @@
-> Histórico. Describe el circuito de 12 entradas y 152_621 restricciones. El circuito actual, con domain_id, mide 153_098 en D=32 y 45_802 en D=4. Ver UEP-38.34-CONSTRAINTS.md.
+> Histórico. Describe el circuito de 12 entradas y 152_621 restricciones. El circuito actual (v3, con domain_id y suelo de comisión) mide 153_956 en D=32 y 46_660 en D=4. Ver uep-26-spend-circuit/README.md.
 
 # UEP-37.2 — Poseidon Golden Freeze (TS ↔ uep-zk)
 

@@ -15,7 +15,7 @@ This document defines what may be published in the public repository and what re
 - Reproducibility scripts and examples.
 - Public-facing architecture, roadmap and threat-model documentation (`docs/ARCHITECTURE.md`, `ROADMAP.md`, `docs/THREAT-MODEL.md`).
 - Per-release changelog and public security remediation notes for findings that have been fixed and disclosed.
-- Research labs (`src/lab/`, `src/agent/`, the service/API lab in `src/service/`, `uep-core/`), after review for publication and clearly marked as experimental. They are not part of the testnet reference path. See `docs/LABS.md`.
+- Research labs (`src/lab/`, `src/agent/`, the service/API lab in `src/service/`, `uep-core/`). These were internal lab experiments during the project's early stage; they are now public as experimental code, after review for publication. They are not part of the testnet reference path. See `docs/LABS.md`.
 
 ## Excluded
 

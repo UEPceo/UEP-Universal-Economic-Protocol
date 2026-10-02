@@ -1,6 +1,19 @@
-# Public API reference: changed signatures (v0.4.3 – v0.4.7)
+# Public API reference: changed signatures (v0.4.3 – v0.4.7 and unreleased)
 
 This page lists the public signatures that changed in `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# Unreleased: Poseidon protocol hash
+
+## Hash: `src/core/poseidon.ts` (new), `src/core/hash.ts`
+
+- `poseidon2(a, b)`: Poseidon over BN254 (x^5, t = 3, state `[0, a, b]`, 8 full + 57 partial rounds, circomlib-compatible constants). Inputs must be canonical field elements (`POSEIDON_INPUT_NOT_CANONICAL`).
+- `poseidonDomainHash(domain, a, b) = poseidon2(poseidon2(domain, a), b)`.
+- The active backend is `PoseidonBn254Hash` (`uep-poseidon-bn254-x5-3-v1`). `Sha256FieldReferenceHash` is the previous backend, kept inactive; `Uep25PrototypeHash` is a deprecated alias of it.
+- Note commitments, nullifiers, SMT and note-tree nodes, transaction commitments and transaction ids change value. Account ids and addresses do not change.
+
+## Snapshots (format version 6)
+
+`SNAPSHOT_FORMAT_VERSION = 6`. Fields and restore checks are those of format 5; the values of commitments, nullifiers and roots are Poseidon-based. Formats 3–5 are rejected (`INVALID_SNAPSHOT_VERSION`).
 
 # v0.4.7
 
