@@ -26,7 +26,7 @@ Passing the public tests does not establish production security. The public test
 
 For vulnerabilities that could materially affect users or future deployments, please avoid immediately publishing exploit details.
 
-**Do not report vulnerabilities in public issues, discussions or pull requests.** Report them privately by email to **uep.dev@proton.me**, or through GitHub's private vulnerability reporting / Security Advisory mechanism if it is enabled for the repository. If you only need a private channel first, email a short note without exploit details and we will reply.
+**Do not report vulnerabilities in public issues, discussions or pull requests.** Report them privately through GitHub's [private vulnerability reporting](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/security/advisories/new) (Security tab → "Report a vulnerability") or by email to **uep.dev@proton.me**. If you only need a private channel first, email a short note without exploit details and we will reply.
 
 ## Never publish
 

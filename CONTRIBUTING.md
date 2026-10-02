@@ -17,7 +17,7 @@ Please read:
 - **Questions and ideas:** use [GitHub Discussions](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/discussions) (Q&A, Ideas, Show and tell).
 - **First contributions:** look for issues labelled [`good first issue`](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/labels/good%20first%20issue) or [`help wanted`](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/labels/help%20wanted). Area labels (`area:ledger`, `area:marketplace`, `area:iot`, `area:docs`) show which part of the code an issue touches.
 - **Bugs and feature requests:** open an issue with the [bug report](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/issues/new?template=bug_report.yml) or [feature request](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/issues/new?template=feature_request.yml) form.
-- **Security vulnerabilities:** never in a public issue, discussion or pull request. Follow [`SECURITY.md`](./SECURITY.md) and report privately to uep.dev@proton.me.
+- **Security vulnerabilities:** never in a public issue, discussion or pull request. Follow [`SECURITY.md`](./SECURITY.md) and report privately via [GitHub private vulnerability reporting](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/security/advisories/new) or to uep.dev@proton.me.
 
 ## Local setup
 
