@@ -15,7 +15,6 @@ Security release following external review UEP-RR-2026-10-02-001.
 - Added adversarial regression tests for forged identities, proof bypass, policy bypass, value inflation, domain replay, snapshot/restore, hash ordering and unauthorized Marketplace actions.
 - IoT/M2M is intentionally **not included** in this public release; it remains in the laboratory/master branch pending its separate audit.
 
-
 ## 0.3.1-public-preview — October 2026
 
 - Added `npm run example` as the canonical public quickstart command.

@@ -138,6 +138,8 @@ This release follows external review `UEP-RR-2026-10-02-001`. The previous publi
 
 The active public hash is a **reference hardening backend**, not a claim that production UEP ZK circuits will use SHA-256. Production cryptographic migration remains a separate protocol milestone.
 
+---
+
 ## 5. Important status: what this repository is NOT
 
 This repository is **not** a production financial network.
@@ -240,7 +242,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 
 ---
 
-## 6. Public repository architecture
+## 7. Public repository architecture
 
 ```text
 .
@@ -252,9 +254,11 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── PUBLIC-SCOPE.md
 ├── CHANGELOG.md
 ├── package.json
+├── package-lock.json
 ├── tsconfig.json
 ├── .gitignore
 ├── .gitattributes
+├── .github/workflows/ci.yml  # CI: npm test + smoke test (Node 22.x / 24.x)
 │
 ├── src/
 │   ├── core/                 # Minimal public economic/cryptographic primitives
@@ -271,7 +275,10 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 │   │   ├── address.ts
 │   │   ├── assets.ts
 │   │   ├── security-policy.ts
-│   │   └── spend-proof.ts
+│   │   ├── spend-proof.ts
+│   │   ├── status.ts
+│   │   ├── zk-witness-contract.ts
+│   │   └── index.ts
 │   │
 │   ├── identity/             # Deterministic test identities
 │   ├── network/              # Public TESTNET profile only
@@ -296,7 +303,7 @@ The structure is intentionally much smaller than the internal development worksp
 
 ---
 
-## 7. Transaction model
+## 8. Transaction model
 
 At the public reference layer, a testnet spend conceptually follows:
 
@@ -345,7 +352,7 @@ This is a **reference local execution model**, not a claim of globally finalized
 
 ---
 
-## 8. Marketplace lifecycle
+## 9. Marketplace lifecycle
 
 The Marketplace business layer is intentionally understandable independently of consensus:
 
@@ -380,7 +387,7 @@ The design deliberately charges the Marketplace fee only at successful settlemen
 
 ---
 
-## 9. Security philosophy
+## 10. Security philosophy
 
 The public project follows a simple rule:
 
@@ -404,7 +411,7 @@ Known limitations are documented rather than hidden.
 
 ---
 
-## 10. ZK status
+## 11. ZK status
 
 This public release must not be interpreted as a production ZK network.
 
@@ -423,7 +430,7 @@ If a future public release reaches a production-cryptographic milestone, it shou
 
 ---
 
-## 11. Multi-node and interplanetary status
+## 12. Multi-node and interplanetary status
 
 The internal UEP project investigates multi-node consensus, delayed networking, DTN-style transport and interplanetary reconciliation.
 
@@ -440,7 +447,7 @@ In particular:
 
 ---
 
-## 12. What has deliberately been removed from the public release
+## 13. What has deliberately been removed from the public release
 
 The public repository does **not** contain the internal master workspace, including material such as:
 
@@ -461,7 +468,7 @@ See [`PUBLIC-SCOPE.md`](./PUBLIC-SCOPE.md) for the explicit publication boundary
 
 ---
 
-## 13. How to contribute
+## 14. How to contribute
 
 Security findings, reproducibility problems, implementation bugs and protocol questions are welcome.
 
@@ -474,7 +481,7 @@ Do not publish private keys, credentials, personal data, customer information or
 
 ---
 
-## 14. Research transparency
+## 15. Research transparency
 
 UEP is deliberately developed using an adversarial engineering process:
 
@@ -486,7 +493,7 @@ A public release therefore documents limitations even when doing so makes the pr
 
 ---
 
-## 15. Roadmap boundary for this repository
+## 16. Roadmap boundary for this repository
 
 This repository is a foundation for public experimentation, not the entire UEP roadmap.
 
@@ -506,13 +513,15 @@ A future feature should not be considered part of the public protocol merely bec
 
 ---
 
-## 15.5. Test wallet seeds and BIP-39
+## 17. Test wallet seeds and BIP-39
 
 All BIP-39 recovery phrases used by the public examples and tests are generated at runtime with the platform cryptographic random generator. No fixed mnemonic, private key, seed phrase or personal wallet credential is embedded in this repository. Test identities are disposable testnet identities and must never be funded with real-world value.
 
 This repository audit found no hard-coded BIP-39 mnemonic or personal wallet seed. Historical use outside the repository cannot be established from source code alone; the project therefore makes no claim about any seed that may have existed in an earlier private environment.
 
-## 16. License and acceptable use
+---
+
+## 18. License and acceptable use
 
 This repository is released under the **Apache License 2.0 (Apache-2.0)**. It is a permissive open-source license that permits use, modification, distribution and commercial use subject to its terms. The repository remains a testnet/reference implementation: publication under Apache-2.0 does not imply that UEP is production-ready, that testnet assets have real-world value, or that any separate UEP trademark, service, production credential or unpublished project material is licensed.
 
@@ -520,7 +529,7 @@ Read the complete terms in [`LICENSE`](./LICENSE) before using the code.
 
 ---
 
-## 17. Disclaimer
+## 19. Disclaimer
 
 This software is experimental. It is provided for research, evaluation and testing purposes. No representation is made that the implementation is secure, fault tolerant, economically viable, legally compliant in every jurisdiction, or suitable for production use.
 
@@ -528,7 +537,7 @@ Nothing in this repository constitutes an offer, solicitation, investment produc
 
 ---
 
-## 18. Project principle
+## 20. Project principle
 
 UEP is being developed around a simple principle:
 
@@ -536,10 +545,9 @@ UEP is being developed around a simple principle:
 
 That principle is why this public release contains a reproducible testnet and a real-service Marketplace model, while deliberately avoiding a speculative native token and avoiding claims that the current research stack is already a finished global or interplanetary financial network.
 
-
 ---
 
-## 19. Supporting the project
+## 21. Supporting the project
 
 UEP is an independent research project. If you want to support its development, you can send a voluntary Bitcoin donation to:
 

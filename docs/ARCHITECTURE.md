@@ -4,8 +4,8 @@
 
 ```text
 ┌──────────────────────────────────────────────┐
-│              UEP DIGITAL MARKETPLACE         │
-│ listings · orders · HOLD · delivery · fees  │
+│           UEP DIGITAL MARKETPLACE            │
+│ listings · orders · HOLD · delivery · fees   │
 │ treasury · reputation · paymaster accounting │
 └───────────────────────┬──────────────────────┘
                         │

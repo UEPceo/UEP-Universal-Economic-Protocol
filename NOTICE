@@ -7,5 +7,4 @@ This repository is a deliberately limited public evaluation slice of the UEP pro
 
 Third-party dependencies, when introduced in future releases, remain subject to their respective licenses. This release intentionally keeps the executable reference layer dependency-light.
 
-
 Project contact: uep.dev@proton.me

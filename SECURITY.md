@@ -49,5 +49,4 @@ Do not include in public issues or pull requests:
 - whether the issue requires special privileges;
 - any relevant deterministic test case.
 
-
 Security contact: uep.dev@proton.me
