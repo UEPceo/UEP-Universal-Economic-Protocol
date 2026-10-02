@@ -31,7 +31,7 @@ Expected results at `0.4.7-public-iot-m2m` (Node.js 22 and 24):
 | `npm run simulate:20k` | 20,000 settled, 0 errors, `valueConserved: true` |
 | `npm run test:rust` | uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 87 pass |
 | `npm run build:uep-zk` | `uep-core/target/release/uep-zk` built from source |
-| `npm run test:lab` | 92 files, about 430 tests, 0 failures; 16 files with known issues skipped |
+| `npm run test:lab` | 92 files, 427 tests pass, 0 failures; 16 files with known issues skipped |
 
 Lab suites with known failures are listed in `scripts/lab-known-issues.json` and skipped (see [`LABS.md`](./LABS.md)). Run them with `node scripts/test-lab.mjs --include-known`. The `uep-zk` binary hash depends on the toolchain and platform, so the labs do not pin it.
 

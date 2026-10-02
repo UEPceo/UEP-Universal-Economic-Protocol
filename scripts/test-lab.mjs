@@ -61,7 +61,7 @@ for (const f of files) {
   const s = Date.now();
   const r = spawnSync(
     process.execPath,
-    ["--experimental-strip-types", "--test", "--test-force-exit", "--test-timeout=240000", f],
+    ["--experimental-strip-types", "--test", "--test-reporter=tap", "--test-force-exit", "--test-timeout=240000", f],
     { cwd: root, env, encoding: "utf8", timeout: 600_000, maxBuffer: 64 * 1024 * 1024 },
   );
   const out = (r.stdout ?? "") + (r.stderr ?? "");
