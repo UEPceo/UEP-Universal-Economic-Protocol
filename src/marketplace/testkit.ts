@@ -188,3 +188,8 @@ export function iotAuthorization(m: DigitalServicesMarketplace, input: { listing
   const identity = registry.get(m)?.get(input.buyerId) ?? enrollIdentity(m, input.buyerId);
   return signReservation({ marketplaceId: m.marketplaceId, ...input }, identity.privateKey);
 }
+
+/** v0.4.7: credit signed by `actorId` (the administrator when `requireSignedCredits` is set). */
+export function creditAs(m: DigitalServicesMarketplace, actorId: string, identityId: string, asset: string, amount: bigint, creditId: string): bigint {
+  return m.creditAccount(identityId, asset, amount, { creditId, auth: act(m, actorId, "credit", identityId, { asset, amount, creditId }) });
+}

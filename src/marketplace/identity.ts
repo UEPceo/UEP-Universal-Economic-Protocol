@@ -60,7 +60,7 @@ export type ActorAuth = { actorId: string; signature: string; issuedAt?: number 
 
 export type MarketplaceAction =
   | "publish" | "fund" | "deliver" | "settle" | "cancel" | "expire" | "read" | "list"
-  | "dispute" | "resolve" | "refund" | "review"
+  | "dispute" | "resolve" | "refund" | "review" | "credit"
   | "iot-provider-register" | "iot-provider-deactivate" | "iot-machine-register" | "iot-machine-deactivate";
 
 export type ActionAuthorization = {

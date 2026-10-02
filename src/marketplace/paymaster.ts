@@ -6,6 +6,8 @@
  * reserves that amount, and recovers it from the buyer's escrow at settlement.
  * The buyer therefore sees one deterministic checkout total before payment.
  */
+import { tupleKey } from "../core/composite-key.ts";
+
 export const PAYMASTER_VERSION = "0.1" as const;
 
 export type GasQuote = {
@@ -101,7 +103,7 @@ export class MarketplacePaymaster {
       throw new Error("GAS_QUOTE_TAMPERED");
     }
     if ((this.reserves.get(quote.asset) ?? 0n) < quote.gasFee) throw new Error("PAYMASTER_RESERVE_INSUFFICIENT");
-    const key = `${orderId}:${quote.quoteId}`;
+    const key = tupleKey(orderId, quote.quoteId);
     if (this.sponsored.has(key)) return this.sponsored.get(key)!;
     this.reserves.set(quote.asset, (this.reserves.get(quote.asset) ?? 0n) - quote.gasFee);
     this.sponsored.set(key, { ...quote });
@@ -109,13 +111,13 @@ export class MarketplacePaymaster {
   }
 
   sponsoredQuote(orderId: string, quoteId: string): GasQuote {
-    const quote = this.sponsored.get(`${orderId}:${quoteId}`);
+    const quote = this.sponsored.get(tupleKey(orderId, quoteId));
     if (!quote) throw new Error("PAYMASTER_SPONSOR_NOT_FOUND");
     return { ...quote };
   }
 
   capture(orderId: string, quote: GasQuote, now = this.now()): PaymasterReceipt {
-    const key = `${orderId}:${quote.quoteId}`;
+    const key = tupleKey(orderId, quote.quoteId);
     if (this.captured.has(key)) {
       const existing = this.receipts.find((r) => r.orderId === orderId && r.quoteId === quote.quoteId);
       if (!existing) throw new Error("PAYMASTER_RECEIPT_MISSING");
@@ -132,7 +134,7 @@ export class MarketplacePaymaster {
 
   /** A failed pre-settlement order releases the sponsor reserve. */
   release(orderId: string, quote: GasQuote): void {
-    const key = `${orderId}:${quote.quoteId}`;
+    const key = tupleKey(orderId, quote.quoteId);
     if (!this.sponsored.has(key) || this.captured.has(key)) return;
     this.reserves.set(quote.asset, (this.reserves.get(quote.asset) ?? 0n) + quote.gasFee);
     this.sponsored.delete(key);

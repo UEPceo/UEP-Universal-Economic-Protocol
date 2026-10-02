@@ -1,6 +1,40 @@
-# Public API reference: changed signatures (v0.4.3 – v0.4.6)
+# Public API reference: changed signatures (v0.4.3 – v0.4.7)
 
-This page lists the public signatures that changed in `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+This page lists the public signatures that changed in `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# v0.4.7
+
+Multi-asset hardening. No ledger, address, note, transaction or snapshot format change (snapshot format stays 5); existing v0.4.6 snapshots restore unchanged if they only contain registered assets.
+
+## Assets and fees: `src/core/assets.ts`, `src/core/fee.ts`, `src/core/composite-key.ts` (new)
+
+- `LEDGER_ASSET_ID_PATTERN`, `isCanonicalLedgerAssetId(id)`, `ledgerAssetIdToFr(id)` (throws `ASSET_ID_INVALID`): ledger asset ids are lowercase ASCII, 1–31 bytes, so their field encoding is injective. `findAssetByFr(networkId, fr)`.
+- `validateAssetRegistry(records): string[]`: canonical, unique ids, distinct encodings, integer `decimals` in `[0, MAX_REGISTRY_DECIMALS]` (18), `minProtocolFee >= 1`.
+- `AssetRecord.minProtocolFee?: bigint`: per-asset protocol fee floor (default 1; every registered asset keeps 1).
+- `creatorFee(amount, minFee = 1n)`, `requiredSenderDebit(amount, minFee = 1n)`, `transition(old, amount, minFee = 1n)`: the rate stays 0.1% (10 bps). New `maxPayableFromNote(noteValue, minFee)` and `effectiveFeeBps(amount, minFee)`.
+- `tupleKey(...parts)` and `NestedAmountMap`: injective composite keys and per-outer-key totals.
+
+## Security policy: `src/core/security-policy.ts`
+
+- `SecurityPolicyConfig.assetLimits: Record<assetId, { maxTransferAmount?, maxTransferPerWindow?, minTransferAmount? }>`; `setAssetLimits(assetId, limits)`, `limitsFor(assetId)`, `windowVolume(account, assetId, now?)`, `checkSequence(probes)` (never mutates state).
+- The rolling volume is tracked per (account, asset); the spend count per window stays per account. New reject code `AMOUNT_TOO_SMALL`.
+
+## Ledger: `src/testnet/ledger.ts`
+
+- `requireProof` is a read-only getter; assigning `false` throws `REQUIRE_PROOF_IMMUTABLE`. Constructor option `testOnlyDisableProof` (tests only). Restored ledgers always require it.
+- Constructor option `issuerSigningKeys: Record<assetId, PrivateKeyLike>`; `setIssuerSigningKey(assetId, key | null)` (install / rotate / remove), `issuerPublicKeys()`. An asset with an issuer key is minted only with that key (`ISSUER_ASSET_UNKNOWN`, `ISSUER_KEY_NOT_DISTINCT`).
+- `SnapshotTrust.issuerKeys?: { publicKey, assetIds, fromMintIndex? }[]` and `SnapshotTrust.revokedMintKeys?: { publicKey, fromMintIndex }[]`. Once an asset has a scoped issuer key, `faucetPublicKeys` no longer validate its mints. `LedgerSigningKeys.issuerSigningKeys` (`ISSUER_KEY_NOT_TRUSTED`).
+- `restore()` rejects notes and mints of unregistered assets (`INVALID_SNAPSHOT_NOTE_ASSET`, `INVALID_SNAPSHOT_MINT_ASSET`) and mints not signed by a key trusted for that asset and mint index (`INVALID_SNAPSHOT_MINT_SIGNATURE`).
+- `submit()` returns `ASSET_MISMATCH` when a transported input or output note is not in the transaction asset. `prepareSpend()` returns `ASSET_MISMATCH` for unregistered or non-canonical asset ids (previously `INSUFFICIENT`).
+- `preparePayment(secrets, recipient, assetId, amount, now?) => { txs } | { error, index? }` and `submitBatch(txs, secrets?)`: atomic payment from several notes as up to `MAX_PAYMENT_PARTS` (16) single-input spends of one sender, asset and recipient; each part pays its own fee; all parts are accepted or none. New code `BATCH_INVALID`. `protocolFeeFloor(networkId, assetFr)`.
+
+## Marketplace: `src/marketplace/marketplace.ts`, `economy.ts`, `identity.ts`, `testkit.ts`
+
+- Balances (available, locked deposits, held escrow) are indexed by asset, then identity. Idempotency keys and the listing index use structural keys.
+- Asset ids must match `MARKETPLACE_ASSET_ID_PATTERN` (`ASSET_ID_INVALID`). Config `assetRegistryNetworkId` restricts listings and credits to the assets registered on that ledger network (`ASSET_NOT_REGISTERED`). `assertAsset(asset)`.
+- Identity ids: at most `MAX_IDENTITY_ID_LENGTH` (256) characters, no control characters (`IDENTITY_ID_INVALID`).
+- Config `minReservationDepositByAsset` and `minReservationDepositFor(asset)`; `reservationDepositFor(gross, gas, asset?)`. `MarketplaceTreasury({ minFeeByAsset })`, `minFeeFor(asset)`; `calculateMarketplaceFee(gross, bps, minFee)`, `quoteSettlement(gross, asset, bps, minFee)`. The rate stays 3% (300 bps) and the defaults are unchanged.
+- Config `requireSignedCredits`: `creditAccount(identityId, asset, amount, { creditId, auth })` then needs the administrator's `"credit"` signature over `{ asset, amount, creditId }`; each `creditId` is accepted once (`CREDIT_AUTHORIZATION_REQUIRED`, `CREDIT_NOT_AUTHORIZED`, `CREDIT_REPLAY`). New action `"credit"`; test helper `creditAs()`.
 
 # v0.4.6
 

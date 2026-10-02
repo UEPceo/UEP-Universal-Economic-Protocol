@@ -7,9 +7,9 @@ import { ACCOUNT_DEPTH } from "../core/smt.ts";
 import { NullifierSet } from "../core/nullifier.ts";
 import { SparseMerkleTree } from "../core/smt.ts";
 import { markConflicts, reconcile, settlementRoot } from "../core/reconciliation.ts";
-import { assetsForNetwork, findAsset } from "../core/assets.ts";
+import { assetsForNetwork, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr } from "../core/assets.ts";
 import { hAccount, hLeaf } from "../core/hash.ts";
-import { creatorFee, requiredSenderDebit } from "../core/fee.ts";
+import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier } from "../core/nullifier.ts";
 import { deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, type Note } from "../core/note.ts";
 import { computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
@@ -51,9 +51,23 @@ export type SubmitError =
   /** v0.4.4: missing or invalid note-commitment tree membership proof. */
   | { code: "MEMBERSHIP_PROOF"; message: string }
   /** v0.4.4: the bounded pending queue is full. */
-  | { code: "PENDING_FULL"; message: string };
+  | { code: "PENDING_FULL"; message: string }
+  /** v0.4.7: a multi-note payment batch is malformed (size, mixed sender / asset / recipient, shared inputs). */
+  | { code: "BATCH_INVALID"; message: string };
 
 export type SubmitResult = { tx: UepTransaction } | { error: SubmitError };
+/** A spend that passed every check and can be applied without further validation. */
+interface CheckedSpend { inputs: Note[]; outputs: Note[]; next: { sender: bigint; recipient: bigint; treasury: bigint }; assetIdStr: string }
+
+/** v0.4.7: result of preparePayment() / submitBatch(). `index` is the failing part, when known. */
+export type BatchResult = { txs: UepTransaction[] } | { error: SubmitError; index?: number };
+/** v0.4.7: maximum number of single-input spends in one atomic payment batch. */
+export const MAX_PAYMENT_PARTS = 16;
+
+/** v0.4.7: protocol fee floor of a registered asset (registry `minProtocolFee`, default 1). */
+export function protocolFeeFloor(networkId: string, assetId: Fr): bigint {
+  return findAssetByFr(networkId, assetId)?.minProtocolFee ?? MIN_PROTOCOL_FEE;
+}
 
 type AccountKey = string; // accountHex|assetHex
 
@@ -95,14 +109,28 @@ export type MintRecord = {
 
 export type SnapshotSignature = { publicKey: string; signature: string };
 
+/**
+ * v0.4.7: a mint (issuer) key scoped to some assets. It validates mints of
+ * those assets whose index is >= `fromMintIndex` (default 0). Once an asset has
+ * at least one scoped issuer key, the unscoped `faucetPublicKeys` no longer
+ * validate mints of that asset.
+ */
+export type IssuerKeyTrust = { publicKey: PublicKeyLike; assetIds: string[]; fromMintIndex?: number };
+/** v0.4.7: a mint key that stops validating mints from `fromMintIndex` on (rotation / revocation). */
+export type MintKeyRevocation = { publicKey: PublicKeyLike; fromMintIndex: number };
+
 /** Trust anchors for restore(). Only public keys: verifiers never need private keys. */
 export type SnapshotTrust = {
   /** Snapshot authority public keys (n). */
   authorities: PublicKeyLike[];
   /** Distinct valid authority signatures required (k). Default 1. */
   threshold?: number;
-  /** Faucet (mint) public key(s). Required when the snapshot contains mints; must not be a snapshot authority key. */
+  /** Faucet (mint) public key(s), valid for every registered asset without scoped issuer keys. Must not be a snapshot authority key. */
   faucetPublicKeys?: PublicKeyLike[];
+  /** v0.4.7: per-asset issuer keys (see IssuerKeyTrust). Must not be snapshot authority keys. */
+  issuerKeys?: IssuerKeyTrust[];
+  /** v0.4.7: mint keys revoked from a mint index on (applies to faucet and issuer keys). */
+  revokedMintKeys?: MintKeyRevocation[];
   /** The snapshot must directly follow this snapshot hash. */
   previousSnapshotHash?: string;
   /** A known earlier (or identical) checkpoint the snapshot must extend. */
@@ -113,6 +141,8 @@ export type SnapshotTrust = {
 export type LedgerSigningKeys = {
   snapshotSigningKeys?: PrivateKeyLike[];
   faucetSigningKey?: PrivateKeyLike;
+  /** v0.4.7: per-asset issuer private keys (asset id -> key); each must be trusted for that asset. */
+  issuerSigningKeys?: Record<string, PrivateKeyLike>;
 };
 
 /** Compact commitment to a snapshot and to its transaction / mint history prefix. */
@@ -241,15 +271,27 @@ export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Not
 export class UepLedger {
   /** Optional security policy gate (TESTNET). */
   policy: SecurityPolicyType = new SecurityPolicy();
-  /** When true, submit must include secrets (MAC) or a verifiable zkProof. */
-  /** Public alpha requires sender authentication for every spend. */
-  requireProof = true;
+  /**
+   * When true, submit must include secrets (MAC) or a verifiable zkProof.
+   * v0.4.7: fixed at construction. It is always true unless the ledger was
+   * built with the test-only flag `testOnlyDisableProof`; assigning `false`
+   * afterwards throws. The Ed25519 sender signature is required either way.
+   */
+  get requireProof(): boolean {
+    return this.proofRequired;
+  }
+  set requireProof(value: boolean) {
+    if (value !== this.proofRequired) throw new Error("REQUIRE_PROOF_IMMUTABLE: requireProof is fixed at construction (testOnlyDisableProof is test-only)");
+  }
+  private readonly proofRequired: boolean;
   readonly networkId: string;
   readonly domainId: string;
   readonly connected: boolean;
   readonly allowFaucet: boolean;
   private snapshotSigners: KeyObject[] = [];
   private faucetSigner: KeyObject | undefined;
+  /** v0.4.7: per-asset issuer (mint) keys; when set for an asset, the default faucet key cannot mint it. */
+  private issuerSigners = new Map<string, KeyObject>();
   /** Signed faucet issuance log. Supply is derived from it. */
   mints: MintRecord[] = [];
   /** Sequence of the last snapshot produced or restored (0 = none). */
@@ -288,6 +330,10 @@ export class UepLedger {
     faucetSigningKey?: PrivateKeyLike | null;
     /** Bound of the pending queue (default 1024, max 100000). */
     maxPendingTransactions?: number;
+    /** v0.4.7: per-asset issuer (mint) private keys, asset id -> key. Distinct from every snapshot key. */
+    issuerSigningKeys?: Record<string, PrivateKeyLike>;
+    /** v0.4.7 TEST-ONLY: build a ledger with requireProof = false. Never set outside tests. */
+    testOnlyDisableProof?: boolean;
   }) {
     if ((opts as { snapshotAuthoritySecret?: unknown }).snapshotAuthoritySecret !== undefined) throw new Error("SNAPSHOT_SECRET_UNSUPPORTED: v0.4.3 uses Ed25519 snapshotSigningKeys");
     this.networkId = opts.networkId;
@@ -297,9 +343,11 @@ export class UepLedger {
     const maxPending = opts.maxPendingTransactions ?? DEFAULT_MAX_PENDING_TRANSACTIONS;
     if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > MAX_PENDING_TRANSACTIONS_LIMIT) throw new Error("INVALID_MAX_PENDING_TRANSACTIONS");
     this.maxPendingTransactions = maxPending;
+    this.proofRequired = opts.testOnlyDisableProof !== true;
     this.installSigningKeys(
       opts.snapshotSigningKeys ?? [generateEd25519KeyPair().privateKey],
       opts.faucetSigningKey === undefined ? (opts.allowFaucet ? generateEd25519KeyPair().privateKey : undefined) : (opts.faucetSigningKey ?? undefined),
+      opts.issuerSigningKeys,
     );
     this.state = new SparseMerkleTree(ACCOUNT_DEPTH);
     this.nullifiers = new NullifierSet();
@@ -433,30 +481,58 @@ export class UepLedger {
     let account: Fr;
     try { account = this.resolveAccount(accountOrAddress); } catch (e) { throw new Error(`FAUCET_ACCOUNT_INVALID: ${(e as Error).message}`); }
     if (!this.connected) throw new Error("Node is not connected");
-    const rec = findAsset(this.networkId, assetIdStr);
+    const rec = isCanonicalLedgerAssetId(assetIdStr) ? findAsset(this.networkId, assetIdStr) : undefined;
     if (!rec) throw new Error("Unknown TESTNET asset");
-    if (!this.faucetSigner) throw new Error("FAUCET_KEY_REQUIRED");
+    // v0.4.7: a per-asset issuer key, if configured, is the only key that mints this asset.
+    const signer = this.issuerSigners.get(assetIdStr) ?? this.faucetSigner;
+    if (!signer) throw new Error("FAUCET_KEY_REQUIRED");
     if (amount <= 0n || amount >= 2n ** 64n) throw new Error("FAUCET_AMOUNT_INVALID");
-    const assetId = encodeStringToFr(assetIdStr);
+    const assetId = ledgerAssetIdToFr(assetIdStr);
     if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("FAUCET_AMOUNT_INVALID");
     const blinding = hLeaf(account, new Fr(++this.noteCounter));
     const note = makeNote(account, assetId, amount, blinding);
     this.addNote(note);
     const unsigned = { index: this.mints.length, networkId: this.networkId, domainId: this.domainId, account: account.toHex(), assetId: assetId.toHex(), amount: amount.toString(), commitment: note.commitment.toHex() };
-    this.mints.push({ ...unsigned, signature: signEd25519(mintMessage(unsigned), this.faucetSigner) });
+    this.mints.push({ ...unsigned, signature: signEd25519(mintMessage(unsigned), signer) });
     this.setBalance(account, assetId, this.balanceOf(account, assetId) + amount);
     this.supply.set(assetId.toHex(), (this.supply.get(assetId.toHex()) ?? 0n) + amount);
     return note;
   }
 
-  private installSigningKeys(snapshotKeys: PrivateKeyLike[], faucetKey: PrivateKeyLike | undefined): void {
+  private installSigningKeys(snapshotKeys: PrivateKeyLike[], faucetKey: PrivateKeyLike | undefined, issuerKeys?: Record<string, PrivateKeyLike>): void {
     const signers = snapshotKeys.map((k) => toPrivateKey(k));
     const hexes = signers.map((k) => publicKeyHexOf(k));
     if (new Set(hexes).size !== hexes.length) throw new Error("SNAPSHOT_SIGNING_KEYS_DUPLICATE");
     const faucet = faucetKey === undefined ? undefined : toPrivateKey(faucetKey);
     if (faucet && hexes.includes(publicKeyHexOf(faucet))) throw new Error("FAUCET_KEY_NOT_DISTINCT");
+    const issuers = new Map<string, KeyObject>();
+    for (const [assetIdStr, k] of Object.entries(issuerKeys ?? {})) {
+      if (!isCanonicalLedgerAssetId(assetIdStr) || !findAsset(this.networkId, assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
+      const key = toPrivateKey(k);
+      if (hexes.includes(publicKeyHexOf(key))) throw new Error("ISSUER_KEY_NOT_DISTINCT");
+      issuers.set(assetIdStr, key);
+    }
     this.snapshotSigners = signers;
     this.faucetSigner = faucet;
+    this.issuerSigners = issuers;
+  }
+
+  /**
+   * v0.4.7: install, rotate (replace) or remove (`null`) the issuer key of one
+   * registered asset. Verifiers must update their `issuerKeys` /
+   * `revokedMintKeys` trust from the current mint index (`mints.length`).
+   */
+  setIssuerSigningKey(assetIdStr: string, key: PrivateKeyLike | null): void {
+    if (!isCanonicalLedgerAssetId(assetIdStr) || !findAsset(this.networkId, assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
+    if (key === null) { this.issuerSigners.delete(assetIdStr); return; }
+    const k = toPrivateKey(key);
+    if (this.snapshotAuthorityPublicKeys().includes(publicKeyHexOf(k))) throw new Error("ISSUER_KEY_NOT_DISTINCT");
+    this.issuerSigners.set(assetIdStr, k);
+  }
+
+  /** v0.4.7: issuer public keys of this node, asset id -> hex SPKI DER. */
+  issuerPublicKeys(): Record<string, string> {
+    return Object.fromEntries([...this.issuerSigners.entries()].map(([a, k]) => [a, publicKeyHexOf(k)]));
   }
 
   /** Snapshot authority public keys of this node (hex SPKI DER). Share these with verifiers. */
@@ -484,6 +560,93 @@ export class UepLedger {
     amount: bigint,
     now = Date.now(),
   ): SubmitResult {
+    const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
+    if ("error" in pre) return pre;
+    const { recipient, assetId, minFee } = pre;
+    const senderId = secrets.accountId;
+    const fee = creatorFee(amount, minFee);
+    const required = amount + fee;
+    const available = this.spendableNotes(senderId, assetId);
+    // v0.4 public testnet deliberately uses one input note per transaction.
+    // This keeps the single-nullifier transaction format sound. Payments that
+    // need several notes use preparePayment() + submitBatch() (v0.4.7): an
+    // atomic batch of single-input spends.
+    const spent = available.find((n) => n.amount >= required);
+    if (!spent) {
+      return { error: { code: "INSUFFICIENT", message: "No single unspent note covers amount plus fee." } };
+    }
+    const tr = transition(
+      { sender: this.balanceOf(senderId, assetId), recipient: this.balanceOf(recipient, assetId), treasury: this.balanceOf(TREASURY_ID, assetId) },
+      amount,
+      minFee,
+    );
+    if ("err" in tr) {
+      return { error: { code: "INSUFFICIENT", message: tr.err } };
+    }
+    return { tx: this.buildSpend(secrets, recipient, assetId, amount, minFee, spent, now, tr.ok.new) };
+  }
+
+  /**
+   * v0.4.7: prepare a payment of `amount` to one recipient from one or more of
+   * the sender's notes of one asset. If a single note covers amount + fee, the
+   * result is that one spend (same as prepareSpend). Otherwise the amount is
+   * split into at most MAX_PAYMENT_PARTS single-input spends, largest notes
+   * first; each part pays its own protocol fee (0.1%, per-asset floor), so the
+   * total fee can exceed the fee of a single transfer by the floors. Submit the
+   * parts with submitBatch(), which applies all of them or none.
+   */
+  preparePayment(
+    secrets: IdentitySecrets,
+    recipientOrAddress: Fr | string,
+    assetIdStr: string,
+    amount: bigint,
+    now = Date.now(),
+  ): BatchResult {
+    const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
+    if ("error" in pre) return pre;
+    const { recipient, assetId, minFee } = pre;
+    const senderId = secrets.accountId;
+    const available = this.spendableNotes(senderId, assetId);
+    const single = available.find((n) => n.amount >= amount + creatorFee(amount, minFee));
+    const plan: Array<{ note: Note; part: bigint }> = [];
+    if (single) {
+      plan.push({ note: single, part: amount });
+    } else {
+      let remaining = amount;
+      const byValue = [...available].sort((a, b) => (a.amount === b.amount ? 0 : a.amount > b.amount ? -1 : 1));
+      for (const note of byValue) {
+        if (remaining === 0n) break;
+        const cap = maxPayableFromNote(note.amount, minFee);
+        if (cap <= 0n) continue;
+        const part = cap < remaining ? cap : remaining;
+        plan.push({ note, part });
+        remaining -= part;
+      }
+      if (remaining > 0n) return { error: { code: "INSUFFICIENT", message: "Unspent notes do not cover the amount plus one protocol fee per note used." } };
+      if (plan.length > MAX_PAYMENT_PARTS) return { error: { code: "BATCH_INVALID", message: `Payment needs more than ${MAX_PAYMENT_PARTS} notes.` } };
+    }
+    const probes = plan.map(({ part }) => ({ accountHex: senderId.toHex(), assetId: assetIdStr, amount: part, fee: creatorFee(part, minFee), nowMs: now }));
+    const verdict = this.policy.checkSequence(probes);
+    if (!verdict.ok) return { error: { code: "POLICY", message: `${verdict.code}: ${verdict.message}` } };
+    const balances = { sender: this.balanceOf(senderId, assetId), recipient: this.balanceOf(recipient, assetId), treasury: this.balanceOf(TREASURY_ID, assetId) };
+    const txs: UepTransaction[] = [];
+    for (const [index, { note, part }] of plan.entries()) {
+      const tr = transition(balances, part, minFee);
+      if ("err" in tr) return { error: { code: "INSUFFICIENT", message: tr.err }, index };
+      Object.assign(balances, tr.ok.new);
+      txs.push(this.buildSpend(secrets, recipient, assetId, part, minFee, note, now, { ...tr.ok.new }));
+    }
+    return { txs };
+  }
+
+  /** Shared preconditions of prepareSpend() / preparePayment(). */
+  private prepareChecks(
+    secrets: IdentitySecrets,
+    recipientOrAddress: Fr | string,
+    assetIdStr: string,
+    amount: bigint,
+    now: number,
+  ): { recipient: Fr; assetId: Fr; minFee: bigint } | { error: SubmitError } {
     if (amount <= 0n) return { error: { code: "AMOUNT_MISMATCH", message: "Amount must be greater than zero." } };
     if (recipientOrAddress instanceof Fr && (recipientOrAddress.eq(TREASURY_ID) || recipientOrAddress.eq(secrets.accountId))) {
       return { error: { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." } };
@@ -498,8 +661,14 @@ export class UepLedger {
         },
       };
     }
+    // v0.4.7: canonical, registered asset id only.
+    if (!isCanonicalLedgerAssetId(assetIdStr) || !findAsset(this.networkId, assetIdStr)) {
+      return { error: { code: "ASSET_MISMATCH", message: "Asset is not registered on this network." } };
+    }
+    const assetId = ledgerAssetIdToFr(assetIdStr);
+    const minFee = protocolFeeFloor(this.networkId, assetId);
     {
-      const feeGuess = creatorFee(amount);
+      const feeGuess = creatorFee(amount, minFee);
       const verdict = this.policy.check(
         {
           accountHex: secrets.accountId.toHex(),
@@ -514,7 +683,6 @@ export class UepLedger {
         return { error: { code: "POLICY", message: `${verdict.code}: ${verdict.message}` } };
       }
     }
-    const assetId = encodeStringToFr(assetIdStr);
     const senderId = secrets.accountId;
     if (!verifyOwnership(secrets.secret, secrets.salt, senderId)) {
       return { error: { code: "WRONG_OWNER", message: "Identity does not control this account." } };
@@ -522,30 +690,29 @@ export class UepLedger {
     if (recipient.eq(senderId) || recipient.eq(TREASURY_ID) || senderId.eq(TREASURY_ID)) {
       return { error: { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." } };
     }
-    const fee = creatorFee(amount);
-    const required = amount + fee;
-    const available = this.notesOf(senderId).filter((n) => n.assetId.eq(assetId) && openNote(n));
-    // v0.4 public testnet deliberately uses one input note per transaction.
-    // This keeps the single-nullifier transaction format sound; multi-input
-    // aggregation requires an explicit nullifier vector in a future protocol version.
-    const spent = available.find((n) => n.amount >= required);
-    if (!spent) {
-      return { error: { code: "INSUFFICIENT", message: "No single unspent note covers amount plus fee." } };
-    }
+    return { recipient, assetId, minFee };
+  }
+
+  private spendableNotes(owner: Fr, assetId: Fr): Note[] {
+    return this.notesOf(owner).filter((n) => n.assetId.eq(assetId) && openNote(n));
+  }
+
+  /** Build and sign one single-input spend of `spent` (amount to recipient, change to sender). */
+  private buildSpend(
+    secrets: IdentitySecrets,
+    recipient: Fr,
+    assetId: Fr,
+    amount: bigint,
+    minFee: bigint,
+    spent: Note,
+    now: number,
+    balancesAfter: { sender: bigint; recipient: bigint; treasury: bigint },
+  ): UepTransaction {
+    const senderId = secrets.accountId;
+    const fee = creatorFee(amount, minFee);
     const selected: Note[] = [spent];
     const total = spent.amount;
-    const debit = requiredSenderDebit(amount);
-    const senderOld = this.balanceOf(senderId, assetId);
-    const recipientOld = this.balanceOf(recipient, assetId);
-    const treasuryOld = this.balanceOf(TREASURY_ID, assetId);
-    const tr = transition(
-      { sender: senderOld, recipient: recipientOld, treasury: treasuryOld },
-      amount,
-    );
-    if ("err" in tr) {
-      return { error: { code: "INSUFFICIENT", message: tr.err } };
-    }
-
+    const debit = requiredSenderDebit(amount, minFee);
     const change = total - amount - fee;
     // Single-note spend: consume the selected note, emit the recipient output
     // (`amount`) plus optional change (`total - amount - fee`). The nullifier is
@@ -625,8 +792,8 @@ export class UepLedger {
     tx.inputMembership = selected.map((n) => this.noteTree.prove(n.commitment));
 
     // Stash outputs on the tx object via a side table
-    this.stashOutputs(tx.txId.toHex(), outputs, selected, debit, tr.ok.new);
-    return { tx };
+    this.stashOutputs(tx.txId.toHex(), outputs, selected, debit, balancesAfter);
+    return tx;
   }
 
   private outputStash = new Map<
@@ -676,10 +843,71 @@ export class UepLedger {
         },
       };
     }
+    const checked = this.checkSpend(tx, secrets, {});
+    if ("error" in checked) return checked;
+    return { tx: this.applySpend(tx, checked) };
+  }
+
+  /**
+   * v0.4.7: submit an atomic batch of single-input spends (from preparePayment()).
+   * All parts must share sender, asset and recipient and use distinct inputs.
+   * Every part is checked against the state left by the previous parts, with
+   * the security policy evaluated over the whole sequence, before any part is
+   * applied: either every part is accepted or none is. Each accepted part is an
+   * ordinary single-input spend (same rules in submit() and restore()).
+   * Batches are not queued offline.
+   */
+  submitBatch(txs: UepTransaction[], secrets?: IdentitySecrets): BatchResult {
+    if (!Array.isArray(txs) || txs.length === 0 || txs.length > MAX_PAYMENT_PARTS) return { error: { code: "BATCH_INVALID", message: `A batch carries 1 to ${MAX_PAYMENT_PARTS} spends.` } };
+    if (!this.connected) return { error: { code: "NOT_CONNECTED", message: "Payment batches are not queued offline." } };
+    const first = txs[0]!;
+    const seen = new Set<string>();
+    for (const tx of txs) {
+      if (!tx || !tx.senderId?.eq(first.senderId) || !tx.assetId?.eq(first.assetId) || !tx.recipientId?.eq(first.recipientId)) return { error: { code: "BATCH_INVALID", message: "Every part of a batch must have the same sender, asset and recipient." } };
+      const ids = [`tx:${tx.txId.toHex()}`, `nf:${tx.nullifier.toHex()}`, ...tx.inputCommitments.map((c) => `in:${c.toHex()}`), ...tx.outputCommitments.map((c) => `out:${c.toHex()}`)];
+      for (const id of ids) {
+        if (seen.has(id)) return { error: { code: "BATCH_INVALID", message: "Parts of a batch must not share a transaction id, nullifier, input or output note." } };
+        seen.add(id);
+      }
+    }
+    for (const [index, tx] of txs.entries()) {
+      if (tx.amount <= 0n) return { error: { code: "AMOUNT_MISMATCH", message: "Transaction amount must be greater than zero." }, index };
+      if (tx.networkId !== this.networkId || tx.domainId !== this.domainId) return { error: { code: "WRONG_NETWORK", message: "Transaction network or domain does not match this ledger." }, index };
+    }
+    const assetIdStr = findAssetByFr(this.networkId, first.assetId)?.assetId ?? "unknown";
+    const nowMs = Date.now();
+    const verdict = this.policy.checkSequence(txs.map((tx) => ({ accountHex: tx.senderId.toHex(), assetId: assetIdStr, amount: tx.amount, fee: tx.fee, nowMs })));
+    if (!verdict.ok) return { error: { code: "POLICY", message: `${verdict.code}: ${verdict.message}` } };
+    const overlay = new Map<AccountKey, bigint>();
+    const checkedParts: CheckedSpend[] = [];
+    for (const [index, tx] of txs.entries()) {
+      const checked = this.checkSpend(tx, secrets, { skipPolicy: true, overlay });
+      if ("error" in checked) return { error: checked.error, index };
+      overlay.set(ak(tx.senderId, tx.assetId), checked.next.sender);
+      overlay.set(ak(tx.recipientId, tx.assetId), checked.next.recipient);
+      overlay.set(ak(TREASURY_ID, tx.assetId), checked.next.treasury);
+      checkedParts.push(checked);
+    }
+    return { txs: txs.map((tx, i) => this.applySpend(tx, checkedParts[i]!)) };
+  }
+
+  /**
+   * Every rule of a connected submit, without mutating state. `overlay`
+   * replaces balances (used by submitBatch); `skipPolicy` when the policy was
+   * already evaluated for the whole batch.
+   */
+  private checkSpend(
+    tx: UepTransaction,
+    secrets: IdentitySecrets | undefined,
+    opts: { skipPolicy?: boolean; overlay?: Map<AccountKey, bigint> },
+  ): { error: SubmitError } | CheckedSpend {
+    const assetIdStr = findAssetByFr(this.networkId, tx.assetId)?.assetId ?? "unknown";
+    const minFee = protocolFeeFloor(this.networkId, tx.assetId);
+    if (!opts.skipPolicy) {
     const policyVerdict = this.policy.check(
       {
         accountHex: tx.senderId.toHex(),
-        assetId: [...assetsForNetwork(this.networkId)].find((a) => encodeStringToFr(a.assetId).eq(tx.assetId))?.assetId ?? "unknown",
+        assetId: assetIdStr,
         amount: tx.amount,
         fee: tx.fee,
         nowMs: Date.now(),
@@ -689,11 +917,20 @@ export class UepLedger {
     if (!policyVerdict.ok) {
       return { error: { code: "POLICY", message: `${policyVerdict.code}: ${policyVerdict.message}` } };
     }
+    }
     if (this.txs.some((t) => t.txId.eq(tx.txId))) {
       return { error: { code: "REPLAY", message: "Transaction already present (idempotent reject)." } };
     }
     if (this.nullifiers.contains(tx.nullifier)) {
       return { error: { code: "DOUBLE_SPEND", message: "Nullifier already spent." } };
+    }
+    // v0.4.7: every transported note must be in the transaction asset.
+    {
+      let transported: Note[] = [];
+      try { transported = [...(tx.inputNotes ?? []), ...(tx.outputNotes ?? [])].map(deserializeNote); } catch { transported = []; }
+      if (transported.some((n) => !n.assetId.eq(tx.assetId))) {
+        return { error: { code: "ASSET_MISMATCH", message: "A transported note is not in the transaction asset." } };
+      }
     }
 
     const recomputed = computeTxCommitment({
@@ -716,10 +953,10 @@ export class UepLedger {
     if (!expectId.eq(tx.txId)) {
       return { error: { code: "AMOUNT_MISMATCH", message: "TxID does not match canonical commitment." } };
     }
-    if (tx.fee !== creatorFee(tx.amount)) {
+    if (tx.fee !== creatorFee(tx.amount, minFee)) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Fee does not match protocol policy." } };
     }
-    if (!assetsForNetwork(this.networkId).some((a) => encodeStringToFr(a.assetId).eq(tx.assetId))) {
+    if (!findAssetByFr(this.networkId, tx.assetId)) {
       return { error: { code: "ASSET_MISMATCH", message: "Asset is not registered on this network." } };
     }
 
@@ -787,21 +1024,25 @@ export class UepLedger {
       }
     }
 
-    const senderOld = this.balanceOf(tx.senderId, tx.assetId);
-    const recipientOld = this.balanceOf(tx.recipientId, tx.assetId);
-    const treasuryOld = this.balanceOf(TREASURY_ID, tx.assetId);
+    const bal = (account: Fr) => opts.overlay?.get(ak(account, tx.assetId)) ?? this.balanceOf(account, tx.assetId);
     const tr = transition(
-      { sender: senderOld, recipient: recipientOld, treasury: treasuryOld },
+      { sender: bal(tx.senderId), recipient: bal(tx.recipientId), treasury: bal(TREASURY_ID) },
       tx.amount,
+      minFee,
     );
     if ("err" in tr) {
       return { error: { code: "INSUFFICIENT", message: tr.err } };
     }
+    return { inputs, outputs, next: tr.ok.new, assetIdStr };
+  }
+
+  private applySpend(tx: UepTransaction, checked: CheckedSpend): UepTransaction {
+    const { inputs, outputs } = checked;
+    const tr = { ok: { new: checked.next } };
 
     const inserted = this.nullifiers.insertOnce(tx.nullifier);
-    if (!inserted) {
-      return { error: { code: "DOUBLE_SPEND", message: "Nullifier already in the set." } };
-    }
+    // checkSpend() verified the nullifier is unused; a failure here is an internal error.
+    if (!inserted) throw new Error("LEDGER_INTERNAL: nullifier inserted twice");
 
     this.setBalance(tx.senderId, tx.assetId, tr.ok.new.sender);
     this.setBalance(tx.recipientId, tx.assetId, tr.ok.new.recipient);
@@ -817,14 +1058,14 @@ export class UepLedger {
     this.policy.check(
       {
         accountHex: tx.senderId.toHex(),
-        assetId: assetsForNetwork(this.networkId).find((a) => encodeStringToFr(a.assetId).eq(tx.assetId))?.assetId ?? "unknown",
+        assetId: checked.assetIdStr,
         amount: tx.amount,
         fee: tx.fee,
         nowMs: Date.now(),
       },
       true,
     );
-    return { tx: accepted };
+    return accepted;
   }
 
   /**
@@ -856,7 +1097,7 @@ export class UepLedger {
     // Pending reconciliation must never promote an unchecked envelope.
     // Validate canonical fields and note commitments without mutating live state.
     if (tx.networkId !== this.networkId || tx.domainId !== this.domainId || tx.amount <= 0n) return { error: { code: "POLICY", message: "Pending transaction envelope invalid." } };
-    if (tx.fee !== creatorFee(tx.amount)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending fee invalid." } };
+    if (tx.fee !== creatorFee(tx.amount, protocolFeeFloor(this.networkId, tx.assetId))) return { error: { code: "AMOUNT_MISMATCH", message: "Pending fee invalid." } };
     const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
     if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction commitment invalid." } };
     if (this.nullifiers.contains(tx.nullifier) || this.txs.some((x) => x.txId.eq(tx.txId))) return { error: { code: "REPLAY", message: "Pending transaction already committed." } };
@@ -1002,6 +1243,33 @@ export class UepLedger {
     if (!Number.isSafeInteger(threshold) || threshold < 1 || threshold > authorities.length) fail("TRUST", "threshold must be between 1 and the number of authorities");
     const faucetKeys = distinctKeyHexes(trust.faucetPublicKeys, "INVALID_SNAPSHOT_TRUST: faucet keys must be distinct Ed25519 public keys");
     if (faucetKeys.some((k) => authorities.includes(k))) fail("TRUST", "faucet keys must be distinct from snapshot authority keys");
+    // v0.4.7: per-asset issuer keys and mint-key revocations.
+    if (trust.issuerKeys !== undefined && !Array.isArray(trust.issuerKeys)) fail("TRUST", "issuerKeys must be an array");
+    if (trust.revokedMintKeys !== undefined && !Array.isArray(trust.revokedMintKeys)) fail("TRUST", "revokedMintKeys must be an array");
+    const issuerEntries: Array<{ hex: string; assetIds: string[]; from: number }> = [];
+    for (const e of trust.issuerKeys ?? []) {
+      let hex = "";
+      try { hex = publicKeyHexOf(e.publicKey); } catch { fail("TRUST", "issuer keys must be Ed25519 public keys"); }
+      const from = e.fromMintIndex ?? 0;
+      if (!Array.isArray(e.assetIds) || e.assetIds.length === 0 || e.assetIds.some((a) => !isCanonicalLedgerAssetId(a) || !findAsset(data.networkId, a))) fail("TRUST", "issuer keys must list registered asset ids of the snapshot network");
+      if (!Number.isSafeInteger(from) || from < 0) fail("TRUST", "issuer fromMintIndex must be a non-negative integer");
+      if (authorities.includes(hex)) fail("TRUST", "issuer keys must be distinct from snapshot authority keys");
+      issuerEntries.push({ hex, assetIds: [...e.assetIds], from });
+    }
+    const revocations: Array<{ hex: string; from: number }> = [];
+    for (const r of trust.revokedMintKeys ?? []) {
+      let hex = "";
+      try { hex = publicKeyHexOf(r.publicKey); } catch { fail("TRUST", "revoked mint keys must be Ed25519 public keys"); }
+      if (!Number.isSafeInteger(r.fromMintIndex) || r.fromMintIndex < 0) fail("TRUST", "revocation fromMintIndex must be a non-negative integer");
+      revocations.push({ hex, from: r.fromMintIndex });
+    }
+    const notRevokedAt = (hex: string, index: number) => !revocations.some((r) => r.hex === hex && index >= r.from);
+    /** Keys that may sign mint `index` of `assetIdStr`: scoped issuer keys if the asset has any, else the faucet keys. */
+    const mintKeysFor = (assetIdStr: string, index: number): string[] => {
+      const scoped = issuerEntries.filter((e) => e.assetIds.includes(assetIdStr));
+      const keys = scoped.length > 0 ? scoped.filter((e) => index >= e.from).map((e) => e.hex) : faucetKeys;
+      return keys.filter((k) => notRevokedAt(k, index));
+    };
 
     // 1-2. Hash and k-of-n authority signatures.
     const hash = snapshotHash(data);
@@ -1046,7 +1314,11 @@ export class UepLedger {
     // Optional private keys for an authority node resuming its own chain.
     if (keys.snapshotSigningKeys?.some((k) => !authorities.includes(publicKeyHexOf(toPrivateKey(k))))) throw new Error("SNAPSHOT_SIGNING_KEY_NOT_TRUSTED");
     if (keys.faucetSigningKey !== undefined && !faucetKeys.includes(publicKeyHexOf(toPrivateKey(keys.faucetSigningKey)))) throw new Error("FAUCET_KEY_NOT_TRUSTED");
-    l.installSigningKeys(keys.snapshotSigningKeys ?? [], keys.faucetSigningKey);
+    if (keys.faucetSigningKey !== undefined && !notRevokedAt(publicKeyHexOf(toPrivateKey(keys.faucetSigningKey)), data.mints.length)) throw new Error("FAUCET_KEY_NOT_TRUSTED");
+    for (const [assetIdStr, k] of Object.entries(keys.issuerSigningKeys ?? {})) {
+      if (!mintKeysFor(assetIdStr, data.mints.length).includes(publicKeyHexOf(toPrivateKey(k))) || !issuerEntries.some((e) => e.assetIds.includes(assetIdStr))) throw new Error("ISSUER_KEY_NOT_TRUSTED");
+    }
+    l.installSigningKeys(keys.snapshotSigningKeys ?? [], keys.faucetSigningKey, keys.issuerSigningKeys);
     l.state = SparseMerkleTree.fromJSON(data.state);
     l.balances = new Map(data.balances.map(([k, v]) => [k, BigInt(v)]));
     l.notes = data.notes.map(deserializeNote);
@@ -1075,6 +1347,7 @@ export class UepLedger {
       if (!n.nonce.eq(noteNonce(n.commitment, n.blinding))) fail("NOTE_NONCE");
       if (noteByCommitment.has(n.commitment.toHex())) fail("NOTE_DUPLICATE");
       if (!isKeyDerivedAccountId(n.owner)) fail("NOTE_OWNER", "note owner is not a v2 key-derived account");
+      if (!findAssetByFr(l.networkId, n.assetId)) fail("NOTE_ASSET", "note asset is not registered on this network");
       noteByCommitment.set(n.commitment.toHex(), n);
     }
     // 2b. Note-commitment tree rebuilt in creation order must match the signed root.
@@ -1088,11 +1361,16 @@ export class UepLedger {
     // Notes that are not the output of any transaction must be signed faucet mints.
     const mintedCommitments = new Set<string>();
     const minted = new Map<string, bigint>();
-    if (data.mints.length > 0 && faucetKeys.length === 0) fail("MINT_KEY", "snapshot contains mints but no trusted faucet public key was supplied");
+    if (data.mints.length > 0 && faucetKeys.length === 0 && issuerEntries.length === 0) fail("MINT_KEY", "snapshot contains mints but no trusted faucet public key was supplied");
     data.mints.forEach((m, i) => {
-      if (!m || m.index !== i || m.networkId !== l.networkId || m.domainId !== l.domainId || typeof m.commitment !== "string" || typeof m.amount !== "string" || !/^[0-9]+$/.test(m.amount)) fail("MINT_SHAPE");
+      if (!m || m.index !== i || m.networkId !== l.networkId || m.domainId !== l.domainId || typeof m.commitment !== "string" || typeof m.amount !== "string" || !/^[0-9]+$/.test(m.amount) || typeof m.assetId !== "string") fail("MINT_SHAPE");
+      // v0.4.7: only registered assets can be minted, and only by a key trusted for that asset at this index.
+      let assetFr: Fr | undefined;
+      try { assetFr = new Fr(m.assetId); } catch { fail("MINT_SHAPE"); }
+      const asset = findAssetByFr(l.networkId, assetFr!);
+      if (!asset || assetFr!.toHex() !== m.assetId) fail("MINT_ASSET", `mint ${i} is for an asset that is not registered on this network`);
       const { signature, ...unsigned } = m;
-      if (!faucetKeys.some((k) => verifyEd25519(mintMessage(unsigned), signature, k))) fail("MINT_SIGNATURE", `mint ${i} is unsigned or not signed by a trusted faucet key`);
+      if (!mintKeysFor(asset!.assetId, i).some((k) => verifyEd25519(mintMessage(unsigned), signature, k))) fail("MINT_SIGNATURE", `mint ${i} is unsigned or not signed by a key trusted for this asset`);
       const note = noteByCommitment.get(m.commitment);
       if (!note || outputCommitments.has(m.commitment) || note.owner.toHex() !== m.account || note.assetId.toHex() !== m.assetId || note.amount.toString() !== m.amount) fail("MINT_NOTE");
       if (mintedCommitments.has(m.commitment)) fail("MINT_DUPLICATE");
@@ -1111,7 +1389,7 @@ export class UepLedger {
       if (txIds.has(tx.txId.toHex())) fail("TX_DUPLICATE");
       txIds.add(tx.txId.toHex());
       if (!rebuiltNullifiers.insertOnce(tx.nullifier)) fail("NULLIFIER_SET");
-      if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount)) fail("TX_VALUE");
+      if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount, protocolFeeFloor(l.networkId, tx.assetId))) fail("TX_VALUE");
       if (!registeredAssets.some((a) => a.eq(tx.assetId))) fail("TX_ASSET");
       if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) fail("TX_NOTES");
       const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });

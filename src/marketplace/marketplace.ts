@@ -24,6 +24,8 @@ import { spendKeyMatchesAccount } from "../core/spend-key.ts";
 import type { Fr } from "../core/field.ts";
 import { TESTNET } from "../network/profiles.ts";
 import { DEFAULT_MARKETPLACE_ID, actionMessage, disputeReasonHash, listingTerms, reservationMessage, type ActorAuth, type MarketplaceAction } from "./identity.ts";
+import { NestedAmountMap, tupleKey } from "../core/composite-key.ts";
+import { findAsset } from "../core/assets.ts";
 
 export const MARKETPLACE_VERSION = "0.4" as const;
 
@@ -41,6 +43,14 @@ export const DEFAULT_MAX_ACTIVE_RESERVATIONS = 8;
 export const DEFAULT_DISPUTE_RESOLUTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** Default validity of a signed read / list authorization (5 minutes, either direction). */
 export const DEFAULT_READ_AUTHORIZATION_TTL_MS = 5 * 60 * 1000;
+/**
+ * v0.4.7: Marketplace asset ids: ASCII letters, digits and `.`, `_`, `:`, `-`,
+ * 1 to 64 characters, starting with a letter or digit. With
+ * `assetRegistryNetworkId` set, the id must also be registered on that ledger network.
+ */
+export const MARKETPLACE_ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+/** v0.4.7: maximum identity id length (UTF-16 code units). */
+export const MAX_IDENTITY_ID_LENGTH = 256;
 /** Identity strings that can never be registered, listed or used as a buyer (UEP-A09/B12). */
 export const RESERVED_IDENTITIES = ["marketplace-admin", "marketplace-system"] as const;
 
@@ -223,6 +233,24 @@ export type MarketplaceConfig = {
   cancellationGraceMs?: number;
   /** Domain separator bound into buyer signatures. Default "uep-marketplace-testnet". */
   marketplaceId?: string;
+  /**
+   * v0.4.7: when set (e.g. "uep-testnet-1"), every listing and credit asset must
+   * be an asset id registered on that ledger network (src/core/assets.ts).
+   * Default: unset (any well-formed asset id, as before).
+   */
+  assetRegistryNetworkId?: string;
+  /**
+   * v0.4.7: per-asset reservation deposit floor, in the asset's smallest unit
+   * (asset id -> minimum, each >= MIN_RESERVATION_DEPOSIT). Assets without an
+   * entry keep MIN_RESERVATION_DEPOSIT. The bps rate is not per asset.
+   */
+  minReservationDepositByAsset?: Record<string, bigint>;
+  /**
+   * v0.4.7: when true, creditAccount() requires the administrator's "credit"
+   * signature over { asset, amount, creditId } and each creditId is accepted
+   * once. Default false (testnet funding rail, as before).
+   */
+  requireSignedCredits?: boolean;
 };
 
 export type RegisteredIdentity = { identityId: string; publicKeyHex: string; registeredAt: number };
@@ -263,8 +291,9 @@ function catalogFingerprint(input: { providerId: string; title: string; descript
   })).digest("hex");
 }
 
-function key(asset: string, account: string): string {
-  return `${asset}:${account}`;
+/** v0.4.7: structural check of a Marketplace asset id (see MARKETPLACE_ASSET_ID_PATTERN). */
+export function isWellFormedMarketplaceAsset(asset: unknown): asset is string {
+  return typeof asset === "string" && MARKETPLACE_ASSET_ID_PATTERN.test(asset);
 }
 
 function makeId(prefix: string, payload: string, counter: number): string {
@@ -279,7 +308,7 @@ export class DigitalServicesMarketplace {
   private sequence = 0;
   private readonly listings = new Map<string, ServiceListing>();
   private readonly orders = new Map<string, ServiceOrder>();
-  private readonly held = new Map<string, bigint>();
+  private readonly held = new NestedAmountMap();
   private readonly settlements = new Map<string, SettlementRecord>();
   readonly reputation: MarketplaceReputation;
   readonly reservationTtlMs: number;
@@ -313,10 +342,18 @@ export class DigitalServicesMarketplace {
   readonly ledgerNetworkId: string;
   /** v0.4.5: true only when the test-only zero-deposit flag was set. */
   readonly testOnlyAllowZeroReservationDeposit: boolean;
+  /** v0.4.7: ledger network whose asset registry constrains Marketplace assets (unset = any well-formed id). */
+  readonly assetRegistryNetworkId?: string;
+  /** v0.4.7: per-asset reservation deposit floors. */
+  private readonly minReservationDepositByAsset = new Map<string, bigint>();
+  /** v0.4.7: creditAccount() requires an administrator signature. */
+  readonly requireSignedCredits: boolean;
+  private readonly usedCreditIds = new Set<string>();
   private readonly identities = new Map<string, RegisteredIdentity>();
   private readonly identityKeys = new Map<string, KeyObject>();
-  private readonly accounts = new Map<string, bigint>();
-  private readonly locked = new Map<string, bigint>();
+  /** v0.4.7: balances are indexed by asset, then identity (structural keys). */
+  private readonly accounts = new NestedAmountMap();
+  private readonly locked = new NestedAmountMap();
   private readonly credited = new Map<string, bigint>();
   private readonly feesCollected = new Map<string, bigint>();
   private readonly gasCollected = new Map<string, bigint>();
@@ -361,6 +398,28 @@ export class DigitalServicesMarketplace {
     }
     if (!Number.isSafeInteger(this.reservationTtlMs) || this.reservationTtlMs <= 0 || !Number.isSafeInteger(this.cancellationGraceMs) || this.cancellationGraceMs < 0) throw new Error("INVALID_RESERVATION_LIMIT");
     if ((this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit < 0n) || !Number.isInteger(this.reservationDepositBps) || this.reservationDepositBps < 0 || this.reservationDepositBps > 10_000 || !Number.isInteger(this.maxActiveReservationsPerIdentity) || this.maxActiveReservationsPerIdentity < 1) throw new Error("INVALID_RESERVATION_LIMIT");
+    this.assetRegistryNetworkId = config.assetRegistryNetworkId;
+    if (this.assetRegistryNetworkId !== undefined && (typeof this.assetRegistryNetworkId !== "string" || !this.assetRegistryNetworkId)) throw new Error("ASSET_REGISTRY_NETWORK_INVALID");
+    for (const [asset, min] of Object.entries(config.minReservationDepositByAsset ?? {})) {
+      if (!isWellFormedMarketplaceAsset(asset) || typeof min !== "bigint" || min < MIN_RESERVATION_DEPOSIT) throw new Error("INVALID_RESERVATION_LIMIT");
+      this.minReservationDepositByAsset.set(asset, min);
+    }
+    this.requireSignedCredits = config.requireSignedCredits === true;
+  }
+
+  /**
+   * v0.4.7: throws ASSET_ID_INVALID for malformed asset ids and, when
+   * `assetRegistryNetworkId` is set, ASSET_NOT_REGISTERED for ids that are not
+   * in that network's asset registry.
+   */
+  assertAsset(asset: string): void {
+    if (!isWellFormedMarketplaceAsset(asset)) throw new Error("ASSET_ID_INVALID");
+    if (this.assetRegistryNetworkId !== undefined && !findAsset(this.assetRegistryNetworkId, asset)) throw new Error("ASSET_NOT_REGISTERED");
+  }
+
+  /** v0.4.7: reservation deposit floor of one asset (default MIN_RESERVATION_DEPOSIT). */
+  minReservationDepositFor(asset?: string): bigint {
+    return (asset !== undefined ? this.minReservationDepositByAsset.get(asset) : undefined) ?? MIN_RESERVATION_DEPOSIT;
   }
 
   /**
@@ -368,10 +427,11 @@ export class DigitalServicesMarketplace {
    * applied to the payment when funded, refunded on cancel within the grace window,
    * otherwise forfeited to the provider. Never more than the order total.
    */
-  reservationDepositFor(grossAmount: bigint, gasFee = 0n): bigint {
+  reservationDepositFor(grossAmount: bigint, gasFee = 0n, asset?: string): bigint {
+    const floor = this.minReservationDepositFor(asset);
     const base = this.fixedReservationDeposit !== undefined
       ? this.fixedReservationDeposit
-      : (() => { const proportional = (grossAmount * BigInt(this.reservationDepositBps)) / BPS_DENOMINATOR; return proportional > MIN_RESERVATION_DEPOSIT ? proportional : MIN_RESERVATION_DEPOSIT; })();
+      : (() => { const proportional = (grossAmount * BigInt(this.reservationDepositBps)) / BPS_DENOMINATOR; return proportional > floor ? proportional : floor; })();
     const total = grossAmount + gasFee;
     return base < total ? base : total;
   }
@@ -382,6 +442,8 @@ export class DigitalServicesMarketplace {
    */
   registerIdentity(identityId: string, publicKey: PublicKeyLike): RegisteredIdentity {
     if (!identityId || typeof identityId !== "string") throw new Error("IDENTITY_ID_REQUIRED");
+    // v0.4.7: bounded length, no control characters.
+    if (identityId.length > MAX_IDENTITY_ID_LENGTH || /[\u0000-\u001f\u007f-\u009f]/.test(identityId)) throw new Error("IDENTITY_ID_INVALID");
     if (this.isReservedIdentity(identityId)) throw new Error("RESERVED_IDENTITY");
     if (this.identities.has(identityId)) throw new Error("IDENTITY_ALREADY_REGISTERED");
     let keyObject: KeyObject;
@@ -427,33 +489,41 @@ export class DigitalServicesMarketplace {
    * Testnet funding rail: credit external value to a registered identity's
    * marketplace account. Production custody / payment rails remain external.
    */
-  creditAccount(identityId: string, asset: string, amount: bigint): bigint {
+  creditAccount(identityId: string, asset: string, amount: bigint, authorization?: { creditId: string; auth: ActorAuth }): bigint {
     if (!this.identities.has(identityId)) throw new Error("IDENTITY_NOT_REGISTERED");
     if (!asset) throw new Error("ASSET_REQUIRED");
+    this.assertAsset(asset);
     if (amount <= 0n) throw new Error("INVALID_CREDIT_AMOUNT");
-    this.add(this.accounts, key(asset, identityId), amount);
+    if (this.requireSignedCredits) {
+      // v0.4.7: administrator-signed credits, each creditId accepted once (fail closed).
+      if (!authorization || typeof authorization.creditId !== "string" || !authorization.creditId) throw new Error("CREDIT_AUTHORIZATION_REQUIRED");
+      const actor = this.authenticateActor(authorization.auth, "credit", identityId, { asset, amount, creditId: authorization.creditId });
+      if (!this.isAdmin(actor)) throw new Error("CREDIT_NOT_AUTHORIZED");
+      if (this.usedCreditIds.has(authorization.creditId)) throw new Error("CREDIT_REPLAY");
+      this.usedCreditIds.add(authorization.creditId);
+    }
+    this.accounts.add(asset, identityId, amount);
     this.add(this.credited, asset, amount);
     return this.availableBalance(asset, identityId);
   }
 
   /** Spendable marketplace balance (provider earnings, refunds and credits). */
   availableBalance(asset: string, identityId: string): bigint {
-    return this.accounts.get(key(asset, identityId)) ?? 0n;
+    return this.accounts.get(asset, identityId);
   }
 
   /** Reservation deposits currently locked for an identity. */
   lockedDeposit(asset: string, identityId: string): bigint {
-    return this.locked.get(key(asset, identityId)) ?? 0n;
+    return this.locked.get(asset, identityId);
   }
 
   /** Conservation check across every deposit / escrow path for one asset. */
   valueAccounting(asset: string): ValueAccounting {
     this.reapExpiredReservations();
-    const sum = (m: Map<string, bigint>) => [...m.entries()].filter(([k]) => k.startsWith(`${asset}:`)).reduce((a, [, v]) => a + v, 0n);
     const credited = this.credited.get(asset) ?? 0n;
-    const available = sum(this.accounts);
-    const lockedDeposits = sum(this.locked);
-    const held = sum(this.held);
+    const available = this.accounts.total(asset);
+    const lockedDeposits = this.locked.total(asset);
+    const held = this.held.total(asset);
     const marketplaceFees = this.feesCollected.get(asset) ?? 0n;
     const gasCaptured = this.gasCollected.get(asset) ?? 0n;
     return { asset, credited, available, lockedDeposits, held, marketplaceFees, gasCaptured, conserved: credited === available + lockedDeposits + held + marketplaceFees + gasCaptured };
@@ -465,6 +535,7 @@ export class DigitalServicesMarketplace {
    */
   publishListing(input: Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint"> & { listingId?: string; sellerBond?: bigint }, auth?: ActorAuth): ServiceListing {
     if (!input.providerId || !input.title || !input.asset) throw new Error("LISTING_METADATA_REQUIRED");
+    this.assertAsset(input.asset);
     if (this.isReservedIdentity(input.providerId)) throw new Error("RESERVED_IDENTITY");
     if (!this.identities.has(input.providerId)) throw new Error("IDENTITY_NOT_REGISTERED");
     const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", listingTerms(input));
@@ -482,7 +553,7 @@ export class DigitalServicesMarketplace {
     this.listingAttempts.set(input.providerId, recent);
     const listing: ServiceListing = { ...input, listingId, available: input.capacity, active: true, sellerBond: input.sellerBond ?? 0n, catalogFingerprint: fingerprint };
     this.listings.set(listingId, listing);
-    const indexKey = `${listing.category}:${listing.asset}`;
+    const indexKey = tupleKey(listing.category, listing.asset);
     const bucket = this.listingIndex.get(indexKey) ?? new Set<string>();
     bucket.add(listingId);
     this.listingIndex.set(indexKey, bucket);
@@ -502,7 +573,7 @@ export class DigitalServicesMarketplace {
     const offset = Math.max(0, query?.offset ?? 0);
     const limit = Math.min(200, Math.max(1, query?.limit ?? 50));
     const candidates = query?.category && query?.asset
-      ? [...(this.listingIndex.get(`${query.category}:${query.asset}`) ?? new Set<string>())].map((id) => this.listings.get(id)!).filter(Boolean)
+      ? [...(this.listingIndex.get(tupleKey(query.category, query.asset)) ?? new Set<string>())].map((id) => this.listings.get(id)!).filter(Boolean)
       : [...this.listings.values()];
     return candidates
       .filter((l) => !activeOnly || l.active)
@@ -521,7 +592,7 @@ export class DigitalServicesMarketplace {
   reserve(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote }): ServiceOrder {
     this.assertReservationAuthorized(input);
     // A signed request authorizes at most one reservation: replays return the same order.
-    const previous = this.orderIdempotency.get(`${input.buyerId}:${input.idempotencyKey}`);
+    const previous = this.orderIdempotency.get(tupleKey(input.buyerId, input.idempotencyKey));
     if (previous) return { ...this.order(previous) };
     this.reapExpiredReservations();
     const listing = this.listings.get(input.listingId);
@@ -537,13 +608,12 @@ export class DigitalServicesMarketplace {
     const orderId = input.orderId ?? makeId("ord", `${listing.listingId}|${input.buyerId}|${input.quantity}`, ++this.sequence);
     if (this.orders.has(orderId)) throw new Error("ORDER_ID_CONFLICT");
     const gasFee = input.gasQuote?.gasFee ?? 0n;
-    const deposit = this.reservationDepositFor(grossAmount, gasFee);
-    const buyerKey = key(listing.asset, input.buyerId);
+    const deposit = this.reservationDepositFor(grossAmount, gasFee, listing.asset);
     // No reservation without funds.
     if (this.availableBalance(listing.asset, input.buyerId) < deposit) throw new Error("INSUFFICIENT_FUNDS_FOR_DEPOSIT");
     listing.available -= input.quantity;
-    this.add(this.accounts, buyerKey, -deposit);
-    this.add(this.locked, buyerKey, deposit);
+    this.accounts.add(listing.asset, input.buyerId, -deposit);
+    this.locked.add(listing.asset, input.buyerId, deposit);
     const now = this.now();
     const order: ServiceOrder = {
       orderId,
@@ -574,15 +644,15 @@ export class DigitalServicesMarketplace {
         this.paymaster.sponsor(orderId, input.gasQuote, this.now());
       } catch (error) {
         listing.available += input.quantity;
-        this.add(this.locked, buyerKey, -deposit);
-        this.add(this.accounts, buyerKey, deposit);
+        this.locked.add(listing.asset, input.buyerId, -deposit);
+        this.accounts.add(listing.asset, input.buyerId, deposit);
         this.orders.delete(orderId);
         this.removeQueuedReservation(order);
         this.decrementActiveReservation(input.buyerId);
         throw error;
       }
     }
-    this.orderIdempotency.set(`${input.buyerId}:${input.idempotencyKey}`, orderId);
+    this.orderIdempotency.set(tupleKey(input.buyerId, input.idempotencyKey), orderId);
     return { ...order };
   }
 
@@ -608,9 +678,9 @@ export class DigitalServicesMarketplace {
     const order = this.order(orderId);
     if (actor !== order.buyerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
     if (idempotencyKey) {
-      const previous = this.operationIdempotency.get(`fund:${orderId}:${idempotencyKey}`);
+      const previous = this.operationIdempotency.get(tupleKey("fund", orderId, idempotencyKey));
       if (previous) {
-        if (previous !== `${orderId}:${amount.toString()}`) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
+        if (previous !== tupleKey(orderId, amount.toString())) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
         return { ...order };
       }
     }
@@ -618,18 +688,17 @@ export class DigitalServicesMarketplace {
     if (order.status !== "ACCEPTED") throw new Error("ORDER_NOT_FUNDABLE");
     // The locked deposit counts toward the payment: the buyer funds the remainder.
     if (amount !== order.fundingDue) throw new Error("HOLD_AMOUNT_MISMATCH");
-    const k = key(order.asset, order.buyerId);
     if (this.availableBalance(order.asset, order.buyerId) < amount) throw new Error("INSUFFICIENT_FUNDS");
-    this.add(this.accounts, k, -amount);
-    this.add(this.locked, k, -order.depositLocked);
-    this.add(this.held, k, amount + order.depositLocked);
+    this.accounts.add(order.asset, order.buyerId, -amount);
+    this.locked.add(order.asset, order.buyerId, -order.depositLocked);
+    this.held.add(order.asset, order.buyerId, amount + order.depositLocked);
     order.heldAmount = amount + order.depositLocked;
     order.depositLocked = 0n;
     order.fundingDue = 0n;
     order.depositOutcome = "APPLIED_TO_PAYMENT";
     order.status = "HELD";
     order.updatedAt = this.now();
-    if (idempotencyKey) this.operationIdempotency.set(`fund:${orderId}:${idempotencyKey}`, `${orderId}:${amount.toString()}`);
+    if (idempotencyKey) this.operationIdempotency.set(tupleKey("fund", orderId, idempotencyKey), tupleKey(orderId, amount.toString()));
     return { ...order };
   }
 
@@ -640,7 +709,7 @@ export class DigitalServicesMarketplace {
     const order = this.order(orderId);
     if (actor !== order.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (idempotencyKey) {
-      const previous = this.operationIdempotency.get(`deliver:${orderId}:${idempotencyKey}`);
+      const previous = this.operationIdempotency.get(tupleKey("deliver", orderId, idempotencyKey));
       if (previous) {
         if (previous !== orderId) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
         return { ...order };
@@ -656,7 +725,7 @@ export class DigitalServicesMarketplace {
     order.status = "DELIVERED";
     order.deliveredAt = this.now();
     order.updatedAt = order.deliveredAt;
-    if (idempotencyKey) this.operationIdempotency.set(`deliver:${orderId}:${idempotencyKey}`, orderId);
+    if (idempotencyKey) this.operationIdempotency.set(tupleKey("deliver", orderId, idempotencyKey), orderId);
     return { ...order };
   }
 
@@ -998,8 +1067,7 @@ export class DigitalServicesMarketplace {
     const gas = order.gasFee ?? 0n;
     const required = order.grossAmount + gas;
     if (order.heldAmount !== required) throw new Error("HOLD_NOT_COMPLETE");
-    const heldKey = key(order.asset, order.buyerId);
-    const held = this.held.get(heldKey) ?? 0n;
+    const held = this.held.get(order.asset, order.buyerId);
     if (held < order.heldAmount) throw new Error("HELD_BALANCE_INSUFFICIENT");
     if (providerAmount < 0n || providerAmount > order.grossAmount) throw new Error("PAYOUT_AMOUNT_INVALID");
     // v0.4.6 (UEP-D05): decide and validate the capacity return before any value moves.
@@ -1024,10 +1092,9 @@ export class DigitalServicesMarketplace {
     }
     const buyerRefund = order.heldAmount - providerNet - fee - gasCaptured;
     if (buyerRefund < 0n || buyerRefund !== order.grossAmount - providerAmount + (gas - gasCaptured)) throw new Error("PAYOUT_NOT_CONSERVED");
-    this.held.set(heldKey, held - order.heldAmount);
-    if (held - order.heldAmount === 0n) this.held.delete(heldKey);
-    if (providerNet > 0n) this.add(this.accounts, key(order.asset, order.providerId), providerNet);
-    if (buyerRefund > 0n) this.add(this.accounts, heldKey, buyerRefund);
+    this.held.add(order.asset, order.buyerId, -order.heldAmount);
+    if (providerNet > 0n) this.accounts.add(order.asset, order.providerId, providerNet);
+    if (buyerRefund > 0n) this.accounts.add(order.asset, order.buyerId, buyerRefund);
     this.add(this.feesCollected, order.asset, fee);
     this.add(this.gasCollected, order.asset, gasCaptured);
     order.heldAmount = 0n;
@@ -1083,11 +1150,12 @@ export class DigitalServicesMarketplace {
     const grossAmount = quantity * listing.unitPrice;
     const quote = this.treasury.quote(grossAmount, listing.asset);
     const gasQuote = gasUnits > 0n ? (this.paymaster?.quote(listing.asset, gasUnits, this.now()) ?? (() => { throw new Error("PAYMASTER_NOT_CONFIGURED"); })()) : undefined;
-    return { listingId, quantity, asset: listing.asset, unitPrice: listing.unitPrice, grossAmount, marketplaceFee: quote.marketplaceFee, providerNet: quote.providerNet, feeBps: quote.feeBps, gasFee: gasQuote?.gasFee ?? 0n, reservationDeposit: this.reservationDepositFor(grossAmount, gasQuote?.gasFee ?? 0n), buyerTotal: grossAmount + (gasQuote?.gasFee ?? 0n), dueAtFunding: grossAmount + (gasQuote?.gasFee ?? 0n) - this.reservationDepositFor(grossAmount, gasQuote?.gasFee ?? 0n), gasQuote, reservationTtlMs: this.reservationTtlMs, cancellationGraceMs: this.cancellationGraceMs, maxActiveReservationsPerIdentity: this.maxActiveReservationsPerIdentity };
+    const deposit = this.reservationDepositFor(grossAmount, gasQuote?.gasFee ?? 0n, listing.asset);
+    return { listingId, quantity, asset: listing.asset, unitPrice: listing.unitPrice, grossAmount, marketplaceFee: quote.marketplaceFee, providerNet: quote.providerNet, feeBps: quote.feeBps, gasFee: gasQuote?.gasFee ?? 0n, reservationDeposit: deposit, buyerTotal: grossAmount + (gasQuote?.gasFee ?? 0n), dueAtFunding: grossAmount + (gasQuote?.gasFee ?? 0n) - deposit, gasQuote, reservationTtlMs: this.reservationTtlMs, cancellationGraceMs: this.cancellationGraceMs, maxActiveReservationsPerIdentity: this.maxActiveReservationsPerIdentity };
   }
 
   heldBalance(asset: string, buyerId: string): bigint {
-    return this.held.get(key(asset, buyerId)) ?? 0n;
+    return this.held.get(asset, buyerId);
   }
 
   treasuryBalance(asset: string): TreasuryBalance {
@@ -1148,31 +1216,29 @@ export class DigitalServicesMarketplace {
   private closeOrder(order: ServiceOrder, status: "CANCELLED" | "EXPIRED", forfeitDeposit: boolean): void {
     // Nothing was delivered: the whole quantity returns to capacity, exactly once.
     this.assertCapacityRestorable(order, order.quantity);
-    const buyerKey = key(order.asset, order.buyerId);
-    const providerKey = key(order.asset, order.providerId);
     let refund = 0n;
     let deposit = 0n;
     if (order.status === "ACCEPTED") {
       if (this.lockedDeposit(order.asset, order.buyerId) < order.depositLocked) throw new Error("LOCKED_DEPOSIT_INSUFFICIENT");
-      this.add(this.locked, buyerKey, -order.depositLocked);
+      this.locked.add(order.asset, order.buyerId, -order.depositLocked);
       deposit = order.depositLocked;
       order.depositLocked = 0n;
     } else if (order.status === "HELD") {
-      const held = this.held.get(buyerKey) ?? 0n;
+      const held = this.held.get(order.asset, order.buyerId);
       if (held < order.heldAmount) throw new Error("HELD_BALANCE_INSUFFICIENT");
-      this.add(this.held, buyerKey, -order.heldAmount);
+      this.held.add(order.asset, order.buyerId, -order.heldAmount);
       deposit = order.reservationDeposit;
       refund = order.heldAmount - deposit;
       order.heldAmount = 0n;
     }
     if (forfeitDeposit) {
-      this.add(this.accounts, providerKey, deposit);
+      this.accounts.add(order.asset, order.providerId, deposit);
       order.depositOutcome = "FORFEITED_TO_PROVIDER";
     } else {
       refund += deposit;
       order.depositOutcome = "REFUNDED";
     }
-    if (refund > 0n) this.add(this.accounts, buyerKey, refund);
+    if (refund > 0n) this.accounts.add(order.asset, order.buyerId, refund);
     order.fundingDue = 0n;
     this.releasePaymaster(order);
     this.applyCapacityRestore(order, 0n, order.quantity);

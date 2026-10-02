@@ -70,18 +70,20 @@ export const MIN_MARKETPLACE_FEE = 1n;
  * MIN_MARKETPLACE_FEE (and never above the amount itself) when the rate is
  * non-zero. A configured rate of 0 bps stays fee-free.
  */
-export function calculateMarketplaceFee(grossAmount: bigint, feeBps = MARKETPLACE_FEE_BPS): bigint {
+export function calculateMarketplaceFee(grossAmount: bigint, feeBps = MARKETPLACE_FEE_BPS, minFee: bigint = MIN_MARKETPLACE_FEE): bigint {
   if (grossAmount < 0n) throw new Error("NEGATIVE_AMOUNT");
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 10_000) throw new Error("INVALID_FEE_BPS");
+  if (typeof minFee !== "bigint" || minFee < MIN_MARKETPLACE_FEE) throw new Error("INVALID_MIN_FEE");
   if (grossAmount === 0n || feeBps === 0) return 0n;
   const proportional = (grossAmount * BigInt(feeBps)) / BPS_DENOMINATOR;
-  const floored = proportional < MIN_MARKETPLACE_FEE ? MIN_MARKETPLACE_FEE : proportional;
+  const floored = proportional < minFee ? minFee : proportional;
   return floored > grossAmount ? grossAmount : floored;
 }
 
-export function quoteSettlement(grossAmount: bigint, asset: string, feeBps = MARKETPLACE_FEE_BPS): FeeQuote {
+/** v0.4.7: `minFee` is the per-asset floor (default MIN_MARKETPLACE_FEE); the 3% rate is the same for every asset. */
+export function quoteSettlement(grossAmount: bigint, asset: string, feeBps = MARKETPLACE_FEE_BPS, minFee: bigint = MIN_MARKETPLACE_FEE): FeeQuote {
   if (!asset) throw new Error("ASSET_REQUIRED");
-  const fee = calculateMarketplaceFee(grossAmount, feeBps);
+  const fee = calculateMarketplaceFee(grossAmount, feeBps, minFee);
   return { asset, grossAmount, marketplaceFee: fee, providerNet: grossAmount - fee, feeBps };
 }
 
@@ -112,12 +114,16 @@ export class MarketplaceTreasury {
   private readonly settledOrders = new Set<string>();
   private readonly withdrawnRefs = new Set<string>();
   private readonly authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
+  /** v0.4.7: per-asset Marketplace fee floor (asset -> minimum, each >= MIN_MARKETPLACE_FEE). */
+  private readonly minFeeByAsset = new Map<string, bigint>();
 
   constructor(opts?: {
     treasuryId?: string;
     feeBps?: number;
     allocationBps?: Record<TreasuryBucket, number>;
     authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
+    /** v0.4.7: per-asset fee floors in the asset's smallest unit (default MIN_MARKETPLACE_FEE for every asset). */
+    minFeeByAsset?: Record<string, bigint>;
   }) {
     this.treasuryId = opts?.treasuryId ?? "marketplace-treasury";
     this.feeBps = opts?.feeBps ?? MARKETPLACE_FEE_BPS;
@@ -125,6 +131,15 @@ export class MarketplaceTreasury {
     this.authorizationVerifier = opts?.authorizationVerifier;
     validateAllocation(this.allocationBps);
     calculateMarketplaceFee(0n, this.feeBps);
+    for (const [asset, min] of Object.entries(opts?.minFeeByAsset ?? {})) {
+      if (!asset || typeof min !== "bigint" || min < MIN_MARKETPLACE_FEE) throw new Error("INVALID_MIN_FEE");
+      this.minFeeByAsset.set(asset, min);
+    }
+  }
+
+  /** v0.4.7: Marketplace fee floor of one asset. */
+  minFeeFor(asset: string): bigint {
+    return this.minFeeByAsset.get(asset) ?? MIN_MARKETPLACE_FEE;
   }
 
   private balance(asset: string): TreasuryBalance {
@@ -137,7 +152,7 @@ export class MarketplaceTreasury {
   }
 
   quote(grossAmount: bigint, asset: string): FeeQuote {
-    return quoteSettlement(grossAmount, asset, this.feeBps);
+    return quoteSettlement(grossAmount, asset, this.feeBps, this.minFeeFor(asset));
   }
 
   settleMarketplaceFee(orderId: string, grossAmount: bigint, asset: string, timestamp = Date.now()): FeeQuote {

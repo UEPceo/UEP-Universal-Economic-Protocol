@@ -2,7 +2,7 @@
  * UEP-25 atomic sender/recipient/treasury transition.
  * Status: IMPLEMENTED / TESTED
  */
-import { creatorFee } from "./fee.ts";
+import { creatorFee, MIN_PROTOCOL_FEE } from "./fee.ts";
 
 export type Balances = {
   sender: bigint;
@@ -29,9 +29,10 @@ function fitsU64(n: bigint): boolean {
   return n >= 0n && n <= U64_MAX;
 }
 
-export function transition(old: Balances, amount: bigint): { ok: Transition } | { err: TransitionError } {
+/** v0.4.7: `minFee` is the asset's protocol fee floor (default 1). */
+export function transition(old: Balances, amount: bigint, minFee: bigint = MIN_PROTOCOL_FEE): { ok: Transition } | { err: TransitionError } {
   if (amount < 0n || !fitsU64(amount)) return { err: "InsufficientSenderBalance" };
-  const fee = creatorFee(amount);
+  const fee = creatorFee(amount, minFee);
   const required = amount + fee;
   if (old.sender < required) return { err: "InsufficientSenderBalance" };
   const sender = old.sender - required;

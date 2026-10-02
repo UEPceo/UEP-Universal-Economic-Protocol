@@ -27,7 +27,7 @@ const EUR = "asset:test:eur";
 const asset = encodeStringToFr(EUR);
 
 const identity = async () => identityFromMnemonic(await generateMnemonic(128));
-const ledger = () => new UepLedger({ networkId: NET, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey });
+const ledger = (extra: { testOnlyDisableProof?: boolean } = {}) => new UepLedger({ networkId: NET, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey, ...extra });
 const resign = (snap: UepLedgerSnapshot) => signSnapshot(snap, [SNAPSHOT_KEY.privateKey]);
 const code = (r: { error: { code: string } } | { tx: unknown }) => ("error" in r ? r.error.code : "OK");
 function prepared(l: UepLedger, from: IdentitySecrets, to: Fr | string, amount: bigint): UepTransaction {
@@ -122,7 +122,7 @@ test("ledger: faucet and spends accept v2 addresses and refuse invalid or legacy
 
 test("owner binding: a note owned by an address whose key does not match the signer is rejected", async () => {
   const a = await identity(); const b = await identity(); const z = await identity();
-  const l = ledger();
+  const l = ledger({ testOnlyDisableProof: true }); // isolate the public check from the development MAC
   l.faucet(a.accountId, EUR, 1_000n);
   const tx = prepared(l, a, b.accountId, 100n);
   // z signs a's spend (sender = a): z's key does not hash to a's account.
@@ -130,7 +130,6 @@ test("owner binding: a note owned by an address whose key does not match the sig
   // z claims to be the sender of a's note: the note owner does not match z.
   const outs = tx.outputNotes!.map(deserializeNote);
   const asZ = recrafted(tx, z, { senderId: z.accountId, outputs: [outs[0]!, makeNote(z.accountId, asset, outs[1]!.amount, outs[1]!.blinding)] });
-  l.requireProof = false; // isolate the public check from the development MAC
   assert.equal(code(l.submit(zSigned)), "OWNER_KEY");
   assert.ok(["WRONG_OWNER", "OWNER_KEY"].includes(code(l.submit(asZ))));
   assert.equal(code(l.queueConflict(zSigned)), "OWNER_KEY");

@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.7-public-iot-m2m — 2026-10-02
+
+Multi-asset hardening of the testnet ledger and the Marketplace, following the external multi-asset (P4) exit-criteria review. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged. Testnet only, single node, same trust model. See [`docs/API.md`](./docs/API.md).
+
+### Marketplace
+
+- Harden per-asset balance keying: available balances, locked deposits and held escrow are indexed structurally by asset and then identity, and per-asset accounting reads only that asset.
+- Listing index and idempotency keys use structural (injective) composite keys, also in the paymaster and the IoT/M2M service.
+- Asset ids are validated (`MARKETPLACE_ASSET_ID_PATTERN`, `ASSET_ID_INVALID`). Optional `assetRegistryNetworkId` restricts listings and credits to the assets registered on a ledger network.
+- Identity ids are limited to 256 characters without control characters (`IDENTITY_ID_INVALID`).
+- Optional per-asset minimums: `minReservationDepositByAsset` and `MarketplaceTreasury({ minFeeByAsset })`. Defaults are unchanged (floor 1).
+- Optional `requireSignedCredits`: `creditAccount()` then needs an administrator `"credit"` signature and a single-use `creditId`.
+
+### Ledger
+
+- Asset ids follow a canonical grammar (lowercase, 1–31 bytes) so their field encoding is injective; `validateAssetRegistry()` checks the registry (unique ids and encodings, decimals 0–18). Registered ids, encodings and commitments are unchanged.
+- Per-asset issuer keys: `issuerSigningKeys`, `setIssuerSigningKey()` (install, rotate, remove). Snapshot trust accepts asset-scoped issuer keys and key revocation from a mint index (`issuerKeys`, `revokedMintKeys`).
+- `restore()` rejects notes and mints of unregistered assets and mints not signed by a key trusted for that asset.
+- `submit()` rejects any input or output note outside the transaction asset with `ASSET_MISMATCH`; `prepareSpend()` returns `ASSET_MISMATCH` for unregistered assets.
+- Security policy limits per asset (`assetLimits`: maximum, per-window volume, minimum). Volume of different assets is never summed.
+- Per-asset protocol fee floor (`AssetRecord.minProtocolFee`, default 1 for every registered asset), applied in submit, pending validation and restore. `maxPayableFromNote()` and `effectiveFeeBps()` helpers.
+- Payments from several notes: `preparePayment()` + `submitBatch()` apply up to 16 single-input spends of one sender, asset and recipient atomically (all or none). Each part pays its own fee. The transaction and proof format are unchanged.
+- `requireProof` is fixed at construction (`testOnlyDisableProof` for tests); assigning it throws `REQUIRE_PROOF_IMMUTABLE`.
+
+### Compatibility
+
+- **Behaviour change:** `ledger.requireProof = false` now throws; tests must construct the ledger with `testOnlyDisableProof: true`.
+- **Behaviour change:** `prepareSpend()` with an unregistered asset returns `ASSET_MISMATCH` (was `INSUFFICIENT`); a note in another asset makes `submit()` return `ASSET_MISMATCH` (was `AMOUNT_MISMATCH` or a value error).
+- **Behaviour change:** Marketplace asset and identity ids are validated; ids with control characters, empty ids or over-long ids are rejected.
+- **Behaviour change:** the policy window volume is counted per asset; the spend count per window stays per account.
+- **Behaviour change:** `restore()` rejects snapshots with unregistered assets; once an asset has scoped issuer keys, the global faucet keys no longer validate its mints.
+- `creditAccount()` takes an optional fourth argument. No change to addresses, notes, commitments, transactions, proofs or the snapshot format (version 5).
+
+### Known open issues
+
+- Pending a project decision: the unit and decimals model, opening the asset registry, Marketplace–ledger bridging, Marketplace state snapshots, the fee model for small amounts and dust, dispute arbitration, ZK production, consensus and Sybil resistance.
+- A true multi-input transaction and self-consolidation of notes are not available; a batch pays one fee per part.
+- Unchanged: development MAC (UEP-A11, A12), ZK witness range checks (UEP-A22), self-service identities, read authorizations reusable within their TTL.
+
+### Tests
+
+- New `src/testnet/multi-asset.test.ts` (12): asset id grammar and registry checks, conservation fuzz over 4 assets with snapshot / restore / restoreChain, asset isolation, unregistered assets on restore, issuer key scope / rotation / revocation, per-asset policy limits, fee floors, multi-note payments and batch atomicity, fixed `requireProof`.
+- New `src/marketplace/multi-asset.test.ts` (10): per-asset balance keying, idempotency key scope, id validation, registry mode, per-asset minimums, signed credits, a 240-order lifecycle fuzz over 4 assets checking conservation and capacity after every step, gas asset binding.
+- Two existing ledger tests now use `testOnlyDisableProof` instead of assigning `requireProof`.
+- Totals: protocol 79/79, marketplace + IoT 104/104, scale 3/3, IoT 23/23 on Node 22 and 24; `simulate:20k` 0 errors, value conserved.
+
 ## Unreleased
 
 Documentation only; no change to `src/`, scripts, formats or behaviour.

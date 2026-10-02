@@ -25,7 +25,7 @@ const EUR = "asset:test:eur";
 const asset = encodeStringToFr(EUR);
 
 const identity = async () => identityFromMnemonic(await generateMnemonic(128));
-const ledger = (extra: { maxPendingTransactions?: number } = {}) =>
+const ledger = (extra: { maxPendingTransactions?: number; testOnlyDisableProof?: boolean } = {}) =>
   new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey, ...extra });
 const resign = (snap: UepLedgerSnapshot) => signSnapshot(snap, [SNAPSHOT_KEY.privateKey]);
 const code = (r: { error: { code: string } } | { tx: unknown }) => ("error" in r ? r.error.code : "OK");
@@ -272,12 +272,14 @@ test("note tree: restore checks the signed root and every committed spend's memb
 
 test("submit: the sender signature is required, also when requireProof is disabled", async () => {
   const a = await identity(); const b = await identity();
-  const l = ledger();
+  // v0.4.7: requireProof is fixed at construction; only the test-only flag disables it.
+  assert.throws(() => { ledger().requireProof = false; }, /REQUIRE_PROOF_IMMUTABLE/);
+  const l = ledger({ testOnlyDisableProof: true });
+  assert.equal(l.requireProof, false);
   l.faucet(a.accountId, EUR, 1_000n);
   const tx = prepared(l, a, b.accountId, 100n);
   const { senderAuth: _drop, ...unsigned } = tx;
   assert.equal(code(l.submit(unsigned as UepTransaction, a)), "SENDER_AUTH");
-  l.requireProof = false;
   assert.equal(code(l.submit(unsigned as UepTransaction)), "SENDER_AUTH");
   assert.equal(l.txs.length, 0);
   assert.equal(code(l.submit(tx)), "OK");

@@ -27,6 +27,7 @@
 import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from "node:crypto";
 import { encodeCanonicalCbor } from "./iot-m2m-codec.ts";
 import { contentHash } from "./content-hash.ts";
+import { tupleKey } from "../core/composite-key.ts";
 import type { CategoryServiceAccess, DigitalServicesMarketplace, ServiceOrder } from "../marketplace/marketplace.ts";
 import type { ActorAuth } from "../marketplace/identity.ts";
 
@@ -308,7 +309,7 @@ export class IoTM2MService {
     const reservation = { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, signature: input.authorization };
     // Fail closed before touching any state: registered buyer + valid signature.
     this.marketplace.assertReservationAuthorized(reservation);
-    const idemKey = `${input.buyerId}:${input.idempotencyKey}`;
+    const idemKey = tupleKey(input.buyerId, input.idempotencyKey);
     const previous = this.requestIdempotency.get(idemKey);
     if (previous) return this.requestBundle(previous);
 
@@ -436,7 +437,7 @@ export class IoTM2MService {
     if (last && telemetry.sequence <= last.sequence) throw new Error("IOT_TELEMETRY_SEQUENCE_REPLAY");
     const machineLast = this.verifiedMachineSequences.get(machine.machineId) ?? 0;
     if (telemetry.sequence <= machineLast) throw new Error("IOT_TELEMETRY_SEQUENCE_REPLAY");
-    if (this.verifiedNonces.has(`${machine.machineId}:${telemetry.nonce}`)) throw new Error("IOT_TELEMETRY_NONCE_REPLAY");
+    if (this.verifiedNonces.has(tupleKey(machine.machineId, telemetry.nonce))) throw new Error("IOT_TELEMETRY_NONCE_REPLAY");
     const lastObserved = this.telemetry.get(telemetry.telemetryId);
     if (!lastObserved) throw new Error("IOT_TELEMETRY_NOT_REGISTERED");
     if (stableJson(lastObserved) !== stableJson(telemetry)) throw new Error("IOT_TELEMETRY_TAMPERED");
@@ -452,7 +453,7 @@ export class IoTM2MService {
     if (order.deliveryHash !== deliveryHash) throw new Error("IOT_TELEMETRY_NOT_DELIVERED");
     const verification: IoTVerification = { ok: true, telemetryHash: hash(telemetry), verifiedAt: this.now(), machineId: machine.machineId, sequence: telemetry.sequence, authentication: "ED25519", unitsDelivered, fullyDelivered: unitsDelivered === contract.quantity, deliveryHash };
     this.verifiedMachineSequences.set(machine.machineId, telemetry.sequence);
-    this.verifiedNonces.set(`${machine.machineId}:${telemetry.nonce}`, this.now());
+    this.verifiedNonces.set(tupleKey(machine.machineId, telemetry.nonce), this.now());
     this.verified.set(requestId, verification);
     return verification;
   }
