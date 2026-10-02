@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest an improvement, example, test or documentation change.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. For open-ended questions or early ideas, [Discussions](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/discussions) may be a better place.
+
+        Please keep in mind the project scope in [PUBLIC-SCOPE.md](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/blob/main/PUBLIC-SCOPE.md): this is a public testnet reference implementation, with no native token and no production claims.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Ledger / testnet
+        - Marketplace
+        - IoT/M2M
+        - Identity / addresses
+        - Docs / examples
+        - CI / tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What are you trying to do, and what makes it hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should change? Mention the files, functions or commands involved if you know them.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: protocol-impact
+    attributes:
+      label: Does this affect protocol serialization, transaction identifiers or snapshots?
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to work on this myself.
+          required: false

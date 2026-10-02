@@ -342,6 +342,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── NOTICE
 ├── SECURITY.md
 ├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
 ├── PUBLIC-SCOPE.md
 ├── CHANGELOG.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.1.md
@@ -356,6 +357,8 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── .gitignore
 ├── .gitattributes
 ├── .github/workflows/ci.yml  # CI: npm test + smoke test (Node 22.x / 24.x)
+├── .github/ISSUE_TEMPLATE/   # bug report / feature request forms; security goes to SECURITY.md
+├── .github/pull_request_template.md
 │
 ├── src/
 │   ├── core/                 # Minimal public economic/cryptographic primitives
@@ -599,6 +602,9 @@ Please read:
 
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - [`SECURITY.md`](./SECURITY.md)
+- [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)
+
+Questions and ideas are welcome in [GitHub Discussions](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/discussions). Newcomers can start with issues labelled [`good first issue`](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/labels/good%20first%20issue). Report vulnerabilities privately as described in `SECURITY.md`, never in a public issue.
 
 Do not publish private keys, credentials, personal data, customer information or undisclosed exploit material in an issue or pull request.
 
