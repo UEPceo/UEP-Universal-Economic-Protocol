@@ -515,4 +515,4 @@ UEP is being developed around a simple principle:
 That principle is why this public release contains a reproducible testnet and a real-service Marketplace model, while deliberately avoiding a speculative native token and avoiding claims that the current research stack is already a finished global or interplanetary financial network.
 
 
-Project contact: contact@uep-project.org
+Project contact: uep.ceo@proton.me
