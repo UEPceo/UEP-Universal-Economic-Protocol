@@ -6,6 +6,8 @@ import { Fr } from "./field.ts";
 import { canonicalTxCommitment, encodeStringToFr, u64ToFr } from "./encoding.ts";
 import { hAccount } from "./hash.ts";
 import type { SpendProof } from "./spend-proof.ts";
+import type { Note } from "./note.ts";
+import { serializeNote, deserializeNote } from "./note.ts";
 
 export type TxPhase =
   | "LOCAL_VALID"
@@ -40,6 +42,9 @@ export type UepTransaction = {
   nullifier: Fr;
   inputCommitments: Fr[];
   outputCommitments: Fr[];
+  /** Testnet note openings travel with the transaction so another ledger can reconstruct note state. */
+  inputNotes?: ReturnType<typeof serializeNote>[];
+  outputNotes?: ReturnType<typeof serializeNote>[];
   transactionCommitment: Fr;
   spendProof: SpendProof;
   phase: TxPhase;
@@ -118,6 +123,8 @@ export function deserializeTx(data: ReturnType<typeof serializeTx>): UepTransact
     nullifier: new Fr(data.nullifier),
     inputCommitments: data.inputCommitments.map((c) => new Fr(c)),
     outputCommitments: data.outputCommitments.map((c) => new Fr(c)),
+    inputNotes: data.inputNotes?.map(deserializeNote),
+    outputNotes: data.outputNotes?.map(deserializeNote),
     transactionCommitment: new Fr(data.transactionCommitment),
     spendProof: data.spendProof,
     phase: data.phase,

@@ -15,7 +15,7 @@ test("20k-user synthetic load: settlement, replay safety and hot-stock exhaustio
     assert.equal(m.acceptOrder({ listingId: l.listingId, buyerId: `buyer-${i}`, quantity: 1n, idempotencyKey: `checkout-${i}` }).orderId, o.orderId);
     m.fundOrder(o.orderId, o.grossAmount, `fund-${i}`);
     m.deliver(o.orderId, l.providerId, Buffer.from(`LICENSE:${i}`), `delivery-${i}`);
-    m.settle(o.orderId);
+    m.settle(o.orderId, `buyer-${i}`);
     settled++;
   }
   assert.equal(settled, 20_000);
@@ -37,8 +37,8 @@ test("idempotency keys are scoped to the operation order and cannot be confused"
   const b = m.acceptOrder({ listingId: l.listingId, buyerId: "b", quantity: 1n });
   m.fundOrder(a.orderId, 10n, "same-key");
   m.fundOrder(b.orderId, 10n, "same-key");
-  assert.equal(m.getOrder(a.orderId).status, "HELD");
-  assert.equal(m.getOrder(b.orderId).status, "HELD");
+  assert.equal(m.getOrder(a.orderId, "a").status, "HELD");
+  assert.equal(m.getOrder(b.orderId, "b").status, "HELD");
 });
 
 test("expired abandoned reservations are reaped and capacity returns", () => {
@@ -49,6 +49,6 @@ test("expired abandoned reservations are reaped and capacity returns", () => {
   assert.equal(m.getListing(l.listingId).available, 0n);
   now = 600_001;
   assert.equal(m.reapExpiredReservations(), 1);
-  assert.equal(m.getOrder(o.orderId).status, "EXPIRED");
+  assert.equal(m.getOrder(o.orderId, "b").status, "EXPIRED");
   assert.equal(m.getListing(l.listingId).available, 1n);
 });

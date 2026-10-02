@@ -6,8 +6,10 @@
 import { Fr } from "./field.ts";
 import { hMerkle } from "./hash.ts";
 
-export const ACCOUNT_DEPTH = 32;
-export const NULLIFIER_DEPTH = 32;
+export const ACCOUNT_DEPTH = 254;
+export const NULLIFIER_DEPTH = 254;
+/** BN254 Fr values are < 2^254; account/nullifier keys therefore use the full field element. */
+export const FULL_KEY_DEPTH = 254;
 export const EMPTY_LEAF = Fr.zero();
 
 export type MerklePath = {
@@ -63,7 +65,8 @@ export function verifyInsert(
 
 /**
  * Native sparse tree. Nodes are stored only when they differ from empty.
- * Index space is 2^depth, keyed by the low `depth` bits of a field element.
+ * Account/nullifier index space uses the complete BN254 field value. For legacy/custom trees,
+ * callers may still use a smaller explicit depth, but protocol account/nullifier trees use 254 bits.
  */
 export class SparseMerkleTree {
   readonly depth: number;
@@ -103,6 +106,7 @@ export class SparseMerkleTree {
   }
 
   indexOf(id: Fr): bigint {
+    if (this.depth >= FULL_KEY_DEPTH) return id.n;
     return id.lowBits(this.depth);
   }
 

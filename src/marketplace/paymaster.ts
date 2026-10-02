@@ -95,7 +95,11 @@ export class MarketplacePaymaster {
   sponsor(orderId: string, quote: GasQuote, now = this.now()): GasQuote {
     if (!orderId) throw new Error("ORDER_ID_REQUIRED");
     if (now > quote.expiresAt) throw new Error("GAS_QUOTE_EXPIRED");
-    if (quote.gasFee < 0n) throw new Error("INVALID_GAS_FEE");
+    if (quote.gasFee < 0n || quote.gasUnits <= 0n || quote.gasPricePerUnit < 0n) throw new Error("INVALID_GAS_QUOTE");
+    const fresh = this.quote(quote.asset, quote.gasUnits, quote.quotedAt);
+    if (fresh.quoteId !== quote.quoteId || fresh.gasFee !== quote.gasFee || fresh.gasPricePerUnit !== quote.gasPricePerUnit || fresh.oracleRef !== quote.oracleRef) {
+      throw new Error("GAS_QUOTE_TAMPERED");
+    }
     if ((this.reserves.get(quote.asset) ?? 0n) < quote.gasFee) throw new Error("PAYMASTER_RESERVE_INSUFFICIENT");
     const key = `${orderId}:${quote.quoteId}`;
     if (this.sponsored.has(key)) return this.sponsored.get(key)!;

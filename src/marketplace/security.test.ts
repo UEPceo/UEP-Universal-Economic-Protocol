@@ -10,7 +10,7 @@ test("delivery validator can reject invalid digital licenses before settlement",
   const o = m.acceptOrder({ listingId: l.listingId, buyerId: "b", quantity: 1n });
   m.fundOrder(o.orderId, 10n);
   assert.throws(() => m.deliver(o.orderId, "p", Buffer.from("INVALID")), /DELIVERY_VALIDATION_FAILED/);
-  assert.equal(m.getOrder(o.orderId).status, "HELD");
+  assert.equal(m.getOrder(o.orderId, "b").status, "HELD");
   m.deliver(o.orderId, "p", Buffer.from("LICENSE:valid"));
-  assert.equal(m.getOrder(o.orderId).status, "DELIVERED");
+  assert.equal(m.getOrder(o.orderId, "b").status, "DELIVERED");
 });

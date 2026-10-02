@@ -17,9 +17,9 @@ import {
 } from "./economy.ts";
 import { MarketplacePaymaster, type GasQuote } from "./paymaster.ts";
 
-export const MARKETPLACE_VERSION = "0.2" as const;
+export const MARKETPLACE_VERSION = "0.3" as const;
 
-export type ServiceCategory = "COMPUTE" | "STORAGE" | "API" | "DATA";
+export type ServiceCategory = "COMPUTE" | "STORAGE" | "API" | "DATA" | "IOT_M2M";
 export type OrderStatus = "ACCEPTED" | "HELD" | "DELIVERED" | "SETTLED" | "CANCELLED" | "EXPIRED";
 
 export type ServiceListing = {
@@ -47,6 +47,7 @@ export type ServiceOrder = {
   grossAmount: bigint;
   status: OrderStatus;
   heldAmount: bigint;
+  reservationDeposit: bigint;
   marketplaceFeeEstimate: bigint;
   providerNetEstimate: bigint;
   deliveryHash?: string;
@@ -79,6 +80,13 @@ export type MarketplaceConfig = {
   listingWindowMs?: number;
   deliveryValidator?: (order: ServiceOrder, bytes: Uint8Array | Buffer) => { ok: boolean; reason?: string };
   paymaster?: MarketplacePaymaster;
+  /** Authenticated marketplace administrator identity; the legacy literal is permanently reserved. */
+  adminIdentity?: string;
+  adminAuthorizer?: (actorId: string) => boolean;
+  settlementArbiterId?: string;
+  deliveryDisputeWindowMs?: number;
+  reservationDeposit?: bigint;
+  maxActiveReservationsPerIdentity?: number;
 };
 
 function normalizeCatalogText(value: string): string {
@@ -130,8 +138,16 @@ export class DigitalServicesMarketplace {
   private readonly orderIdempotency = new Map<string, string>();
   private readonly operationIdempotency = new Map<string, string>();
   private readonly listingIndex = new Map<string, Set<string>>();
+  private readonly reservationQueue: Array<{ at: number; orderId: string }> = [];
+  private readonly activeReservationsByIdentity = new Map<string, number>();
   private readonly deliveryValidator?: MarketplaceConfig["deliveryValidator"];
   readonly paymaster?: MarketplacePaymaster;
+  readonly adminIdentity: string;
+  private readonly adminAuthorizer?: (actorId: string) => boolean;
+  readonly settlementArbiterId?: string;
+  readonly deliveryDisputeWindowMs: number;
+  readonly reservationDeposit: bigint;
+  readonly maxActiveReservationsPerIdentity: number;
 
   constructor(config: MarketplaceConfig = {}) {
     this.treasury = config.treasury ?? new MarketplaceTreasury();
@@ -142,10 +158,19 @@ export class DigitalServicesMarketplace {
     this.listingWindowMs = config.listingWindowMs ?? 60 * 60 * 1000;
     this.deliveryValidator = config.deliveryValidator;
     this.paymaster = config.paymaster;
+    this.adminIdentity = config.adminIdentity ?? "uep:marketplace-admin";
+    if (this.adminIdentity === "marketplace-admin") throw new Error("LEGACY_ADMIN_ID_RESERVED");
+    this.adminAuthorizer = config.adminAuthorizer;
+    this.settlementArbiterId = config.settlementArbiterId;
+    this.deliveryDisputeWindowMs = config.deliveryDisputeWindowMs ?? 24 * 60 * 60 * 1000;
+    this.reservationDeposit = config.reservationDeposit ?? 0n;
+    this.maxActiveReservationsPerIdentity = config.maxActiveReservationsPerIdentity ?? 8;
+    if (this.reservationDeposit < 0n || !Number.isInteger(this.maxActiveReservationsPerIdentity) || this.maxActiveReservationsPerIdentity < 1) throw new Error("INVALID_RESERVATION_LIMIT");
   }
 
   publishListing(input: Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint"> & { listingId?: string; sellerBond?: bigint }): ServiceListing {
     if (!input.providerId || !input.title || !input.asset) throw new Error("LISTING_METADATA_REQUIRED");
+    if (input.providerId === "marketplace-admin" || input.providerId === this.adminIdentity) throw new Error("RESERVED_IDENTITY");
     if (input.unitPrice <= 0n || input.capacity <= 0n) throw new Error("INVALID_LISTING_ECONOMICS");
     const now = this.now();
     const recent = (this.listingAttempts.get(input.providerId) ?? []).filter((t) => now - t < this.listingWindowMs);
@@ -194,11 +219,14 @@ export class DigitalServicesMarketplace {
     const listing = this.listings.get(input.listingId);
     if (!listing || !listing.active) throw new Error("LISTING_NOT_FOUND");
     if (!input.buyerId) throw new Error("BUYER_REQUIRED");
+    if (input.buyerId === "marketplace-admin" || input.buyerId === this.adminIdentity) throw new Error("RESERVED_IDENTITY");
     if (input.idempotencyKey) {
       const previous = this.orderIdempotency.get(`${input.buyerId}:${input.idempotencyKey}`);
       if (previous) return { ...this.order(previous) };
     }
     if (input.quantity <= 0n || input.quantity > listing.available) throw new Error("INSUFFICIENT_CAPACITY");
+    const activeReservations = this.activeReservationsByIdentity.get(input.buyerId) ?? 0;
+    if (activeReservations >= this.maxActiveReservationsPerIdentity) throw new Error("RESERVATION_LIMIT_REACHED");
     // This synchronous state transition is atomic within the process: the availability check and decrement
     // happen in one turn. Production SQL adapters MUST use an atomic conditional UPDATE/SELECT FOR UPDATE.
     const grossAmount = input.quantity * listing.unitPrice;
@@ -219,6 +247,7 @@ export class DigitalServicesMarketplace {
       grossAmount,
       status: "ACCEPTED",
       heldAmount: 0n,
+      reservationDeposit: this.reservationDeposit,
       gasFee: input.gasQuote?.gasFee ?? 0n,
       gasQuoteId: input.gasQuote?.quoteId,
       marketplaceFeeEstimate: this.treasury.quote(grossAmount, listing.asset).marketplaceFee,
@@ -228,12 +257,15 @@ export class DigitalServicesMarketplace {
       reservationExpiresAt: now + this.reservationTtlMs,
     };
     this.orders.set(orderId, order);
+    this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
+    this.enqueueReservation(order);
     if (input.gasQuote && this.paymaster) {
       try {
         this.paymaster.sponsor(orderId, input.gasQuote, this.now());
       } catch (error) {
         listing.available += input.quantity;
         this.orders.delete(orderId);
+        this.decrementActiveReservation(input.buyerId);
         throw error;
       }
     }
@@ -252,7 +284,7 @@ export class DigitalServicesMarketplace {
     const order = this.order(orderId);
     this.assertReservationLive(order);
     if (order.status !== "ACCEPTED") throw new Error("ORDER_NOT_FUNDABLE");
-    const required = order.grossAmount + (order.gasFee ?? 0n);
+    const required = order.grossAmount + (order.gasFee ?? 0n) + order.reservationDeposit;
     if (amount !== required) throw new Error("HOLD_AMOUNT_MISMATCH");
     const k = key(order.asset, order.buyerId);
     this.held.set(k, (this.held.get(k) ?? 0n) + amount);
@@ -293,16 +325,24 @@ export class DigitalServicesMarketplace {
     return this.deliver(orderId, providerId, bytes, idempotencyKey);
   }
 
-  settle(orderId: string): SettlementRecord {
+  settle(orderId: string, actorId?: string): SettlementRecord {
     const order = this.order(orderId);
-    this.assertReservationLive(order);
+    this.assertActorAuthenticated(actorId);
+    const isAdmin = this.isAdmin(actorId!);
+    const isBuyer = actorId === order.buyerId;
+    const isArbiter = !!this.settlementArbiterId && actorId === this.settlementArbiterId;
+    const deadlinePassed = order.deliveryHash !== undefined && this.now() >= order.updatedAt + this.deliveryDisputeWindowMs;
+    if (!isBuyer && !isArbiter && !(deadlinePassed && !isAdmin)) throw new Error("SETTLEMENT_NOT_AUTHORIZED");
+    if (!isBuyer && !isArbiter && !isAdmin && !deadlinePassed) throw new Error("SETTLEMENT_DISPUTE_WINDOW_ACTIVE");
+    if (isAdmin && !this.isAdmin(actorId!)) throw new Error("ADMIN_NOT_AUTHORIZED");
+    if (order.status !== "DELIVERED") this.assertReservationLive(order);
     if (order.status === "SETTLED") {
       const existing = this.settlements.get(orderId);
       if (existing) return { ...existing };
       throw new Error("SETTLEMENT_RECORD_MISSING");
     }
     if (order.status !== "DELIVERED") throw new Error("ORDER_NOT_SETTLEABLE");
-    const required = order.grossAmount + (order.gasFee ?? 0n);
+    const required = order.grossAmount + (order.gasFee ?? 0n) + order.reservationDeposit;
     if (order.heldAmount !== required) throw new Error("HOLD_NOT_COMPLETE");
     const heldKey = key(order.asset, order.buyerId);
     const held = this.held.get(heldKey) ?? 0n;
@@ -321,6 +361,7 @@ export class DigitalServicesMarketplace {
     order.providerPayout = quote.providerNet;
     order.status = "SETTLED";
     order.updatedAt = this.now();
+    this.decrementActiveReservation(order.buyerId);
     const record: SettlementRecord = {
       orderId: order.orderId,
       asset: order.asset,
@@ -335,10 +376,12 @@ export class DigitalServicesMarketplace {
     return { ...record };
   }
 
-  cancel(orderId: string, actorId: string, reason = "buyer_or_provider_cancelled"): ServiceOrder {
+  cancel(orderId: string, actorId: string | undefined, reason = "buyer_or_provider_cancelled"): ServiceOrder {
     const order = this.order(orderId);
-    if (actorId !== order.buyerId && actorId !== order.providerId && actorId !== "marketplace-admin") throw new Error("ORDER_ACTION_FORBIDDEN");
+    this.assertActorAuthenticated(actorId);
+    if (!this.isAdmin(actorId!) && actorId !== order.buyerId && actorId !== order.providerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
     if (order.status === "SETTLED") throw new Error("ORDER_ALREADY_SETTLED");
+    if (order.status === "DELIVERED") throw new Error("DELIVERED_ORDER_NOT_CANCELLABLE");
     if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
     if (order.status === "HELD") {
       const k = key(order.asset, order.buyerId);
@@ -351,14 +394,20 @@ export class DigitalServicesMarketplace {
     this.listing(order.listingId).available += order.quantity;
     order.status = "CANCELLED";
     order.updatedAt = this.now();
+    this.decrementActiveReservation(order.buyerId);
     void reason;
     return { ...order };
   }
 
   expire(orderId: string, actorId?: string): ServiceOrder {
     const order = this.order(orderId);
-    if (actorId !== "marketplace-admin" && actorId !== "marketplace-system") throw new Error("ORDER_ACTION_FORBIDDEN");
+    this.assertActorAuthenticated(actorId);
+    const isAdmin = this.isAdmin(actorId!);
+    const isBuyer = actorId === order.buyerId;
+    const isProvider = actorId === order.providerId;
+    if (!isAdmin && !isBuyer && !isProvider) throw new Error("ORDER_ACTION_FORBIDDEN");
     if (order.status === "SETTLED") throw new Error("ORDER_ALREADY_SETTLED");
+    if (order.status === "DELIVERED") throw new Error("DELIVERED_ORDER_NOT_EXPIRABLE");
     if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
     if (order.status === "HELD") {
       const k = key(order.asset, order.buyerId);
@@ -371,12 +420,14 @@ export class DigitalServicesMarketplace {
     this.listing(order.listingId).available += order.quantity;
     order.status = "EXPIRED";
     order.updatedAt = this.now();
+    this.decrementActiveReservation(order.buyerId);
     return { ...order };
   }
 
   getOrder(orderId: string, actorId?: string): ServiceOrder {
     const order = this.order(orderId);
-    if (actorId && actorId !== order.buyerId && actorId !== order.providerId && actorId !== "marketplace-admin") throw new Error("ORDER_ACCESS_FORBIDDEN");
+    this.assertActorAuthenticated(actorId);
+    if (!this.isAdmin(actorId!) && actorId !== order.buyerId && actorId !== order.providerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
     return { ...order };
   }
 
@@ -406,21 +457,23 @@ export class DigitalServicesMarketplace {
   reapExpiredReservations(): number {
     let expired = 0;
     const now = this.now();
-    for (const order of this.orders.values()) {
-      if ((order.status === "ACCEPTED" || order.status === "HELD") && order.reservationExpiresAt !== undefined && now > order.reservationExpiresAt) {
-        if (order.status === "HELD") {
-          const k = key(order.asset, order.buyerId);
-          const held = this.held.get(k) ?? 0n;
-          this.held.set(k, held >= order.heldAmount ? held - order.heldAmount : 0n);
-          order.heldAmount = 0n;
-        }
-        this.releasePaymaster(order);
-        const listing = this.listing(order.listingId);
-        listing.available += order.quantity;
-        order.status = "EXPIRED";
-        order.updatedAt = now;
-        expired++;
+    while (this.reservationQueue.length > 0 && this.reservationQueue[0]!.at <= now) {
+      const entry = this.reservationQueue.shift()!;
+      const order = this.orders.get(entry.orderId);
+      if (!order || order.reservationExpiresAt !== entry.at) continue;
+      if (order.status !== "ACCEPTED" && order.status !== "HELD") continue;
+      if (order.status === "HELD") {
+        const k = key(order.asset, order.buyerId);
+        const held = this.held.get(k) ?? 0n;
+        this.held.set(k, held >= order.heldAmount ? held - order.heldAmount : 0n);
+        order.heldAmount = 0n;
       }
+      this.releasePaymaster(order);
+      this.listing(order.listingId).available += order.quantity;
+      order.status = "EXPIRED";
+      order.updatedAt = now;
+      this.decrementActiveReservation(order.buyerId);
+      expired++;
     }
     return expired;
   }
@@ -435,7 +488,7 @@ export class DigitalServicesMarketplace {
     const grossAmount = quantity * listing.unitPrice;
     const quote = this.treasury.quote(grossAmount, listing.asset);
     const gasQuote = gasUnits > 0n ? (this.paymaster?.quote(listing.asset, gasUnits, this.now()) ?? (() => { throw new Error("PAYMASTER_NOT_CONFIGURED"); })()) : undefined;
-    return { listingId, quantity, asset: listing.asset, unitPrice: listing.unitPrice, grossAmount, marketplaceFee: quote.marketplaceFee, providerNet: quote.providerNet, feeBps: quote.feeBps, gasFee: gasQuote?.gasFee ?? 0n, buyerTotal: grossAmount + (gasQuote?.gasFee ?? 0n), gasQuote, reservationTtlMs: this.reservationTtlMs };
+    return { listingId, quantity, asset: listing.asset, unitPrice: listing.unitPrice, grossAmount, marketplaceFee: quote.marketplaceFee, providerNet: quote.providerNet, feeBps: quote.feeBps, gasFee: gasQuote?.gasFee ?? 0n, reservationDeposit: this.reservationDeposit, buyerTotal: grossAmount + (gasQuote?.gasFee ?? 0n) + this.reservationDeposit, gasQuote, reservationTtlMs: this.reservationTtlMs, maxActiveReservationsPerIdentity: this.maxActiveReservationsPerIdentity };
   }
 
   heldBalance(asset: string, buyerId: string): bigint {
@@ -448,6 +501,27 @@ export class DigitalServicesMarketplace {
 
   treasurySnapshot(asset: string): TreasurySnapshot {
     return this.treasury.snapshot(asset);
+  }
+
+  private assertActorAuthenticated(actorId?: string): void {
+    if (!actorId) throw new Error("AUTHENTICATED_IDENTITY_REQUIRED");
+    if (actorId === "marketplace-admin") throw new Error("LEGACY_ADMIN_ID_RESERVED");
+  }
+
+  private isAdmin(actorId: string): boolean {
+    return actorId === this.adminIdentity && (!!this.adminAuthorizer ? this.adminAuthorizer(actorId) : false);
+  }
+
+  private enqueueReservation(order: ServiceOrder): void {
+    if (order.reservationExpiresAt === undefined) return;
+    this.reservationQueue.push({ at: order.reservationExpiresAt, orderId: order.orderId });
+    this.reservationQueue.sort((a, b) => a.at - b.at);
+  }
+
+  private decrementActiveReservation(buyerId: string): void {
+    const current = this.activeReservationsByIdentity.get(buyerId) ?? 0;
+    if (current <= 1) this.activeReservationsByIdentity.delete(buyerId);
+    else this.activeReservationsByIdentity.set(buyerId, current - 1);
   }
 
   private releasePaymaster(order: ServiceOrder): void {
@@ -465,7 +539,7 @@ export class DigitalServicesMarketplace {
 
   private assertReservationLive(order: ServiceOrder): void {
     if (order.reservationExpiresAt !== undefined && this.now() > order.reservationExpiresAt) {
-      this.expire(order.orderId, "marketplace-system");
+      this.reapExpiredReservations();
       throw new Error("RESERVATION_EXPIRED");
     }
   }

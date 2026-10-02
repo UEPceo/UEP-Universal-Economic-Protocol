@@ -1,21 +1,22 @@
 {
   "name": "uep-public-testnet-marketplace",
-  "version": "0.3.2-public-security-fix",
+  "version": "0.4.0-public-iot-m2m",
   "private": false,
   "type": "module",
-  "description": "Public reproducible reference implementation of the UEP local testnet and Digital Services Marketplace.",
+  "description": "Public reproducible UEP testnet Marketplace implementation with IoT/M2M service integration.",
   "engines": {
     "node": ">=22.6"
   },
   "scripts": {
     "test": "npm run test:protocol && npm run test:marketplace",
-    "test:protocol": "node --experimental-strip-types --test src/testnet/*.test.ts src/identity/*.test.ts",
-    "test:marketplace": "node --experimental-strip-types --test src/marketplace/*.test.ts",
+    "test:protocol": "node --experimental-strip-types --test src/testnet/*.test.ts src/identity/*.test.ts src/core/uep-smt-key-hardening.test.ts",
+    "test:marketplace": "node --experimental-strip-types --test src/marketplace/*.test.ts src/service/iot-m2m.test.ts src/testnet/ledger-hardening.test.ts",
     "smoke:testnet": "node --experimental-strip-types scripts/testnet-smoke.ts",
     "quickstart": "node --experimental-strip-types examples/first-transaction.ts",
     "simulate:20k": "node --experimental-strip-types scripts/marketplace-20k-simulation.mjs",
     "test:scale": "node --experimental-strip-types --test src/marketplace/scale-20k.test.ts",
-    "example": "node --experimental-strip-types examples/first-transaction.ts"
+    "example": "node --experimental-strip-types examples/first-transaction.ts",
+    "test:iot": "node --experimental-strip-types --test src/service/iot-m2m.test.ts"
   },
   "license": "Apache-2.0"
 }

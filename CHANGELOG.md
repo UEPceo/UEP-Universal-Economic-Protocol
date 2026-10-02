@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.0-public-iot-m2m — 2026-10-02
+
+Public repository updated with the agreed Marketplace + IoT/M2M implementation and security hardening.
+
+### Ledger
+- Full 254-bit BN254 account/nullifier SMT keys.
+- Fee-aware change calculation.
+- Transaction-carried input/output notes with commitment verification.
+- Snapshot root and note/nullifier integrity validation.
+- Security-policy state retained by snapshots.
+- Pending transactions validated before reconciliation.
+- Zero-value transfers rejected.
+
+### Marketplace
+- IoT/M2M service category.
+- Authenticated order access and settlement actions.
+- Delivered orders cannot be cancelled or expired.
+- Reserved legacy admin identity blocked.
+- Reservation deposit/identity limits and ordered expiration queue.
+- Paymaster quote revalidation.
+- Treasury withdrawal authorization verification.
+
+### IoT/M2M
+- Provider and machine registration.
+- Optional Ed25519 machine identity.
+- Deterministic canonical CBOR telemetry.
+- Sequence, nonce, replay and freshness protection.
+- Marketplace-backed HOLD → delivery → verification → settlement lifecycle.
+
+This remains a local/testnet reference implementation; production distributed infrastructure and production ZK are not claimed.
+
 ## 0.3.2-public-security-fix — 2026-10-02
 
 Security release following external review UEP-RR-2026-10-02-001.

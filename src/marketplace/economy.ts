@@ -100,15 +100,18 @@ export class MarketplaceTreasury {
   readonly withdrawals: TreasuryWithdrawal[] = [];
   private readonly settledOrders = new Set<string>();
   private readonly withdrawnRefs = new Set<string>();
+  private readonly authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
 
   constructor(opts?: {
     treasuryId?: string;
     feeBps?: number;
     allocationBps?: Record<TreasuryBucket, number>;
+    authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
   }) {
     this.treasuryId = opts?.treasuryId ?? "marketplace-treasury";
     this.feeBps = opts?.feeBps ?? MARKETPLACE_FEE_BPS;
     this.allocationBps = opts?.allocationBps ?? DEFAULT_TREASURY_ALLOCATION_BPS;
+    this.authorizationVerifier = opts?.authorizationVerifier;
     validateAllocation(this.allocationBps);
     calculateMarketplaceFee(0n, this.feeBps);
   }
@@ -188,7 +191,11 @@ export class MarketplaceTreasury {
     timestamp?: number;
   }): TreasuryWithdrawal {
     if (!opts.withdrawalId || !opts.beneficiary || !opts.authorizationRef) throw new Error("WITHDRAWAL_METADATA_REQUIRED");
+    if (!this.authorizationVerifier) throw new Error("TREASURY_AUTHORIZER_NOT_CONFIGURED");
+    if (!opts.authorizationRef.startsWith("auth:")) throw new Error("INVALID_AUTHORIZATION_REF");
     if (opts.amount <= 0n) throw new Error("INVALID_WITHDRAWAL_AMOUNT");
+    const authRecord = { withdrawalId: opts.withdrawalId, bucket: opts.bucket, asset: opts.asset, amount: opts.amount, beneficiary: opts.beneficiary, reason: opts.reason, authorizationRef: opts.authorizationRef };
+    if (!this.authorizationVerifier(authRecord)) throw new Error("TREASURY_WITHDRAWAL_UNAUTHORIZED");
     if (this.withdrawnRefs.has(opts.withdrawalId)) throw new Error("WITHDRAWAL_REPLAY");
     const b = this.balance(opts.asset);
     if (b[opts.bucket] < opts.amount) throw new Error("INSUFFICIENT_TREASURY_BALANCE");

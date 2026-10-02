@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.3.2-public-security-fix`
+> **Version:** `0.4.0-public-iot-m2m`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -196,6 +196,12 @@ npm run test:protocol
 npm run test:marketplace
 ```
 
+### Run only IoT/M2M tests
+
+```bash
+npm run test:iot
+```
+
 ### Run the testnet smoke test
 
 ```bash
@@ -278,13 +284,19 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 │   │   ├── spend-proof.ts
 │   │   ├── status.ts
 │   │   ├── zk-witness-contract.ts
-│   │   └── index.ts
+│   │   ├── index.ts
+│   │   └── uep-smt-key-hardening.test.ts
 │   │
 │   ├── identity/             # Deterministic test identities
 │   ├── network/              # Public TESTNET profile only
-│   ├── testnet/              # Local UEP ledger reference implementation
+│   ├── testnet/              # Local UEP ledger reference implementation + tests
 │   ├── marketplace/          # Marketplace business layer + tests
-│   └── service/              # Delivery/content integrity primitive
+│   └── service/              # Content integrity + IoT/M2M service layer
+│       ├── content-hash.ts
+│       ├── iot-m2m.ts
+│       ├── iot-m2m-codec.ts
+│       ├── iot-m2m.test.ts
+│       └── index.ts
 │
 ├── examples/
 │   └── first-transaction.ts

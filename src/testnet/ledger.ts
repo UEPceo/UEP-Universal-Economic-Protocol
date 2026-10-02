@@ -16,7 +16,7 @@ import { computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, ve
 import { encodeStringToFr, u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
 import { TREASURY_ID } from "../network/profiles.ts";
-import { SecurityPolicy, type SecurityPolicy as SecurityPolicyType } from "../core/security-policy.ts";
+import { SecurityPolicy, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
 import { DevelopmentSpendProofProvider, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
 
@@ -127,6 +127,7 @@ export class UepLedger {
     amount: bigint,
     now = Date.now(),
   ): SubmitResult {
+    if (amount <= 0n) return { error: { code: "AMOUNT_MISMATCH", message: "Amount must be greater than zero." } };
     if (!this.connected) {
       return {
         error: {
@@ -180,7 +181,7 @@ export class UepLedger {
       return { error: { code: "INSUFFICIENT", message: tr.err } };
     }
 
-    const change = total - amount;
+    const change = total - amount - fee;
     const spent = selected[0]!;
     // One-note spend of `amount` from the first covering set: consume selected,
     // emit recipient output + optional change. Nullifier from the first note
@@ -248,6 +249,8 @@ export class UepLedger {
       nullifier,
       inputCommitments,
       outputCommitments,
+      inputNotes: selected.map(serializeNote),
+      outputNotes: outputs.map(serializeNote),
       transactionCommitment,
       spendProof,
       phase: "LOCAL_VALID",
@@ -277,6 +280,9 @@ export class UepLedger {
 
   submit(tx: UepTransaction, secrets?: IdentitySecrets): SubmitResult {
 
+    if (tx.amount <= 0n) {
+      return { error: { code: "AMOUNT_MISMATCH", message: "Transaction amount must be greater than zero." } };
+    }
     if (tx.networkId !== this.networkId) {
       return {
         error: {
@@ -384,7 +390,8 @@ export class UepLedger {
     }
 
     const stash = this.outputStash.get(tx.txId.toHex());
-    const inputs = stash?.inputs ?? this.notes.filter((n) => tx.inputCommitments.some((c) => c.eq(n.commitment)));
+    const transportedInputs = tx.inputNotes?.map(deserializeNote) ?? [];
+    const inputs = stash?.inputs ?? (transportedInputs.length ? transportedInputs : this.notes.filter((n) => tx.inputCommitments.some((c) => c.eq(n.commitment))));
     if (inputs.length === 0) {
       return { error: { code: "NOTE_OPENING", message: "Input notes are not in this ledger." } };
     }
@@ -393,6 +400,14 @@ export class UepLedger {
       return { error: { code: "AMOUNT_MISMATCH", message: "Input commitments must be unique and exactly match the referenced notes." } };
     }
     const inputTotal = inputs.reduce((sum, n) => sum + n.amount, 0n);
+    const outputs = tx.outputNotes?.map(deserializeNote) ?? stash?.outputs ?? [];
+    if (outputs.length !== tx.outputCommitments.length || outputs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) {
+      return { error: { code: "AMOUNT_MISMATCH", message: "Output notes do not match transaction commitments." } };
+    }
+    const outputTotal = outputs.reduce((sum, n) => sum + n.amount, 0n);
+    if (outputTotal !== inputTotal - tx.fee || outputTotal !== tx.amount + (inputTotal - tx.amount - tx.fee)) {
+      return { error: { code: "AMOUNT_MISMATCH", message: "Output notes do not conserve input value after fee." } };
+    }
     const requiredInputValue = tx.amount + tx.fee;
     if (inputTotal < requiredInputValue) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Transaction amount plus fee exceeds the value of the input notes." } };
@@ -435,11 +450,14 @@ export class UepLedger {
     this.setBalance(tx.recipientId, tx.assetId, tr.ok.new.recipient);
     this.setBalance(TREASURY_ID, tx.assetId, tr.ok.new.treasury);
 
-    for (const n of this.notes) {
-      if (tx.inputCommitments.some((c) => c.eq(n.commitment))) n.spent = true;
+    for (const n of inputs) {
+      const local = this.notes.find((x) => x.commitment.eq(n.commitment));
+      if (local) local.spent = true;
+      else this.notes.push({ ...n, spent: true });
     }
-    const outputs = stash?.outputs ?? [];
-    for (const o of outputs) this.notes.push(o);
+    for (const o of outputs) {
+      if (!this.notes.some((n) => n.commitment.eq(o.commitment))) this.notes.push(o);
+    }
 
     const accepted: UepTransaction = { ...tx, phase: "LOCAL_FINAL", inConflict: false };
     this.txs.push(accepted);
@@ -465,6 +483,24 @@ export class UepLedger {
     this.pending.push(tx);
   }
 
+  private validatePending(tx: UepTransaction): SubmitResult {
+    // Pending reconciliation must never promote an unchecked envelope.
+    // Validate canonical fields and note commitments without mutating live state.
+    if (tx.networkId !== this.networkId || tx.domainId !== this.domainId || tx.amount <= 0n) return { error: { code: "POLICY", message: "Pending transaction envelope invalid." } };
+    if (tx.fee !== creatorFee(tx.amount)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending fee invalid." } };
+    const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
+    if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction commitment invalid." } };
+    if (this.nullifiers.contains(tx.nullifier) || this.txs.some((x) => x.txId.eq(tx.txId))) return { error: { code: "REPLAY", message: "Pending transaction already committed." } };
+    const ins = tx.inputNotes?.map(deserializeNote) ?? [];
+    const outs = tx.outputNotes?.map(deserializeNote) ?? [];
+    if (ins.length !== tx.inputCommitments.length || outs.length !== tx.outputCommitments.length) return { error: { code: "NOTE_OPENING", message: "Pending transaction notes are missing." } };
+    if (ins.some((n, i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) return { error: { code: "NOTE_OPENING", message: "Pending note commitment mismatch." } };
+    const inputTotal = ins.reduce((a, n) => a + n.amount, 0n);
+    const outputTotal = outs.reduce((a, n) => a + n.amount, 0n);
+    if (inputTotal !== tx.amount + tx.fee + outputTotal) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction does not conserve value." } };
+    return { tx };
+  }
+
   reconcilePending(): { settlements: ReturnType<typeof reconcile>; root: Fr } {
     // LOCAL_FINAL transactions have already mutated balances and the nullifier set.
     // They are not eligible to be overturned by a later pending conflict.
@@ -472,7 +508,12 @@ export class UepLedger {
     // pending spend whose nullifier is already committed locally.
     const committedNullifiers = new Set(this.txs.map((t) => t.nullifier.toHex()));
     const pendingCandidates = this.pending.filter((t) => !committedNullifiers.has(t.nullifier.toHex()));
-    const marked = markConflicts(pendingCandidates);
+    const validCandidates: UepTransaction[] = [];
+    for (const candidate of pendingCandidates) {
+      const check = this.validatePending(candidate);
+      if (check.ok) validCandidates.push(candidate);
+    }
+    const marked = markConflicts(validCandidates);
     const settlements = reconcile(marked);
     const applied = applySettlements(marked, settlements);
     for (const t of applied) {
@@ -489,6 +530,7 @@ export class UepLedger {
       domainId: this.domainId,
       connected: this.connected,
       allowFaucet: this.allowFaucet,
+      policy: { ...this.policy.config, blockedAccounts: [...this.policy.config.blockedAccounts], assetTier: { ...this.policy.config.assetTier } },
       state: this.state.toJSON(),
       nullifiers: this.nullifiers.toJSON(),
       balances: [...this.balances.entries()].map(([k, v]) => [k, v.toString()] as const),
@@ -501,6 +543,7 @@ export class UepLedger {
   }
 
   static restore(data: ReturnType<UepLedger["snapshot"]>): UepLedger {
+    if (!data || data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending)) throw new Error("INVALID_SNAPSHOT_SHAPE");
     const l = new UepLedger({
       networkId: data.networkId,
       domainId: data.domainId,
@@ -515,6 +558,26 @@ export class UepLedger {
     l.pending = data.pending.map(deserializeTx);
     l.noteCounter = BigInt(data.noteCounter);
     l.lastReconcileAt = data.lastReconcileAt;
+    const p = data.policy as any;
+    if (p) l.policy = new SecurityPolicy({ ...p, blockedAccounts: new Set(p.blockedAccounts ?? []), assetTier: { ...(p.assetTier ?? {}) } });
+    const rebuiltState = new SparseMerkleTree(ACCOUNT_DEPTH);
+    for (const [key, value] of l.balances) {
+      const [accountHex, assetHex] = key.split("|");
+      if (!accountHex || !assetHex) throw new Error("INVALID_SNAPSHOT_BALANCE_KEY");
+      const account = new Fr(accountHex); const asset = new Fr(assetHex);
+      rebuiltState.set(hAccount(account, asset), l.leafFor(account, asset, value));
+    }
+    if (!rebuiltState.root().eq(l.state.root())) throw new Error("INVALID_SNAPSHOT_STATE_ROOT");
+    for (const n of l.notes) { if (!openNote(n)) throw new Error("INVALID_SNAPSHOT_NOTE_COMMITMENT"); }
+    const rebuiltNullifiers = new NullifierSet();
+    for (const tx of l.txs) {
+      if (!rebuiltNullifiers.insertOnce(tx.nullifier)) throw new Error("INVALID_SNAPSHOT_NULLIFIER_SET");
+      if (!tx.inputNotes || !tx.outputNotes) throw new Error("INVALID_SNAPSHOT_TX_NOTES");
+    }
+    if (!rebuiltNullifiers.root().eq(l.nullifiers.root())) throw new Error("INVALID_SNAPSHOT_NULLIFIER_ROOT");
+    const calculatedBalances = new Map<string,bigint>();
+    for (const [k,v] of l.balances) calculatedBalances.set(k,v);
+    if (l.notes.some(n => !n.spent && (calculatedBalances.get(ak(n.owner,n.assetId)) ?? 0n) < n.amount)) throw new Error("INVALID_SNAPSHOT_NOTE_BALANCE");
     return l;
   }
 }

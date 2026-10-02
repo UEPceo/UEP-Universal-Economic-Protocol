@@ -7,7 +7,7 @@ import { MarketplacePaymaster } from "./paymaster.ts";
 const fixedNow = () => 1_700_000_000_000;
 
 function setup() {
-  const m = new DigitalServicesMarketplace({ now: fixedNow });
+  const m = new DigitalServicesMarketplace({ now: fixedNow, adminIdentity: "admin-1", adminAuthorizer: (id) => id === "admin-1" });
   const listing = m.publishListing({
     providerId: "provider-gpu-1",
     title: "H100 compute",
@@ -29,11 +29,11 @@ test("end-to-end marketplace settlement creates the fee only at SETTLED", () => 
   assert.equal(m.heldBalance("EUR", "buyer-1"), 100n);
   assert.equal(m.treasury.totalOf("EUR"), 0n);
   m.deliverWithExpectedHash(order.orderId, "provider-gpu-1", Buffer.from("result"), contentHash(Buffer.from("result")));
-  assert.equal(m.getOrder(order.orderId).status, "DELIVERED");
+  assert.equal(m.getOrder(order.orderId, "buyer-1").status, "DELIVERED");
   assert.equal(m.treasury.totalOf("EUR"), 0n);
-  const settlement = m.settle(order.orderId);
+  const settlement = m.settle(order.orderId, "buyer-1");
   assert.equal(settlement.marketplaceFee, 3n);
-  assert.equal(m.getOrder(order.orderId).status, "SETTLED");
+  assert.equal(m.getOrder(order.orderId, "buyer-1").status, "SETTLED");
   assert.equal(m.treasury.totalOf("EUR"), 3n);
 });
 
@@ -42,7 +42,7 @@ test("tampered delivery is rejected before settlement", () => {
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 5n });
   m.fundOrder(order.orderId, 100n);
   assert.throws(() => m.deliverWithExpectedHash(order.orderId, "provider-gpu-1", Buffer.from("tampered"), "00"), /CONTENT_INTEGRITY_ERROR/);
-  assert.equal(m.getOrder(order.orderId).status, "HELD");
+  assert.equal(m.getOrder(order.orderId, "buyer-1").status, "HELD");
 });
 
 test("unauthorized provider cannot deliver", () => {
@@ -57,13 +57,13 @@ test("successful settlement pays provider net and allocates 3% fee", () => {
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 5n });
   m.fundOrder(order.orderId, 100n);
   m.deliver(order.orderId, "provider-gpu-1", Buffer.from("result"));
-  const s = m.settle(order.orderId);
+  const s = m.settle(order.orderId, "buyer-1");
   assert.equal(s.grossAmount, 100n);
   assert.equal(s.marketplaceFee, 3n);
   assert.equal(s.providerPayout, 97n);
   assert.equal(m.heldBalance("EUR", "buyer-1"), 0n);
   assert.equal(m.treasury.totalOf("EUR"), 3n);
-  assert.equal(m.getOrder(order.orderId).status, "SETTLED");
+  assert.equal(m.getOrder(order.orderId, "buyer-1").status, "SETTLED");
 });
 
 test("settlement is not double-chargeable", () => {
@@ -71,8 +71,8 @@ test("settlement is not double-chargeable", () => {
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 5n });
   m.fundOrder(order.orderId, 100n);
   m.deliver(order.orderId, "provider-gpu-1", Buffer.from("result"));
-  const first = m.settle(order.orderId);
-  const second = m.settle(order.orderId);
+  const first = m.settle(order.orderId, "buyer-1");
+  const second = m.settle(order.orderId, "buyer-1");
   assert.deepEqual(second, first);
   assert.equal(m.treasury.totalOf("EUR"), 3n);
 });
@@ -82,7 +82,7 @@ test("cancellation releases the hold and capacity without fees", () => {
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 4n });
   m.fundOrder(order.orderId, 80n);
   m.cancel(order.orderId, "buyer-1");
-  assert.equal(m.getOrder(order.orderId).status, "CANCELLED");
+  assert.equal(m.getOrder(order.orderId, "buyer-1").status, "CANCELLED");
   assert.equal(m.heldBalance("EUR", "buyer-1"), 0n);
   assert.equal(m.treasury.totalOf("EUR"), 0n);
   assert.equal(m.getListing(listing.listingId).available, 100n);
@@ -121,7 +121,7 @@ test("reservation expires and releases capacity before funding/delivery/settleme
   now += 1_001;
   assert.throws(() => m.fundOrder(order.orderId, 10n), /RESERVATION_EXPIRED/);
   assert.equal(m.getListing(listing.listingId).available, 2n);
-  assert.equal(m.getOrder(order.orderId).status, "EXPIRED");
+  assert.equal(m.getOrder(order.orderId, "b").status, "EXPIRED");
 });
 
 test("order access control blocks IDOR when an actor is supplied", () => {
@@ -146,7 +146,7 @@ test("bayesian reputation does not let a tiny sample instantly become 5/5", () =
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n });
   m.fundOrder(order.orderId, 20n);
   m.deliver(order.orderId, listing.providerId, Buffer.from("ok"));
-  m.settle(order.orderId);
+  m.settle(order.orderId, "buyer-1");
   const rep = m.recordSellerReview({ orderId: order.orderId, buyerId: "buyer-1", rating: 5 });
   assert.ok(rep.score < 5);
 });
@@ -185,8 +185,8 @@ test("paymaster gas is captured from buyer escrow at settlement and is replay-sa
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "b", quantity: 1n, gasQuote: q.gasQuote });
   m.fundOrder(order.orderId, 105n);
   m.deliver(order.orderId, "p", Buffer.from("ok"));
-  const first = m.settle(order.orderId);
-  const second = m.settle(order.orderId);
+  const first = m.settle(order.orderId, "b");
+  const second = m.settle(order.orderId, "b");
   assert.equal(first.gasFee, 5n);
   assert.deepEqual(second, first);
   assert.equal(paymaster.receipts.length, 1);
@@ -209,9 +209,9 @@ test("cancelled paymaster reservation is released without charging the buyer", (
 test("unauthorized actor cannot cancel or expire an order", () => {
   const { m, listing } = setup();
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n });
-  assert.throws(() => m.cancel(order.orderId, "attacker"), /ORDER_ACTION_FORBIDDEN/);
+  assert.throws(() => m.cancel(order.orderId, "attacker"), /ORDER_ACCESS_FORBIDDEN/);
   assert.throws(() => m.expire(order.orderId, "attacker"), /ORDER_ACTION_FORBIDDEN/);
-  assert.equal(m.getOrder(order.orderId).status, "ACCEPTED");
+  assert.equal(m.getOrder(order.orderId, "buyer-1").status, "ACCEPTED");
 });
 
 test("buyer or provider can cancel an order, admin can cancel", () => {
@@ -219,8 +219,8 @@ test("buyer or provider can cancel an order, admin can cancel", () => {
   const a = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n });
   m.cancel(a.orderId, "provider-gpu-1");
   const b = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-2", quantity: 1n });
-  m.cancel(b.orderId, "marketplace-admin");
-  assert.equal(m.getOrder(a.orderId).status, "CANCELLED");
-  assert.equal(m.getOrder(b.orderId).status, "CANCELLED");
+  m.cancel(b.orderId, "admin-1");
+  assert.equal(m.getOrder(a.orderId, "buyer-1").status, "CANCELLED");
+  assert.equal(m.getOrder(b.orderId, "buyer-2").status, "CANCELLED");
 });
 
