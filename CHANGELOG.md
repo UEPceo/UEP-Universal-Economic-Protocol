@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.2-public-iot-m2m — 2026-10-02
+
+Ledger, snapshot and Marketplace hardening following the external adversarial audit of v0.4.1 (`50017ea`). See [`PUBLIC-SECURITY-REMEDIATION-v0.4.2.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md) for the per-finding status.
+
+### Ledger
+
+- Outputs are bound to the transaction: output 0 pays exactly `amount` to the recipient; the optional output 1 returns exactly `input − amount − fee` to the sender. Enforced identically by `submit()`, pending validation and `restore()` (`checkSpendShape`).
+- `tx.nonce` must be the consumed note's (well-formed) nonce, anchoring the nullifier to the spent note.
+- Sender, recipient and treasury must be distinct accounts (`INVALID_PARTICIPANTS`); such transfers previously left balances inconsistent with notes.
+- New submit error codes: `OUTPUT_BINDING`, `NOTE_NONCE`, `INVALID_PARTICIPANTS`. Removed a redundant conservation check and an unreachable note-insertion branch.
+
+### Snapshots
+
+- Integrity tag verified first, in constant time (`timingSafeEqual`).
+- `restore()` re-derives the full state and rejects, with specific `INVALID_SNAPSHOT_*` errors, any snapshot that `faucet()`/`submit()` could not have produced: state/nullifier roots, nullifier seen-set, note openings, nonces and duplicates, in-order transaction replay under `submit()`'s rules, spent flags, per-account balances vs. unspent notes (plus treasury fee income) and per-asset minted supply.
+- Snapshot format version 2 (`formatVersion`, `supply`); v0.4.1 snapshots must be re-taken. The security policy is now required in a snapshot.
+- `signSnapshotPayload()` exported for authority-side tooling and tests.
+
+### Marketplace and IoT/M2M
+
+- Reservations are no longer free by default: reservation deposit of 1% of gross (minimum 1 unit), configurable with `reservationDeposit` (fixed, `0n` disables) or `reservationDepositBps`. `DigitalServicesMarketplace.reservationDeposit` is replaced by `fixedReservationDeposit`, `reservationDepositBps` and `reservationDepositFor()`.
+- IoT HOLD and the 20k simulation fund the deposit.
+
+### Tests
+
+- New `ledger-invariants.test.ts`: output binding cases, poisoned spend rejected with the honest snapshot still restorable, nonce binding, absent input commitment, transfer participants, randomized honest spends with restore, and authority-signed snapshots breaking each restore invariant.
+- Tampered-snapshot tests now check that unsigned changes fail integrity and re-signed changes fail the specific invariant.
+- Marketplace tests fund the default deposit; new test that a reservation cannot be funded without it.
+
+### Known open issues
+
+- The snapshot authority secret is symmetric: its holder can author a fully consistent history, including self-declared faucet supply.
+- The reservation deposit is collected at funding, not at reservation; unfunded reservations still lock capacity until TTL, deposits are released on expiry, and identities are caller-supplied strings.
+- Input membership is checked against the local note set; there is no authenticated note-commitment tree yet.
+- One input note per transaction; fragmented balances cannot be combined in one spend.
+- Pending validation has no sender authentication or local membership check, and the pending queue is unbounded.
+- Sender authentication is still a development MAC that requires the spender's secret on the node, and `requireProof` can still be disabled.
+- Marketplace: no dispute/refund flow; order listings and `acceptOrder` with an existing `orderId` are not actor-scoped.
+- Testnet and Marketplace fees still round down to zero for small amounts; the ZK witness contract is unchanged (not wired, no u64 range checks).
+
+### Verification
+
+- `npm test`: protocol suite 38/38, Marketplace/IoT suite 44/44 (Node 22 and Node 24).
+- `npm run test:scale`: 3/3; `npm run test:iot`: 15/15; smoke test and quickstart pass.
+- `npm run simulate:20k`: 20,000/20,000 main-flow settlements, 0 errors.
+
 ## 0.4.1-public-iot-m2m — 2026-10-02
 
 Ledger and IoT/M2M hardening following the external adversarial audit of v0.4.0 (`676fee6`). See [`PUBLIC-SECURITY-REMEDIATION-v0.4.1.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md) for the per-finding status.

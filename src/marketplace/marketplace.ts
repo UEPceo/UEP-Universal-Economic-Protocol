@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { MarketplaceReputation, type SellerReputation } from "./reputation.ts";
 import { contentHash, verifyContentHash } from "../service/content-hash.ts";
 import {
+  BPS_DENOMINATOR,
   MarketplaceTreasury,
   type TreasurySnapshot,
   type TreasuryBucket,
@@ -18,6 +19,11 @@ import {
 import { MarketplacePaymaster, type GasQuote } from "./paymaster.ts";
 
 export const MARKETPLACE_VERSION = "0.3" as const;
+
+/** Default reservation deposit: 1.00% of the order's gross amount (same bps model as the Marketplace fee). */
+export const DEFAULT_RESERVATION_DEPOSIT_BPS = 100;
+/** Minimum default reservation deposit (smallest asset unit), so no reservation is free by default. */
+export const MIN_RESERVATION_DEPOSIT = 1n;
 
 export type ServiceCategory = "COMPUTE" | "STORAGE" | "API" | "DATA" | "IOT_M2M";
 export type OrderStatus = "ACCEPTED" | "HELD" | "DELIVERED" | "SETTLED" | "CANCELLED" | "EXPIRED";
@@ -85,7 +91,14 @@ export type MarketplaceConfig = {
   adminAuthorizer?: (actorId: string) => boolean;
   settlementArbiterId?: string;
   deliveryDisputeWindowMs?: number;
+  /**
+   * Fixed reservation deposit per order. When omitted, the deposit is
+   * max(MIN_RESERVATION_DEPOSIT, grossAmount * reservationDepositBps / 10_000).
+   * Setting `0n` explicitly disables deposits (not recommended outside tests).
+   */
   reservationDeposit?: bigint;
+  /** Proportional deposit in basis points when no fixed deposit is set (default 100 = 1%). */
+  reservationDepositBps?: number;
   maxActiveReservationsPerIdentity?: number;
 };
 
@@ -146,7 +159,9 @@ export class DigitalServicesMarketplace {
   private readonly adminAuthorizer?: (actorId: string) => boolean;
   readonly settlementArbiterId?: string;
   readonly deliveryDisputeWindowMs: number;
-  readonly reservationDeposit: bigint;
+  /** Fixed per-order deposit if configured; otherwise the bps-based default applies. */
+  readonly fixedReservationDeposit?: bigint;
+  readonly reservationDepositBps: number;
   readonly maxActiveReservationsPerIdentity: number;
 
   constructor(config: MarketplaceConfig = {}) {
@@ -163,9 +178,17 @@ export class DigitalServicesMarketplace {
     this.adminAuthorizer = config.adminAuthorizer;
     this.settlementArbiterId = config.settlementArbiterId;
     this.deliveryDisputeWindowMs = config.deliveryDisputeWindowMs ?? 24 * 60 * 60 * 1000;
-    this.reservationDeposit = config.reservationDeposit ?? 0n;
+    this.fixedReservationDeposit = config.reservationDeposit;
+    this.reservationDepositBps = config.reservationDepositBps ?? DEFAULT_RESERVATION_DEPOSIT_BPS;
     this.maxActiveReservationsPerIdentity = config.maxActiveReservationsPerIdentity ?? 8;
-    if (this.reservationDeposit < 0n || !Number.isInteger(this.maxActiveReservationsPerIdentity) || this.maxActiveReservationsPerIdentity < 1) throw new Error("INVALID_RESERVATION_LIMIT");
+    if ((this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit < 0n) || !Number.isInteger(this.reservationDepositBps) || this.reservationDepositBps < 0 || this.reservationDepositBps > 10_000 || !Number.isInteger(this.maxActiveReservationsPerIdentity) || this.maxActiveReservationsPerIdentity < 1) throw new Error("INVALID_RESERVATION_LIMIT");
+  }
+
+  /** Reservation deposit required for an order of `grossAmount` (held with the order and released on settle/cancel/expiry). */
+  reservationDepositFor(grossAmount: bigint): bigint {
+    if (this.fixedReservationDeposit !== undefined) return this.fixedReservationDeposit;
+    const proportional = (grossAmount * BigInt(this.reservationDepositBps)) / BPS_DENOMINATOR;
+    return proportional > MIN_RESERVATION_DEPOSIT ? proportional : MIN_RESERVATION_DEPOSIT;
   }
 
   publishListing(input: Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint"> & { listingId?: string; sellerBond?: bigint }): ServiceListing {
@@ -247,7 +270,7 @@ export class DigitalServicesMarketplace {
       grossAmount,
       status: "ACCEPTED",
       heldAmount: 0n,
-      reservationDeposit: this.reservationDeposit,
+      reservationDeposit: this.reservationDepositFor(grossAmount),
       gasFee: input.gasQuote?.gasFee ?? 0n,
       gasQuoteId: input.gasQuote?.quoteId,
       marketplaceFeeEstimate: this.treasury.quote(grossAmount, listing.asset).marketplaceFee,
@@ -488,7 +511,7 @@ export class DigitalServicesMarketplace {
     const grossAmount = quantity * listing.unitPrice;
     const quote = this.treasury.quote(grossAmount, listing.asset);
     const gasQuote = gasUnits > 0n ? (this.paymaster?.quote(listing.asset, gasUnits, this.now()) ?? (() => { throw new Error("PAYMASTER_NOT_CONFIGURED"); })()) : undefined;
-    return { listingId, quantity, asset: listing.asset, unitPrice: listing.unitPrice, grossAmount, marketplaceFee: quote.marketplaceFee, providerNet: quote.providerNet, feeBps: quote.feeBps, gasFee: gasQuote?.gasFee ?? 0n, reservationDeposit: this.reservationDeposit, buyerTotal: grossAmount + (gasQuote?.gasFee ?? 0n) + this.reservationDeposit, gasQuote, reservationTtlMs: this.reservationTtlMs, maxActiveReservationsPerIdentity: this.maxActiveReservationsPerIdentity };
+    return { listingId, quantity, asset: listing.asset, unitPrice: listing.unitPrice, grossAmount, marketplaceFee: quote.marketplaceFee, providerNet: quote.providerNet, feeBps: quote.feeBps, gasFee: gasQuote?.gasFee ?? 0n, reservationDeposit: this.reservationDepositFor(grossAmount), buyerTotal: grossAmount + (gasQuote?.gasFee ?? 0n) + this.reservationDepositFor(grossAmount), gasQuote, reservationTtlMs: this.reservationTtlMs, maxActiveReservationsPerIdentity: this.maxActiveReservationsPerIdentity };
   }
 
   heldBalance(asset: string, buyerId: string): bigint {

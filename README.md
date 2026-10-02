@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.4.1-public-iot-m2m`
+> **Version:** `0.4.2-public-iot-m2m`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -140,14 +140,22 @@ The active public hash is a **reference hardening backend**, not a claim that pr
 
 ---
 
-## 5. Security hardening in v0.4.1
+## 5. Security hardening in v0.4.1 and v0.4.2
 
-This public testnet release hardens the ledger and the IoT/M2M service layer after the external review of v0.4.0. Details and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.1.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 and v0.4.1. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.2.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md) (previous: [`PUBLIC-SECURITY-REMEDIATION-v0.4.1.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)).
+
+### Ledger
 
 - Transaction input notes are resolved against the receiving ledger's existing unspent note set. Notes carried inside a transaction are evidence, not an issuance authority.
 - The public testnet transaction format uses **one input note per transaction**, because the current envelope carries a single nullifier. A spend needs one note that covers amount plus fee; multi-input aggregation is intentionally not claimed until a nullifier vector is introduced.
-- Snapshots carry an HMAC integrity record. `UepLedger.restore(snapshot, authority)` requires the external `snapshotAuthoritySecret`; keep it outside the snapshot and outside source control. If the secret is lost, the snapshot cannot be restored by design. Restore also re-checks state root, note openings, nullifier root and per-transaction commitments and value conservation.
+- **v0.4.2:** outputs are bound to the transaction: output 0 pays exactly `amount` to the recipient, and the optional output 1 returns exactly `input − amount − fee` to the sender. The transaction nonce must be the consumed note's nonce, so the nullifier is anchored to that note. Sender, recipient and treasury must be distinct accounts.
+- Snapshots carry an HMAC integrity record. `UepLedger.restore(snapshot, authority)` requires the external `snapshotAuthoritySecret`; keep it outside the snapshot and outside source control. If the secret is lost, the snapshot cannot be restored by design.
+- **v0.4.2:** the integrity tag is checked first (constant-time), then restore re-derives the whole state and rejects any snapshot that `faucet()`/`submit()` could not have produced: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags, per-account balances against unspent notes (plus treasury fee income) and per-asset minted supply. Snapshot format version 2 adds `formatVersion` and `supply`; older snapshots must be re-taken.
 - Pending reconciliation never settles or applies a queued spend: invalid envelopes are rejected, valid ones stay queued (`LOCAL_VALID`, flagged on conflict) until applied through `submit()`.
+
+### Marketplace and IoT/M2M
+
+- **v0.4.2:** reservations are not free by default. Each order carries a reservation deposit of 1% of its gross amount (minimum 1 unit), held with the order and released on settlement, cancellation or expiry. Configure it with `reservationDeposit` (fixed) or `reservationDepositBps`.
 - IoT settlement requires an authenticated buyer or the configured settlement arbiter. Machine/provider deactivation requires an admin authorization callback.
 - IoT HOLD funds the full required amount, including reservation deposit and sponsored gas fee.
 
@@ -286,6 +294,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── PUBLIC-SCOPE.md
 ├── CHANGELOG.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.1.md
+├── PUBLIC-SECURITY-REMEDIATION-v0.4.2.md
 ├── package.json
 ├── package-lock.json
 ├── tsconfig.json

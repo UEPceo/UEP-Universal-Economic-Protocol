@@ -8,7 +8,7 @@ test("delivery validator can reject invalid digital licenses before settlement",
   });
   const l = m.publishListing({ providerId: "p", title: "License API", description: "license", category: "API", asset: "EUR", unitPrice: 10n, capacity: 1n });
   const o = m.acceptOrder({ listingId: l.listingId, buyerId: "b", quantity: 1n });
-  m.fundOrder(o.orderId, 10n);
+  m.fundOrder(o.orderId, 11n); // gross 10 + minimum reservation deposit 1
   assert.throws(() => m.deliver(o.orderId, "p", Buffer.from("INVALID")), /DELIVERY_VALIDATION_FAILED/);
   assert.equal(m.getOrder(o.orderId, "b").status, "HELD");
   m.deliver(o.orderId, "p", Buffer.from("LICENSE:valid"));

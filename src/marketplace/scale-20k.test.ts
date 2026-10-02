@@ -13,7 +13,7 @@ test("20k-user synthetic load: settlement, replay safety and hot-stock exhaustio
     const l = listings[i % listings.length];
     const o = m.acceptOrder({ listingId: l.listingId, buyerId: `buyer-${i}`, quantity: 1n, idempotencyKey: `checkout-${i}` });
     assert.equal(m.acceptOrder({ listingId: l.listingId, buyerId: `buyer-${i}`, quantity: 1n, idempotencyKey: `checkout-${i}` }).orderId, o.orderId);
-    m.fundOrder(o.orderId, o.grossAmount, `fund-${i}`);
+    m.fundOrder(o.orderId, o.grossAmount + o.reservationDeposit, `fund-${i}`);
     m.deliver(o.orderId, l.providerId, Buffer.from(`LICENSE:${i}`), `delivery-${i}`);
     m.settle(o.orderId, `buyer-${i}`);
     settled++;
@@ -35,8 +35,8 @@ test("idempotency keys are scoped to the operation order and cannot be confused"
   const l = m.publishListing({ providerId: "p", title: "API", description: "api", category: "API", asset: "EUR", unitPrice: 10n, capacity: 2n });
   const a = m.acceptOrder({ listingId: l.listingId, buyerId: "a", quantity: 1n });
   const b = m.acceptOrder({ listingId: l.listingId, buyerId: "b", quantity: 1n });
-  m.fundOrder(a.orderId, 10n, "same-key");
-  m.fundOrder(b.orderId, 10n, "same-key");
+  m.fundOrder(a.orderId, 11n, "same-key");
+  m.fundOrder(b.orderId, 11n, "same-key");
   assert.equal(m.getOrder(a.orderId, "a").status, "HELD");
   assert.equal(m.getOrder(b.orderId, "b").status, "HELD");
 });

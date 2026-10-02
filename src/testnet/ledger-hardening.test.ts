@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Fr } from "../core/field.ts";
 import { encodeStringToFr } from "../core/index.ts";
 import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
-import { UepLedger } from "./ledger.ts";
+import { UepLedger, signSnapshotPayload, type UepLedgerSnapshot } from "./ledger.ts";
 import { TESTNET } from "../network/profiles.ts";
 
 async function ids() {
@@ -13,6 +13,12 @@ async function ids() {
   };
 }
 const SNAPSHOT_AUTHORITY = "public-testnet-audit-secret-v1";
+
+/** Re-sign a modified snapshot with the correct authority (simulates a forger holding the secret). */
+function resign(snap: UepLedgerSnapshot): UepLedgerSnapshot {
+  const { integrity: _ignored, ...payload } = snap;
+  return { ...payload, integrity: signSnapshotPayload(payload, SNAPSHOT_AUTHORITY) };
+}
 
 function ledger() {
   return new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotAuthoritySecret: SNAPSHOT_AUTHORITY });
@@ -61,7 +67,8 @@ test("restore rejects tampered balance/state root", async () => {
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
   tampered.balances[0]![1] = "999999999";
-  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_STATE_ROOT/);
+  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_INTEGRITY/);
+  assert.throws(() => UepLedger.restore(resign(tampered), SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_STATE_ROOT/);
 });
 
 test("restore rejects tampered note commitment", async () => {
@@ -71,7 +78,8 @@ test("restore rejects tampered note commitment", async () => {
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
   tampered.notes[0]!.commitment = "01".padStart(64, "0");
-  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_NOTE_COMMITMENT/);
+  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_INTEGRITY/);
+  assert.throws(() => UepLedger.restore(resign(tampered), SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_NOTE_COMMITMENT/);
 });
 
 test("restore rejects tampered nullifier tree", async () => {
@@ -85,7 +93,8 @@ test("restore rejects tampered nullifier tree", async () => {
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
   tampered.nullifiers.tree.leaves[0]![1] = "02".padStart(64, "0");
-  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_NULLIFIER_ROOT/);
+  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_INTEGRITY/);
+  assert.throws(() => UepLedger.restore(resign(tampered), SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_NULLIFIER_ROOT/);
 });
 
 test("reconcile keeps a valid pending transaction queued and rejects an invented one", async () => {
@@ -186,7 +195,7 @@ test("restore requires external snapshot authority and rejects a coherent forged
   assert.throws(() => UepLedger.restore(snap, "wrong-authority"), /INVALID_SNAPSHOT_INTEGRITY/);
   const tampered = structuredClone(snap) as typeof snap;
   tampered.balances[0]![1] = "999999";
-  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_STATE_ROOT/);
+  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_INTEGRITY/);
   // Internally consistent snapshot produced under a different authority.
   const other = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotAuthoritySecret: "other-authority" });
   other.faucet(a.accountId, "asset:test:eur", 1_000_000n);

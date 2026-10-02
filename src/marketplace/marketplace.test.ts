@@ -25,8 +25,8 @@ test("end-to-end marketplace settlement creates the fee only at SETTLED", () => 
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 5n });
   assert.equal(order.grossAmount, 100n);
   assert.equal(order.status, "ACCEPTED");
-  m.fundOrder(order.orderId, 100n);
-  assert.equal(m.heldBalance("EUR", "buyer-1"), 100n);
+  m.fundOrder(order.orderId, 101n); // gross 100 + default 1% reservation deposit
+  assert.equal(m.heldBalance("EUR", "buyer-1"), 101n);
   assert.equal(m.treasury.totalOf("EUR"), 0n);
   m.deliverWithExpectedHash(order.orderId, "provider-gpu-1", Buffer.from("result"), contentHash(Buffer.from("result")));
   assert.equal(m.getOrder(order.orderId, "buyer-1").status, "DELIVERED");
@@ -40,7 +40,7 @@ test("end-to-end marketplace settlement creates the fee only at SETTLED", () => 
 test("tampered delivery is rejected before settlement", () => {
   const { m, listing } = setup();
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 5n });
-  m.fundOrder(order.orderId, 100n);
+  m.fundOrder(order.orderId, 101n); // gross 100 + default 1% reservation deposit
   assert.throws(() => m.deliverWithExpectedHash(order.orderId, "provider-gpu-1", Buffer.from("tampered"), "00"), /CONTENT_INTEGRITY_ERROR/);
   assert.equal(m.getOrder(order.orderId, "buyer-1").status, "HELD");
 });
@@ -48,14 +48,14 @@ test("tampered delivery is rejected before settlement", () => {
 test("unauthorized provider cannot deliver", () => {
   const { m, listing } = setup();
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n });
-  m.fundOrder(order.orderId, 20n);
+  m.fundOrder(order.orderId, 21n); // gross 20 + minimum reservation deposit 1
   assert.throws(() => m.deliver(order.orderId, "attacker", Buffer.from("x")), /PROVIDER_NOT_AUTHORIZED/);
 });
 
 test("successful settlement pays provider net and allocates 3% fee", () => {
   const { m, listing } = setup();
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 5n });
-  m.fundOrder(order.orderId, 100n);
+  m.fundOrder(order.orderId, 101n); // gross 100 + default 1% reservation deposit
   m.deliver(order.orderId, "provider-gpu-1", Buffer.from("result"));
   const s = m.settle(order.orderId, "buyer-1");
   assert.equal(s.grossAmount, 100n);
@@ -69,7 +69,7 @@ test("successful settlement pays provider net and allocates 3% fee", () => {
 test("settlement is not double-chargeable", () => {
   const { m, listing } = setup();
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 5n });
-  m.fundOrder(order.orderId, 100n);
+  m.fundOrder(order.orderId, 101n); // gross 100 + default 1% reservation deposit
   m.deliver(order.orderId, "provider-gpu-1", Buffer.from("result"));
   const first = m.settle(order.orderId, "buyer-1");
   const second = m.settle(order.orderId, "buyer-1");
@@ -80,7 +80,7 @@ test("settlement is not double-chargeable", () => {
 test("cancellation releases the hold and capacity without fees", () => {
   const { m, listing } = setup();
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 4n });
-  m.fundOrder(order.orderId, 80n);
+  m.fundOrder(order.orderId, 81n);
   m.cancel(order.orderId, "buyer-1");
   assert.equal(m.getOrder(order.orderId, "buyer-1").status, "CANCELLED");
   assert.equal(m.heldBalance("EUR", "buyer-1"), 0n);
@@ -144,7 +144,7 @@ test("listing creation is rate limited and exact catalog duplicates are blocked"
 test("bayesian reputation does not let a tiny sample instantly become 5/5", () => {
   const { m, listing } = setup();
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n });
-  m.fundOrder(order.orderId, 20n);
+  m.fundOrder(order.orderId, 21n); // gross 20 + minimum reservation deposit 1
   m.deliver(order.orderId, listing.providerId, Buffer.from("ok"));
   m.settle(order.orderId, "buyer-1");
   const rep = m.recordSellerReview({ orderId: order.orderId, buyerId: "buyer-1", rating: 5 });
@@ -158,6 +158,8 @@ test("checkout quote exposes the marketplace fee before payment", () => {
   assert.equal(q.marketplaceFee, 3n);
   assert.equal(q.providerNet, 97n);
   assert.equal(q.feeBps, 300);
+  assert.equal(q.reservationDeposit, 1n);
+  assert.equal(q.buyerTotal, 101n);
   assert.equal(q.reservationTtlMs, 600_000);
 });
 
@@ -172,7 +174,8 @@ test("paymaster quotes gas in the purchase asset and buyer sees the total before
   const q = m.checkoutQuote(listing.listingId, 1n, 5n);
   assert.equal(q.grossAmount, 100n);
   assert.equal(q.gasFee, 5n);
-  assert.equal(q.buyerTotal, 105n);
+  assert.equal(q.reservationDeposit, 1n);
+  assert.equal(q.buyerTotal, 106n);
   assert.equal(q.gasQuote?.asset, "EUR");
 });
 
@@ -183,7 +186,7 @@ test("paymaster gas is captured from buyer escrow at settlement and is replay-sa
   const listing = m.publishListing({ providerId: "p", title: "Gas API", description: "api", category: "API", asset: "EUR", unitPrice: 100n, capacity: 10n });
   const q = m.checkoutQuote(listing.listingId, 1n, 5n);
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "b", quantity: 1n, gasQuote: q.gasQuote });
-  m.fundOrder(order.orderId, 105n);
+  m.fundOrder(order.orderId, 106n); // gross 100 + gas 5 + deposit 1
   m.deliver(order.orderId, "p", Buffer.from("ok"));
   const first = m.settle(order.orderId, "b");
   const second = m.settle(order.orderId, "b");
@@ -224,3 +227,26 @@ test("buyer or provider can cancel an order, admin can cancel", () => {
   assert.equal(m.getOrder(b.orderId, "buyer-2").status, "CANCELLED");
 });
 
+test("reservations are not free by default (UEP-A10)", () => {
+  const { m, listing } = setup();
+  const small = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n });
+  assert.equal(small.reservationDeposit, 1n); // minimum deposit even when 1% rounds to zero
+  assert.throws(() => m.fundOrder(small.orderId, small.grossAmount), /HOLD_AMOUNT_MISMATCH/);
+  const large = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-2", quantity: 50n });
+  assert.equal(large.grossAmount, 1_000n);
+  assert.equal(large.reservationDeposit, 10n); // 1% of gross
+  assert.throws(() => m.fundOrder(large.orderId, 1_000n), /HOLD_AMOUNT_MISMATCH/);
+  assert.equal(m.fundOrder(large.orderId, 1_010n).heldAmount, 1_010n);
+  // The deposit is released (not charged) when the order settles.
+  m.deliver(large.orderId, listing.providerId, Buffer.from("ok"));
+  const s = m.settle(large.orderId, "buyer-2");
+  assert.equal(s.marketplaceFee, 30n);
+  assert.equal(m.heldBalance("EUR", "buyer-2"), 0n);
+  // Deposits are configurable: fixed amount, or bps.
+  const fixed = new DigitalServicesMarketplace({ now: fixedNow, reservationDeposit: 25n });
+  const bps = new DigitalServicesMarketplace({ now: fixedNow, reservationDepositBps: 500 });
+  assert.equal(fixed.reservationDepositFor(1_000n), 25n);
+  assert.equal(bps.reservationDepositFor(1_000n), 50n);
+  assert.throws(() => new DigitalServicesMarketplace({ reservationDepositBps: 10_001 }), /INVALID_RESERVATION_LIMIT/);
+  assert.throws(() => new DigitalServicesMarketplace({ reservationDeposit: -1n }), /INVALID_RESERVATION_LIMIT/);
+});

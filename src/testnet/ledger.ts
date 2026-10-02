@@ -11,7 +11,7 @@ import { assetsForNetwork, findAsset } from "../core/assets.ts";
 import { hAccount, hLeaf } from "../core/hash.ts";
 import { creatorFee, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier } from "../core/nullifier.ts";
-import { deserializeNote, makeNote, noteCommitment, openNote, serializeNote, type Note } from "../core/note.ts";
+import { deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, type Note } from "../core/note.ts";
 import { computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
 import { encodeStringToFr, u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
@@ -19,13 +19,16 @@ import { TREASURY_ID } from "../network/profiles.ts";
 import { SecurityPolicy, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
 import { DevelopmentSpendProofProvider, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export type SubmitError =
   | { code: "WRONG_NETWORK"; message: string }
   | { code: "WRONG_OWNER"; message: string }
   | { code: "NOTE_OPENING"; message: string }
   | { code: "NOTE_NOT_MEMBER"; message: string }
+  | { code: "NOTE_NONCE"; message: string }
+  | { code: "OUTPUT_BINDING"; message: string }
+  | { code: "INVALID_PARTICIPANTS"; message: string }
   | { code: "AMOUNT_MISMATCH"; message: string }
   | { code: "ASSET_MISMATCH"; message: string }
   | { code: "DOUBLE_SPEND"; message: string }
@@ -46,8 +49,57 @@ function ak(account: Fr, asset: Fr): AccountKey {
 
 export type UepLedgerSnapshot = ReturnType<UepLedger["snapshot"]>;
 
+/** Snapshot format version. v2 (0.4.2) adds `formatVersion` and per-asset minted `supply`. */
+export const SNAPSHOT_FORMAT_VERSION = 2;
+
 function snapshotPayload(data: Omit<UepLedgerSnapshot, "integrity">): string {
   return JSON.stringify(data, (_key, value) => typeof value === "bigint" ? `${value}n` : value);
+}
+
+/**
+ * HMAC-SHA256 integrity tag of a snapshot payload (everything except `integrity`).
+ * Requires the external snapshot authority secret.
+ */
+export function signSnapshotPayload(data: Omit<UepLedgerSnapshot, "integrity">, snapshotAuthoritySecret: string | Uint8Array): string {
+  return createHmac("sha256", Buffer.from(snapshotAuthoritySecret)).update(snapshotPayload(data)).digest("hex");
+}
+
+/**
+ * Structural rules of a single-input spend, shared by submit(), pending
+ * validation and restore() so that all three accept exactly the same
+ * transactions:
+ *   - sender, recipient and treasury are distinct accounts;
+ *   - exactly one input note, owned by the sender, in the transaction asset,
+ *     with a well-formed note nonce equal to `tx.nonce` (the nullifier is
+ *     derived from that nonce);
+ *   - output 0 pays exactly `amount` to the recipient;
+ *   - output 1 (present iff change > 0) returns `input - amount - fee` to the sender.
+ * Note openings against the transaction commitments are checked by the caller.
+ */
+export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Note[]): SubmitError | undefined {
+  if (tx.senderId.eq(tx.recipientId) || tx.senderId.eq(TREASURY_ID) || tx.recipientId.eq(TREASURY_ID)) {
+    return { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." };
+  }
+  if (inputs.length !== 1) return { code: "AMOUNT_MISMATCH", message: "Public testnet spends use exactly one input note." };
+  const input = inputs[0]!;
+  if (!input.owner.eq(tx.senderId)) return { code: "WRONG_OWNER", message: "Input note belongs to a different identity." };
+  if (!input.assetId.eq(tx.assetId)) return { code: "ASSET_MISMATCH", message: "Input note asset does not match transaction." };
+  if (!input.nonce.eq(noteNonce(input.commitment, input.blinding)) || !input.nonce.eq(tx.nonce)) {
+    return { code: "NOTE_NONCE", message: "Transaction nonce is not bound to the consumed note." };
+  }
+  if (input.amount < tx.amount + tx.fee) return { code: "AMOUNT_MISMATCH", message: "Transaction amount plus fee exceeds the value of the input note." };
+  const change = input.amount - tx.amount - tx.fee;
+  const expected: Array<{ owner: Fr; amount: bigint }> = [{ owner: tx.recipientId, amount: tx.amount }];
+  if (change > 0n) expected.push({ owner: tx.senderId, amount: change });
+  if (outputs.length !== expected.length) return { code: "OUTPUT_BINDING", message: "Unexpected number of output notes." };
+  for (let i = 0; i < expected.length; i++) {
+    const o = outputs[i]!;
+    if (!o.owner.eq(expected[i]!.owner) || o.amount !== expected[i]!.amount || !o.assetId.eq(tx.assetId)) {
+      return { code: "OUTPUT_BINDING", message: i === 0 ? "Output 0 must pay exactly the amount to the recipient." : "Output 1 must return the exact change to the sender." };
+    }
+    if (!o.nonce.eq(noteNonce(o.commitment, o.blinding))) return { code: "NOTE_NONCE", message: "Output note nonce is malformed." };
+  }
+  return undefined;
 }
 
 export class UepLedger {
@@ -69,6 +121,8 @@ export class UepLedger {
   pending: UepTransaction[] = [];
   noteCounter = 0n;
   lastReconcileAt = 0;
+  /** Total minted (faucet) value per asset (asset hex -> amount). */
+  supply = new Map<string, bigint>();
 
   constructor(opts: {
     networkId: string;
@@ -126,6 +180,7 @@ export class UepLedger {
     const note = makeNote(account, assetId, amount, blinding);
     this.notes.push(note);
     this.setBalance(account, assetId, this.balanceOf(account, assetId) + amount);
+    this.supply.set(assetId.toHex(), (this.supply.get(assetId.toHex()) ?? 0n) + amount);
     return note;
   }
 
@@ -168,6 +223,9 @@ export class UepLedger {
     const senderId = secrets.accountId;
     if (!verifyOwnership(secrets.secret, secrets.salt, senderId)) {
       return { error: { code: "WRONG_OWNER", message: "Identity does not control this account." } };
+    }
+    if (recipient.eq(senderId) || recipient.eq(TREASURY_ID) || senderId.eq(TREASURY_ID)) {
+      return { error: { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." } };
     }
     const fee = creatorFee(amount);
     const required = amount + fee;
@@ -423,30 +481,15 @@ export class UepLedger {
     if (tx.inputCommitments.length !== 1 || uniqueInputs.size !== tx.inputCommitments.length || inputs.length !== tx.inputCommitments.length) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Input commitments must be unique and exactly match the referenced notes." } };
     }
-    const inputTotal = inputs.reduce((sum, n) => sum + n.amount, 0n);
     const outputs = tx.outputNotes?.map(deserializeNote) ?? [];
     if (outputs.length !== tx.outputCommitments.length || outputs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Output notes do not match transaction commitments." } };
     }
-    const outputTotal = outputs.reduce((sum, n) => sum + n.amount, 0n);
-    if (outputTotal !== inputTotal - tx.fee || outputTotal !== tx.amount + (inputTotal - tx.amount - tx.fee)) {
-      return { error: { code: "AMOUNT_MISMATCH", message: "Output notes do not conserve input value after fee." } };
-    }
-    const requiredInputValue = tx.amount + tx.fee;
-    if (inputTotal < requiredInputValue) {
-      return { error: { code: "AMOUNT_MISMATCH", message: "Transaction amount plus fee exceeds the value of the input notes." } };
-    }
+    // Bind input and outputs to sender / recipient / amount / change (UEP-B03)
+    // and the transaction nonce to the consumed note (UEP-C01).
+    const shapeError = checkSpendShape(tx, inputs, outputs);
+    if (shapeError) return { error: shapeError };
     for (const n of inputs) {
-      if (n.spent) return { error: { code: "DOUBLE_SPEND", message: "Input note already spent." } };
-      if (!n.owner.eq(tx.senderId)) {
-        return { error: { code: "WRONG_OWNER", message: "Input note belongs to a different identity." } };
-      }
-      if (!n.assetId.eq(tx.assetId)) {
-        return { error: { code: "ASSET_MISMATCH", message: "Input note asset does not match transaction." } };
-      }
-      if (!openNote(n)) {
-        return { error: { code: "NOTE_OPENING", message: "Note opening failed (commitment mismatch)." } };
-      }
       // Amount/asset bind: recomputing commitment with a mutated amount must fail.
       const mutated = noteCommitment(n.owner, n.assetId, n.amount + 1n, n.blinding);
       if (mutated.eq(n.commitment)) {
@@ -474,11 +517,8 @@ export class UepLedger {
     this.setBalance(tx.recipientId, tx.assetId, tr.ok.new.recipient);
     this.setBalance(TREASURY_ID, tx.assetId, tr.ok.new.treasury);
 
-    for (const n of inputs) {
-      const local = this.notes.find((x) => x.commitment.eq(n.commitment));
-      if (local) local.spent = true;
-      else this.notes.push({ ...n, spent: true });
-    }
+    // `inputs` are the canonical ledger notes resolved above.
+    for (const n of inputs) n.spent = true;
     for (const o of outputs) {
       if (!this.notes.some((n) => n.commitment.eq(o.commitment))) this.notes.push(o);
     }
@@ -520,9 +560,9 @@ export class UepLedger {
     const outs = tx.outputNotes?.map(deserializeNote) ?? [];
     if (ins.length !== tx.inputCommitments.length || outs.length !== tx.outputCommitments.length) return { error: { code: "NOTE_OPENING", message: "Pending transaction notes are missing." } };
     if (ins.some((n, i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) return { error: { code: "NOTE_OPENING", message: "Pending note commitment mismatch." } };
-    const inputTotal = ins.reduce((a, n) => a + n.amount, 0n);
-    const outputTotal = outs.reduce((a, n) => a + n.amount, 0n);
-    if (outputTotal !== inputTotal - tx.fee || inputTotal < tx.amount + tx.fee) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction does not conserve value." } };
+    // Same input/output binding rules as submit().
+    const shapeError = checkSpendShape(tx, ins, outs);
+    if (shapeError) return { error: shapeError };
     return { tx };
   }
 
@@ -564,6 +604,7 @@ export class UepLedger {
 
   snapshot() {
     const payload = {
+      formatVersion: SNAPSHOT_FORMAT_VERSION,
       networkId: this.networkId,
       domainId: this.domainId,
       connected: this.connected,
@@ -572,19 +613,33 @@ export class UepLedger {
       state: this.state.toJSON(),
       nullifiers: this.nullifiers.toJSON(),
       balances: [...this.balances.entries()].map(([k, v]) => [k, v.toString()] as const),
+      supply: [...this.supply.entries()].map(([k, v]) => [k, v.toString()] as const),
       notes: this.notes.map(serializeNote),
       txs: this.txs.map(serializeTx),
       pending: this.pending.map(serializeTx),
       noteCounter: this.noteCounter.toString(),
       lastReconcileAt: this.lastReconcileAt,
     };
-    const integrity = createHmac("sha256", this.snapshotAuthoritySecret).update(snapshotPayload(payload)).digest("hex");
+    const integrity = signSnapshotPayload(payload, this.snapshotAuthoritySecret);
     return { ...payload, integrity };
   }
 
+  /**
+   * Restore a snapshot. The integrity tag is verified first (constant-time),
+   * then the full state is re-derived and every invariant is checked. A
+   * snapshot is accepted only if it could have been produced by faucet() and
+   * submit() under the same rules submit() enforces. Errors are specific
+   * `INVALID_SNAPSHOT_*` codes.
+   */
   static restore(data: UepLedgerSnapshot, snapshotAuthoritySecret: string | Uint8Array): UepLedger {
-    if (!data || data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || typeof data.integrity !== "string") throw new Error("INVALID_SNAPSHOT_SHAPE");
+    const fail = (code: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}`); };
+    if (!data || data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.nullifiers.seen) || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || !data.policy || typeof data.integrity !== "string") fail("SHAPE");
+    if (data.formatVersion !== SNAPSHOT_FORMAT_VERSION || !Array.isArray(data.supply)) fail("VERSION");
     const { integrity, ...payload } = data;
+    const expected = Buffer.from(signSnapshotPayload(payload, snapshotAuthoritySecret), "hex");
+    const given = /^[0-9a-f]{64}$/.test(integrity) ? Buffer.from(integrity, "hex") : Buffer.alloc(0);
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) fail("INTEGRITY");
+
     const l = new UepLedger({
       networkId: data.networkId,
       domainId: data.domainId,
@@ -593,42 +648,106 @@ export class UepLedger {
       snapshotAuthoritySecret,
     });
     l.state = SparseMerkleTree.fromJSON(data.state);
-    l.nullifiers = NullifierSet.fromJSON(data.nullifiers);
     l.balances = new Map(data.balances.map(([k, v]) => [k, BigInt(v)]));
+    l.supply = new Map(data.supply.map(([k, v]) => [k, BigInt(v)]));
     l.notes = data.notes.map(deserializeNote);
     l.txs = data.txs.map(deserializeTx);
     l.pending = data.pending.map(deserializeTx);
     l.noteCounter = BigInt(data.noteCounter);
     l.lastReconcileAt = data.lastReconcileAt;
     const p = data.policy as any;
-    if (p) l.policy = new SecurityPolicy({ ...p, blockedAccounts: new Set(p.blockedAccounts ?? []), assetTier: { ...(p.assetTier ?? {}) } });
+    l.policy = new SecurityPolicy({ ...p, blockedAccounts: new Set(p.blockedAccounts ?? []), assetTier: { ...(p.assetTier ?? {}) } });
+
+    // 1. Account state root is re-derived from balances.
     const rebuiltState = new SparseMerkleTree(ACCOUNT_DEPTH);
     for (const [key, value] of l.balances) {
       const [accountHex, assetHex] = key.split("|");
-      if (!accountHex || !assetHex) throw new Error("INVALID_SNAPSHOT_BALANCE_KEY");
-      const account = new Fr(accountHex); const asset = new Fr(assetHex);
+      if (!accountHex || !assetHex) fail("BALANCE_KEY");
+      if (value < 0n || value >= 2n ** 64n) fail("BALANCE_RANGE");
+      const account = new Fr(accountHex!); const asset = new Fr(assetHex!);
+      if (ak(account, asset) !== key) fail("BALANCE_KEY");
       rebuiltState.set(hAccount(account, asset), l.leafFor(account, asset, value));
     }
-    if (!rebuiltState.root().eq(l.state.root())) throw new Error("INVALID_SNAPSHOT_STATE_ROOT");
-    for (const n of l.notes) { if (!openNote(n)) throw new Error("INVALID_SNAPSHOT_NOTE_COMMITMENT"); }
+    if (!rebuiltState.root().eq(l.state.root())) fail("STATE_ROOT");
+
+    // 2. Every note opens, has a well-formed nonce and appears once.
+    const noteByCommitment = new Map<string, Note>();
+    for (const n of l.notes) {
+      if (!openNote(n)) fail("NOTE_COMMITMENT");
+      if (!n.nonce.eq(noteNonce(n.commitment, n.blinding))) fail("NOTE_NONCE");
+      if (noteByCommitment.has(n.commitment.toHex())) fail("NOTE_DUPLICATE");
+      noteByCommitment.set(n.commitment.toHex(), n);
+    }
+
+    // 3. Transactions replay in order under submit()'s rules.
+    const registeredAssets = assetsForNetwork(l.networkId).map((a) => encodeStringToFr(a.assetId));
+    const outputCommitments = new Set<string>();
+    for (const tx of l.txs) for (const c of tx.outputCommitments) outputCommitments.add(c.toHex());
+    // Notes that are not the output of any transaction are faucet mints.
+    const available = new Set<string>([...noteByCommitment.keys()].filter((c) => !outputCommitments.has(c)));
+    const consumed = new Set<string>();
+    const txIds = new Set<string>();
+    const feesByAsset = new Map<string, bigint>();
     const rebuiltNullifiers = new NullifierSet();
     for (const tx of l.txs) {
-      if (!rebuiltNullifiers.insertOnce(tx.nullifier)) throw new Error("INVALID_SNAPSHOT_NULLIFIER_SET");
-      if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) throw new Error("INVALID_SNAPSHOT_TX_NOTES");
+      if (tx.networkId !== l.networkId || tx.domainId !== l.domainId) fail("TX_NETWORK");
+      if (txIds.has(tx.txId.toHex())) fail("TX_DUPLICATE");
+      txIds.add(tx.txId.toHex());
+      if (!rebuiltNullifiers.insertOnce(tx.nullifier)) fail("NULLIFIER_SET");
+      if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount)) fail("TX_VALUE");
+      if (!registeredAssets.some((a) => a.eq(tx.assetId))) fail("TX_ASSET");
+      if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) fail("TX_NOTES");
       const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
-      if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) throw new Error("INVALID_SNAPSHOT_TX_COMMITMENT");
-      const ins = tx.inputNotes.map(deserializeNote); const outs = tx.outputNotes.map(deserializeNote);
-      if (ins.some((n,i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n,i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) throw new Error("INVALID_SNAPSHOT_TX_NOTES");
-      const inputTotal = ins.reduce((a,n)=>a+n.amount,0n); const outputTotal = outs.reduce((a,n)=>a+n.amount,0n);
-      // Same conservation rule as submit(): outputs (recipient + optional change) == inputs - fee.
-      if (outputTotal !== inputTotal - tx.fee || inputTotal < tx.amount + tx.fee) throw new Error("INVALID_SNAPSHOT_TX_VALUE");
+      if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) fail("TX_COMMITMENT");
+      const ins = tx.inputNotes!.map(deserializeNote); const outs = tx.outputNotes!.map(deserializeNote);
+      if (ins.some((n, i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) fail("TX_NOTES");
+      const shapeError = checkSpendShape(tx, ins, outs);
+      if (shapeError) {
+        const map: Partial<Record<SubmitError["code"], string>> = { OUTPUT_BINDING: "TX_OUTPUT_BINDING", NOTE_NONCE: "TX_NONCE", INVALID_PARTICIPANTS: "TX_PARTICIPANTS", WRONG_OWNER: "TX_OWNER", ASSET_MISMATCH: "TX_ASSET" };
+        fail(map[shapeError.code] ?? "TX_VALUE");
+      }
+      for (const n of ins) {
+        const key = n.commitment.toHex();
+        if (!noteByCommitment.has(key)) fail("TX_INPUT_MISSING");
+        if (consumed.has(key) || !available.has(key)) fail("TX_ORDER");
+        available.delete(key); consumed.add(key);
+      }
+      for (const o of outs) {
+        if (!noteByCommitment.has(o.commitment.toHex())) fail("TX_OUTPUT_MISSING");
+        available.add(o.commitment.toHex());
+      }
+      feesByAsset.set(tx.assetId.toHex(), (feesByAsset.get(tx.assetId.toHex()) ?? 0n) + tx.fee);
     }
-    if (!rebuiltNullifiers.root().eq(l.nullifiers.root())) throw new Error("INVALID_SNAPSHOT_NULLIFIER_ROOT");
-    const calculatedBalances = new Map<string,bigint>();
-    for (const [k,v] of l.balances) calculatedBalances.set(k,v);
-    if (l.notes.some(n => !n.spent && (calculatedBalances.get(ak(n.owner,n.assetId)) ?? 0n) < n.amount)) throw new Error("INVALID_SNAPSHOT_NOTE_BALANCE");
-    const expectedIntegrity = createHmac("sha256", Buffer.from(snapshotAuthoritySecret)).update(snapshotPayload(payload)).digest("hex");
-    if (integrity !== expectedIntegrity) throw new Error("INVALID_SNAPSHOT_INTEGRITY");
+
+    // 4. Nullifier tree and seen set equal exactly the committed nullifiers.
+    if (!rebuiltNullifiers.root().eq(new NullifierSet(SparseMerkleTree.fromJSON(data.nullifiers.tree)).root())) fail("NULLIFIER_ROOT");
+    const seen = new Set(data.nullifiers.seen);
+    if (seen.size !== data.nullifiers.seen.length || seen.size !== l.txs.length || l.txs.some((t) => !seen.has(t.nullifier.toHex()))) fail("NULLIFIER_SEEN");
+    l.nullifiers = rebuiltNullifiers;
+
+    // 5. A note is spent iff it was consumed by a committed transaction.
+    for (const n of l.notes) if (n.spent !== consumed.has(n.commitment.toHex())) fail("SPENT_FLAG");
+
+    // 6. Balances equal unspent notes per (owner, asset), plus fee income for the treasury.
+    const expectedBalances = new Map<string, bigint>();
+    for (const n of l.notes) if (!n.spent) expectedBalances.set(ak(n.owner, n.assetId), (expectedBalances.get(ak(n.owner, n.assetId)) ?? 0n) + n.amount);
+    for (const [assetHex, fees] of feesByAsset) {
+      const k = ak(TREASURY_ID, new Fr(assetHex));
+      expectedBalances.set(k, (expectedBalances.get(k) ?? 0n) + fees);
+    }
+    for (const k of new Set([...expectedBalances.keys(), ...l.balances.keys()])) {
+      if ((expectedBalances.get(k) ?? 0n) !== (l.balances.get(k) ?? 0n)) fail("NOTE_BALANCE");
+    }
+
+    // 7. Supply: minted notes and total balances per asset equal the recorded supply.
+    const minted = new Map<string, bigint>();
+    for (const n of l.notes) if (!outputCommitments.has(n.commitment.toHex())) minted.set(n.assetId.toHex(), (minted.get(n.assetId.toHex()) ?? 0n) + n.amount);
+    const totals = new Map<string, bigint>();
+    for (const [k, v] of l.balances) { const assetHex = k.split("|")[1]!; totals.set(assetHex, (totals.get(assetHex) ?? 0n) + v); }
+    for (const assetHex of new Set([...minted.keys(), ...totals.keys(), ...l.supply.keys()])) {
+      const supply = l.supply.get(assetHex) ?? 0n;
+      if ((minted.get(assetHex) ?? 0n) !== supply || (totals.get(assetHex) ?? 0n) !== supply) fail("SUPPLY");
+    }
     return l;
   }
 }

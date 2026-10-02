@@ -22,6 +22,7 @@ describe("UEP IoT/M2M service", () => {
     assert.equal(requested.contract.machineId, "machine-01");
     const held = iot.hold(requested.requestId);
     assert.equal(held.status, "HELD");
+    assert.equal(held.heldAmount, 101n); // gross 100 + default 1% reservation deposit
     const telemetry = iot.simulateExecution(requested.requestId, { temperatureC: "21.50", status: "OK" });
     const delivered = iot.deliverTelemetry(requested.requestId, telemetry);
     assert.equal(delivered.status, "DELIVERED");
