@@ -5,7 +5,7 @@ import { encodeStringToFr, noteCommitment } from "../core/index.ts";
 import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
 import { UepLedger } from "./ledger.ts";
 import { TESTNET } from "../network/profiles.ts";
-import { UepAddressV1 } from "../core/address.ts";
+import { UepAddressV2 } from "../core/address.ts";
 import { hAccount } from "../core/hash.ts";
 
 async function twoIdentities() {
@@ -63,9 +63,13 @@ describe("UEP public testnet", () => {
     const { a } = await twoIdentities();
     const test = testnetLedger();
     test.faucet(a.accountId, "asset:test:eur", 1_000n);
-    const addrT = UepAddressV1.encode(test.networkId, a.accountId);
-    const addrOther = UepAddressV1.encode("uep-global-1", a.accountId);
+    const addrT = UepAddressV2.encode(test.networkId, a.accountId);
+    const addrOther = UepAddressV2.encode("uep-global-1", a.accountId);
     assert.notEqual(addrT, addrOther);
+    // v0.4.5: the network tag is checksummed into the address.
+    assert.ok(UepAddressV2.decode(addrT, test.networkId)?.accountId.eq(a.accountId));
+    assert.equal(UepAddressV2.decode(addrOther, test.networkId), null);
+    assert.equal(test.addressOf(a.accountId), addrT);
     assert.ok(hAccount(new Fr(123456789n), new Fr(1n)).eq(hAccount(new Fr(123456789n), new Fr(1n))));
   });
 });

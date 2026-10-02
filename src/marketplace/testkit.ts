@@ -1,5 +1,5 @@
 /**
- * Test / simulation helpers for the signed marketplace flows (v0.4.3, v0.4.4).
+ * Test / simulation helpers for the signed marketplace flows (v0.4.3 – v0.4.5).
  * Not used by production code paths. Keys of enrolled identities and of
  * test authorities (admin / arbiter) live in this module only.
  */
@@ -7,6 +7,9 @@ import { createMarketplaceIdentity, disputeReasonHash, listingTerms, signAction,
 import type { DigitalServicesMarketplace, DisputeResolution, ServiceListing, ServiceOrder, SettlementRecord } from "./marketplace.ts";
 import type { GasQuote } from "./paymaster.ts";
 import { contentHash } from "../service/content-hash.ts";
+import type { Fr } from "../core/field.ts";
+import { encodeAccountAddress } from "../core/address.ts";
+import { deriveSpendKey } from "../core/spend-key.ts";
 
 const registry = new WeakMap<DigitalServicesMarketplace, Map<string, MarketplaceIdentity>>();
 /** Admin / arbiter test keys, looked up by identity id + public key. */
@@ -30,6 +33,25 @@ export function enrollIdentity(m: DigitalServicesMarketplace, identityId: string
   let identity = ids.get(identityId);
   if (!identity) {
     identity = createMarketplaceIdentity(identityId);
+    m.registerIdentity(identityId, identity.publicKeyHex);
+    ids.set(identityId, identity);
+  }
+  if (credit && credit.amount > 0n) m.creditAccount(identityId, credit.asset, credit.amount);
+  return identity;
+}
+
+/**
+ * v0.4.5: register a ledger identity in the marketplace under its v2 address,
+ * signing with its deterministic spend key (UEP-ADDR-002 consistency).
+ */
+export function enrollAccountIdentity(m: DigitalServicesMarketplace, secrets: { secret: Fr; salt: Fr; accountId: Fr }, credit?: { asset: string; amount: bigint }): MarketplaceIdentity {
+  const identityId = encodeAccountAddress(m.ledgerNetworkId, secrets.accountId);
+  let ids = registry.get(m);
+  if (!ids) { ids = new Map(); registry.set(m, ids); }
+  let identity = ids.get(identityId);
+  if (!identity) {
+    const key = deriveSpendKey(secrets.secret, secrets.salt);
+    identity = { identityId, publicKeyHex: key.publicKeyHex, privateKey: key.privateKey };
     m.registerIdentity(identityId, identity.publicKeyHex);
     ids.set(identityId, identity);
   }

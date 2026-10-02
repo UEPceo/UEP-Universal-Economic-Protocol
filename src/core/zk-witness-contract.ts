@@ -15,7 +15,8 @@
  */
 
 import { Fr } from "./field.ts";
-import { hAccount, hLeaf, hNullifier } from "./hash.ts";
+import { hLeaf, hNullifier } from "./hash.ts";
+import { accountIdFromSecrets } from "./spend-key.ts";
 import {
   ACCOUNT_DEPTH,
   EMPTY_LEAF,
@@ -175,10 +176,11 @@ export function validateZkSpendInstance(
   if (opts?.checkCrypto) {
     const leafFn = opts.balanceLeaf ?? defaultBalanceLeaf;
 
-    // senderId = H_ACCOUNT(secret, salt)
-    const expectId = hAccount(w.senderSecret, w.senderSalt);
+    // v0.4.5: senderId = key-derived account id of the spend key of (secret, salt).
+    // A future circuit has to prove this binding (or the signature) in-circuit.
+    const expectId = accountIdFromSecrets(w.senderSecret, w.senderSalt);
     if (!expectId.eq(pub.senderId)) {
-      errors.push("senderId != H_ACCOUNT(secret, salt)");
+      errors.push("senderId != accountIdFromSpendKey(spendKey(secret, salt))");
     }
 
     // sender leaves use noteBlinding only

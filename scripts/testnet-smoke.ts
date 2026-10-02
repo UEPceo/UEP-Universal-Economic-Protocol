@@ -9,7 +9,7 @@ import { encodeStringToFr } from "../src/core/encoding.ts";
 import { identityFromMnemonic, generateMnemonic } from "../src/identity/index.ts";
 import { UepLedger } from "../src/testnet/ledger.ts";
 import { TESTNET } from "../src/network/profiles.ts";
-import { UepAddressV1 } from "../src/core/address.ts";
+import { encodeAccountAddress, parseAccountAddress } from "../src/core/address.ts";
 import { creatorFee } from "../src/core/fee.ts";
 
 async function main() {
@@ -45,7 +45,9 @@ async function main() {
   assert.equal(bobBal, sendAmount);
   assert.equal(aliceBal, 1_000_000n - sendAmount - fee);
 
-  const addr = UepAddressV1.encode(TESTNET.networkId, bob.accountId);
+  // v0.4.5: v2 address (UEP-ADDR-002): Bech32m, versioned, network-bound, key-derived.
+  const addr = encodeAccountAddress(TESTNET.networkId, bob.accountId);
+  assert.ok(parseAccountAddress(addr, TESTNET.networkId).eq(bob.accountId));
 
   console.log("TX ID:       ", submitted.tx.txId.toHex());
   console.log("sender:      ", alice.accountId.toHex());

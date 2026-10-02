@@ -19,6 +19,10 @@ import {
 import { MarketplacePaymaster, type GasQuote } from "./paymaster.ts";
 import type { KeyObject } from "node:crypto";
 import { publicKeyHexOf, toPublicKey, verifyEd25519, type PublicKeyLike } from "../core/ed25519.ts";
+import { decodeAccountAddress } from "../core/address.ts";
+import { spendKeyMatchesAccount } from "../core/spend-key.ts";
+import type { Fr } from "../core/field.ts";
+import { TESTNET } from "../network/profiles.ts";
 import { DEFAULT_MARKETPLACE_ID, actionMessage, disputeReasonHash, listingTerms, reservationMessage, type ActorAuth, type MarketplaceAction } from "./identity.ts";
 
 export const MARKETPLACE_VERSION = "0.4" as const;
@@ -151,9 +155,22 @@ export type MarketplaceConfig = {
   /**
    * Fixed reservation deposit per order. When omitted, the deposit is
    * max(MIN_RESERVATION_DEPOSIT, grossAmount * reservationDepositBps / 10_000).
-   * Setting `0n` explicitly disables deposits (not recommended outside tests).
+   * v0.4.5: must be at least MIN_RESERVATION_DEPOSIT (1 unit); a smaller value
+   * throws RESERVATION_DEPOSIT_BELOW_MINIMUM unless
+   * `testOnlyAllowZeroReservationDeposit` is set.
    */
   reservationDeposit?: bigint;
+  /**
+   * v0.4.5 TEST-ONLY escape hatch: allow `reservationDeposit: 0n` (reservations
+   * without funds). Never set this outside tests and simulations.
+   */
+  testOnlyAllowZeroReservationDeposit?: boolean;
+  /**
+   * v0.4.5: ledger network whose v2 addresses (UEP-ADDR-002) may be used as
+   * identity ids. An identity named by an address must register the spend
+   * key that address commits to. Default: the public testnet.
+   */
+  ledgerNetworkId?: string;
   /** Proportional deposit in basis points when no fixed deposit is set (default 100 = 1%). */
   reservationDepositBps?: number;
   /** Concurrent open (not settled / cancelled / expired) reservations per identity. Default 8. */
@@ -248,6 +265,10 @@ export class DigitalServicesMarketplace {
   readonly maxActiveReservationsPerIdentity: number;
   readonly cancellationGraceMs: number;
   readonly marketplaceId: string;
+  /** v0.4.5: network of the ledger addresses accepted as identity ids. */
+  readonly ledgerNetworkId: string;
+  /** v0.4.5: true only when the test-only zero-deposit flag was set. */
+  readonly testOnlyAllowZeroReservationDeposit: boolean;
   private readonly identities = new Map<string, RegisteredIdentity>();
   private readonly identityKeys = new Map<string, KeyObject>();
   private readonly accounts = new Map<string, bigint>();
@@ -289,6 +310,11 @@ export class DigitalServicesMarketplace {
     this.maxActiveReservationsPerIdentity = config.maxActiveReservationsPerIdentity ?? DEFAULT_MAX_ACTIVE_RESERVATIONS;
     this.cancellationGraceMs = config.cancellationGraceMs ?? DEFAULT_CANCELLATION_GRACE_MS;
     this.marketplaceId = config.marketplaceId ?? DEFAULT_MARKETPLACE_ID;
+    this.ledgerNetworkId = config.ledgerNetworkId ?? TESTNET.networkId;
+    this.testOnlyAllowZeroReservationDeposit = config.testOnlyAllowZeroReservationDeposit === true;
+    if (this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit >= 0n && this.fixedReservationDeposit < MIN_RESERVATION_DEPOSIT && !(this.testOnlyAllowZeroReservationDeposit && this.fixedReservationDeposit === 0n)) {
+      throw new Error(`RESERVATION_DEPOSIT_BELOW_MINIMUM: reservationDeposit must be at least ${MIN_RESERVATION_DEPOSIT} (testOnlyAllowZeroReservationDeposit permits 0n in tests)`);
+    }
     if (!Number.isSafeInteger(this.reservationTtlMs) || this.reservationTtlMs <= 0 || !Number.isSafeInteger(this.cancellationGraceMs) || this.cancellationGraceMs < 0) throw new Error("INVALID_RESERVATION_LIMIT");
     if ((this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit < 0n) || !Number.isInteger(this.reservationDepositBps) || this.reservationDepositBps < 0 || this.reservationDepositBps > 10_000 || !Number.isInteger(this.maxActiveReservationsPerIdentity) || this.maxActiveReservationsPerIdentity < 1) throw new Error("INVALID_RESERVATION_LIMIT");
   }
@@ -316,10 +342,31 @@ export class DigitalServicesMarketplace {
     if (this.identities.has(identityId)) throw new Error("IDENTITY_ALREADY_REGISTERED");
     let keyObject: KeyObject;
     try { keyObject = toPublicKey(publicKey); } catch { throw new Error("IDENTITY_PUBLIC_KEY_INVALID"); }
+    // v0.4.5: an identity named by a ledger address must hold the key the address commits to.
+    const account = this.addressIdentityAccount(identityId);
+    if (account && !spendKeyMatchesAccount(keyObject, account)) throw new Error("IDENTITY_ADDRESS_KEY_MISMATCH: the public key does not match the key committed to by this address");
     const record: RegisteredIdentity = { identityId, publicKeyHex: publicKeyHexOf(keyObject), registeredAt: this.now() };
     this.identities.set(identityId, record);
     this.identityKeys.set(identityId, keyObject);
     return { ...record };
+  }
+
+  /**
+   * v0.4.5: ledger account of an identity named by a v2 address, or undefined
+   * for plain identity names. Throws IDENTITY_ADDRESS_INVALID for malformed,
+   * non-canonical, wrong-network or legacy (v1) addresses.
+   */
+  ledgerAccountOf(identityId: string): Fr | undefined {
+    return this.addressIdentityAccount(identityId);
+  }
+
+  private addressIdentityAccount(identityId: string): Fr | undefined {
+    const looksLikeAddress = /^uep1/i.test(identityId) || /^uep:[^:]*:[0-9a-f]{64}$/i.test(identityId);
+    if (!looksLikeAddress) return undefined;
+    const decoded = decodeAccountAddress(identityId, this.ledgerNetworkId);
+    if (!decoded.ok) throw new Error(`IDENTITY_ADDRESS_INVALID: ${decoded.code}`);
+    if (identityId !== identityId.trim().toLowerCase()) throw new Error("IDENTITY_ADDRESS_INVALID: address identities must use the canonical lowercase form");
+    return decoded.accountId;
   }
 
   isIdentityRegistered(identityId: string): boolean {

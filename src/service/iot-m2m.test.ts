@@ -317,3 +317,32 @@ describe("IoT authorization hardening", () => {
     assert.equal(marketplace.lockedDeposit("EUR", "buyer-x"), 0n);
   });
 });
+
+describe("IoT identities named by ledger addresses (v0.4.5)", () => {
+  it("an address-named provider and buyer run the signed flow; the address binds the key", async () => {
+    const { identityFromMnemonic, generateMnemonic } = await import("../identity/index.ts");
+    const { enrollAccountIdentity } = await import("../marketplace/testkit.ts");
+    const provider = await identityFromMnemonic(await generateMnemonic(128));
+    const buyer = await identityFromMnemonic(await generateMnemonic(128));
+    let now = 1_000_000;
+    const marketplace = new DigitalServicesMarketplace({ now: () => now, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex });
+    const iot = new IoTM2MService(marketplace, { now: () => now, telemetryMaxAgeMs: 60_000 });
+    // Nobody can claim the provider's address with another key.
+    const providerAddr = enrollAccountIdentity(marketplace, provider).identityId;
+    assert.equal(marketplace.ledgerAccountOf("iot-admin"), undefined);
+    assert.throws(() => marketplace.registerIdentity(providerAddr.replace(/.$/, (c) => (c === "q" ? "p" : "q")), buyer.spendPublicKey), /IDENTITY_ADDRESS_INVALID/);
+    const buyerAddr = enrollAccountIdentity(marketplace, buyer).identityId;
+    assert.ok(marketplace.ledgerAccountOf(providerAddr)!.eq(provider.accountId));
+    registerProviderAs(iot, { providerId: providerAddr, displayName: "Address-named lab" });
+    registerMachineAs(iot, { machineId: "machine-a", providerId: providerAddr, serviceType: "temperature-sampling", model: "LAB-SENSOR-1", endpointRef: "sim://machine-a" });
+    const listing = publishAs(marketplace, { providerId: providerAddr, title: "Temperature sampling", description: "Simulated machine telemetry", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 100n, capacity: 10n });
+    const r = requestAs(iot, { buyerId: buyerAddr, listingId: listing.listingId, machineId: "machine-a", quantity: 1n });
+    holdAs(iot, r.requestId, buyerAddr);
+    const t = simulateAs(iot, r.requestId, "machine-a", { status: "OK" });
+    deliverTelemetryAs(iot, r.requestId, providerAddr, t);
+    iot.verifyTelemetry(r.requestId, t);
+    const s = settleIoTAs(iot, r.requestId, buyerAddr);
+    assert.equal(s.providerPayout + s.marketplaceFee, 100n);
+    assert.equal(marketplace.valueAccounting("EUR").conserved, true);
+  });
+});

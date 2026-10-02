@@ -22,7 +22,8 @@ import type { IdentitySecrets } from "../identity/kdf.ts";
 import type { KeyObject } from "node:crypto";
 import { generateEd25519KeyPair, publicKeyHexOf, sha256Hex, signEd25519, stableStringify, toPrivateKey, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
 import { NoteCommitmentTree } from "../core/note-tree.ts";
-import { deriveSpendKey, signSenderAuth, spendKeyRegistrationMessage, verifySenderAuth, verifySpendKeyRegistration, type SpendKeyRegistration } from "../core/spend-key.ts";
+import { isKeyDerivedAccountId, senderAuthFailure, signSenderAuth, spendKeyMatchesAccount } from "../core/spend-key.ts";
+import { encodeAccountAddress, parseAccountAddress } from "../core/address.ts";
 
 export type SubmitError =
   | { code: "WRONG_NETWORK"; message: string }
@@ -41,8 +42,12 @@ export type SubmitError =
   | { code: "POLICY"; message: string }
   | { code: "NOT_CONNECTED"; message: string }
   | { code: "OFFLINE_QUEUED"; message: string }
-  /** v0.4.4: missing or invalid sender signature (registered spend key). */
+  /** v0.4.4: missing or invalid sender signature. */
   | { code: "SENDER_AUTH"; message: string }
+  /** v0.4.5: the revealed spend key does not hash to the sender / input-note owner. */
+  | { code: "OWNER_KEY"; message: string }
+  /** v0.4.5: malformed, legacy, wrong-network or non-key-derived account address. */
+  | { code: "INVALID_ADDRESS"; message: string }
   /** v0.4.4: missing or invalid note-commitment tree membership proof. */
   | { code: "MEMBERSHIP_PROOF"; message: string }
   /** v0.4.4: the bounded pending queue is full. */
@@ -61,8 +66,11 @@ function ak(account: Fr, asset: Fr): AccountKey {
  * v3 (0.4.3): Ed25519 authority signatures, hash chain, signed faucet mints.
  * v4 (0.4.4): adds the note-commitment tree root, the sender spend-key registry
  * and the pending-queue bound; pending entries are validated on restore.
+ * v5 (0.4.5): key-derived account ids (UEP-ADDR-002). The spend-key registry is
+ * removed; every note owner must be a key-derived id and every spend's revealed
+ * key must hash to its sender and input-note owner.
  */
-export const SNAPSHOT_FORMAT_VERSION = 4;
+export const SNAPSHOT_FORMAT_VERSION = 5;
 /** Default bound of the pending (offline / conflict) queue. */
 export const DEFAULT_MAX_PENDING_TRANSACTIONS = 1024;
 /** Upper limit accepted for `maxPendingTransactions`. */
@@ -192,7 +200,8 @@ function distinctKeyHexes(keys: PublicKeyLike[] | undefined, code: string): stri
  * Structural rules of a single-input spend, shared by submit(), pending
  * validation and restore() so that all three accept exactly the same
  * transactions:
- *   - sender, recipient and treasury are distinct accounts;
+ *   - sender, recipient and treasury are distinct accounts; sender and recipient
+ *     are v2 key-derived account ids (v0.4.5);
  *   - exactly one input note, owned by the sender, in the transaction asset,
  *     with a well-formed note nonce equal to `tx.nonce` (the nullifier is
  *     derived from that nonce);
@@ -203,6 +212,9 @@ function distinctKeyHexes(keys: PublicKeyLike[] | undefined, code: string): stri
 export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Note[]): SubmitError | undefined {
   if (tx.senderId.eq(tx.recipientId) || tx.senderId.eq(TREASURY_ID) || tx.recipientId.eq(TREASURY_ID)) {
     return { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." };
+  }
+  if (!isKeyDerivedAccountId(tx.senderId) || !isKeyDerivedAccountId(tx.recipientId)) {
+    return { code: "INVALID_PARTICIPANTS", message: "Sender and recipient must be v2 key-derived accounts." };
   }
   if (inputs.length !== 1) return { code: "AMOUNT_MISMATCH", message: "Public testnet spends use exactly one input note." };
   const input = inputs[0]!;
@@ -256,8 +268,6 @@ export class UepLedger {
   supply = new Map<string, bigint>();
   /** v0.4.4: append-only Merkle tree of every note commitment, in `notes` order. */
   noteTree = new NoteCommitmentTree();
-  /** v0.4.4: sender spend-key registry (account hex -> registration). */
-  spendKeys = new Map<string, SpendKeyRegistration>();
   /** v0.4.4: bound of the pending queue. */
   readonly maxPendingTransactions: number;
 
@@ -328,28 +338,19 @@ export class UepLedger {
     this.notes.push(note);
   }
 
-  /**
-   * Register (idempotently) the deterministic spend key of an identity. The
-   * caller proves control of the account with its secrets; the registry is
-   * part of signed snapshots, so replicas can authenticate pending spends.
-   */
-  registerSpendKey(secrets: IdentitySecrets): SpendKeyRegistration {
-    if (!verifyOwnership(secrets.secret, secrets.salt, secrets.accountId)) throw new Error("WRONG_OWNER: identity does not control this account");
-    const key = deriveSpendKey(secrets.secret, secrets.salt);
-    const account = secrets.accountId.toHex();
-    const existing = this.spendKeys.get(account);
-    if (existing) {
-      if (existing.publicKey !== key.publicKeyHex) throw new Error("SPEND_KEY_CONFLICT");
-      return { ...existing };
-    }
-    const reg: SpendKeyRegistration = { account, publicKey: key.publicKeyHex, proof: signEd25519(spendKeyRegistrationMessage(this.networkId, account), key.privateKey) };
-    this.spendKeys.set(account, reg);
-    return { ...reg };
+  /** v0.4.5: v2 address (UEP-ADDR-002) of a key-derived account on this ledger's network. */
+  addressOf(account: Fr): string {
+    return encodeAccountAddress(this.networkId, account);
   }
 
-  /** Registered spend public key of an account, if any. */
-  spendKeyOf(account: Fr): string | undefined {
-    return this.spendKeys.get(account.toHex())?.publicKey;
+  /**
+   * v0.4.5: resolve a v2 address string (checked for checksum, version and
+   * network) or a key-derived account id. Throws `ADDRESS_*` errors.
+   */
+  resolveAccount(accountOrAddress: Fr | string): Fr {
+    if (typeof accountOrAddress === "string") return parseAccountAddress(accountOrAddress, this.networkId);
+    if (!(accountOrAddress instanceof Fr) || !isKeyDerivedAccountId(accountOrAddress)) throw new Error("ADDRESS_VERSION: account id is not a v2 key-derived account");
+    return accountOrAddress;
   }
 
   /**
@@ -394,11 +395,23 @@ export class UepLedger {
     return undefined;
   }
 
-  /** Sender signature by the spend key registered for `senderId`. */
+  /**
+   * v0.4.5 registry-free sender check: the revealed spend key must hash to
+   * `senderId` (key-derived account) and must have signed the envelope.
+   */
   private checkSenderAuth(tx: UepTransaction): SubmitError | undefined {
-    const key = this.spendKeyOf(tx.senderId);
-    if (!key) return { code: "SENDER_AUTH", message: "Sender has no registered spend key on this ledger." };
-    if (!verifySenderAuth(tx, key)) return { code: "SENDER_AUTH", message: "Transaction is not signed by the sender's registered spend key." };
+    const failure = senderAuthFailure(tx);
+    if (failure === "MISSING") return { code: "SENDER_AUTH", message: "Transaction carries no sender signature." };
+    if (failure === "OWNER_KEY") return { code: "OWNER_KEY", message: "Revealed spend key does not hash to the sender account." };
+    if (failure === "SIGNATURE") return { code: "SENDER_AUTH", message: "Transaction is not signed by the sender's spend key." };
+    return undefined;
+  }
+
+  /** v0.4.5: every canonical input note must be owned by the account of the revealed key. */
+  private checkInputOwnerKeys(tx: UepTransaction, inputs: Note[]): SubmitError | undefined {
+    for (const n of inputs) {
+      if (!tx.senderAuth || !spendKeyMatchesAccount(tx.senderAuth.publicKey, n.owner)) return { code: "OWNER_KEY", message: "Input note owner does not match the signing spend key." };
+    }
     return undefined;
   }
 
@@ -415,8 +428,10 @@ export class UepLedger {
     this.state.set(this.leafKey(account, asset), this.leafFor(account, asset, balance));
   }
 
-  faucet(account: Fr, assetIdStr: string, amount: bigint): Note {
+  faucet(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint): Note {
     if (!this.allowFaucet) throw new Error("Faucet is TESTNET-only");
+    let account: Fr;
+    try { account = this.resolveAccount(accountOrAddress); } catch (e) { throw new Error(`FAUCET_ACCOUNT_INVALID: ${(e as Error).message}`); }
     if (!this.connected) throw new Error("Node is not connected");
     const rec = findAsset(this.networkId, assetIdStr);
     if (!rec) throw new Error("Unknown TESTNET asset");
@@ -464,12 +479,17 @@ export class UepLedger {
    */
   prepareSpend(
     secrets: IdentitySecrets,
-    recipient: Fr,
+    recipientOrAddress: Fr | string,
     assetIdStr: string,
     amount: bigint,
     now = Date.now(),
   ): SubmitResult {
     if (amount <= 0n) return { error: { code: "AMOUNT_MISMATCH", message: "Amount must be greater than zero." } };
+    if (recipientOrAddress instanceof Fr && (recipientOrAddress.eq(TREASURY_ID) || recipientOrAddress.eq(secrets.accountId))) {
+      return { error: { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." } };
+    }
+    let recipient: Fr;
+    try { recipient = this.resolveAccount(recipientOrAddress); } catch (e) { return { error: { code: "INVALID_ADDRESS", message: (e as Error).message } }; }
     if (!this.connected) {
       return {
         error: {
@@ -499,7 +519,6 @@ export class UepLedger {
     if (!verifyOwnership(secrets.secret, secrets.salt, senderId)) {
       return { error: { code: "WRONG_OWNER", message: "Identity does not control this account." } };
     }
-    this.registerSpendKey(secrets);
     if (recipient.eq(senderId) || recipient.eq(TREASURY_ID) || senderId.eq(TREASURY_ID)) {
       return { error: { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." } };
     }
@@ -729,7 +748,6 @@ export class UepLedger {
       if (!verifyDevelopmentMac(tx.spendProof, pub, secrets.secret)) {
         return { error: { code: "PROOF", message: "Development spend MAC is invalid." } };
       }
-      this.registerSpendKey(secrets);
     } else if (this.requireProof) {
       return {
         error: {
@@ -759,7 +777,7 @@ export class UepLedger {
     // v0.4.4: note-tree membership and a publicly verifiable sender signature.
     const membershipError = this.checkMembership(tx, inputs);
     if (membershipError) return { error: membershipError };
-    const senderError = this.checkSenderAuth(tx);
+    const senderError = this.checkSenderAuth(tx) ?? this.checkInputOwnerKeys(tx, inputs);
     if (senderError) return { error: senderError };
     for (const n of inputs) {
       // Amount/asset bind: recomputing commitment with a mutated amount must fail.
@@ -846,12 +864,15 @@ export class UepLedger {
     const outs = tx.outputNotes?.map(deserializeNote) ?? [];
     if (ins.length !== tx.inputCommitments.length || outs.length !== tx.outputCommitments.length) return { error: { code: "NOTE_OPENING", message: "Pending transaction notes are missing." } };
     if (ins.some((n, i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) return { error: { code: "NOTE_OPENING", message: "Pending note commitment mismatch." } };
-    // v0.4.4: the sender must be authenticated by its registered spend key, and
-    // the inputs must be canonical, unspent ledger notes (same rules as submit()).
+    // The sender must be authenticated by the spend key its account commits to
+    // (v0.4.5, no registry), and the inputs must be canonical, unspent ledger
+    // notes owned by that key's account (same rules as submit()).
     const senderError = this.checkSenderAuth(tx);
     if (senderError) return { error: senderError };
     const resolved = this.canonicalInputs(tx);
     if ("error" in resolved) return resolved;
+    const ownerError = this.checkInputOwnerKeys(tx, resolved.inputs);
+    if (ownerError) return { error: ownerError };
     // Same input/output binding rules as submit(), on the canonical inputs.
     const shapeError = checkSpendShape(tx, resolved.inputs, outs);
     if (shapeError) return { error: shapeError };
@@ -927,7 +948,6 @@ export class UepLedger {
       maxPendingTransactions: this.maxPendingTransactions,
       noteRoot: this.noteTree.root().toHex(),
       noteCount: this.noteTree.size,
-      spendKeys: [...this.spendKeys.values()].map((r) => ({ ...r })),
       noteCounter: this.noteCounter.toString(),
       lastReconcileAt: this.lastReconcileAt,
     };
@@ -957,18 +977,22 @@ export class UepLedger {
    *  5. The full state is re-derived and every v0.4.2 invariant is checked.
    *  6. v0.4.4: the note-commitment tree is rebuilt and must match `noteRoot`;
    *     every committed spend carries a membership proof against an earlier
-   *     root and a sender signature by a registered spend key; every pending
-   *     entry is re-validated against the restored state and the queue bound.
+   *     root; every pending entry is re-validated against the restored state
+   *     and the queue bound.
+   *  7. v0.4.5: every note owner is a key-derived account id, and every
+   *     committed spend reveals a key that hashes to its sender and input-note
+   *     owner and signed it. There is no spend-key registry to trust.
    * A restored ledger can only sign snapshots or mint if `keys` are passed.
    */
   static restore(data: UepLedgerSnapshot, trust: SnapshotTrust, keys: LedgerSigningKeys = {}): UepLedger {
     const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
     if (!data || typeof data !== "object") fail("SHAPE");
     if (data.formatVersion !== SNAPSHOT_FORMAT_VERSION) {
-      fail("VERSION", `snapshot formatVersion ${String((data as { formatVersion?: unknown }).formatVersion ?? 1)} is no longer supported; v0.4.4 requires formatVersion ${SNAPSHOT_FORMAT_VERSION} (Ed25519-signed, hash-chained, note-commitment root). Re-create the snapshot with v0.4.4.`);
+      fail("VERSION", `snapshot formatVersion ${String((data as { formatVersion?: unknown }).formatVersion ?? 1)} is no longer supported; v0.4.5 requires formatVersion ${SNAPSHOT_FORMAT_VERSION} (key-derived accounts, UEP-ADDR-002). Older testnet state uses invalid account ids; re-create it with v0.4.5.`);
     }
     if (data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.nullifiers.seen) || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || !Array.isArray(data.mints) || !data.policy || !Array.isArray(data.signatures)) fail("SHAPE");
-    if (!Array.isArray(data.spendKeys) || typeof data.noteRoot !== "string" || !Number.isSafeInteger(data.noteCount) || !Number.isSafeInteger(data.maxPendingTransactions)) fail("SHAPE");
+    if ((data as { spendKeys?: unknown }).spendKeys !== undefined) fail("SPEND_KEY", "v0.4.5 snapshots carry no spend-key registry; ownership is bound by key-derived account ids");
+    if (typeof data.noteRoot !== "string" || !Number.isSafeInteger(data.noteCount) || !Number.isSafeInteger(data.maxPendingTransactions)) fail("SHAPE");
     if (!Number.isSafeInteger(data.sequence) || data.sequence < 1 || typeof data.prevSnapshotHash !== "string" || !/^[0-9a-f]{64}$/.test(data.prevSnapshotHash)) fail("SHAPE");
 
     // Trust anchors (public keys only).
@@ -1050,18 +1074,12 @@ export class UepLedger {
       if (!openNote(n)) fail("NOTE_COMMITMENT");
       if (!n.nonce.eq(noteNonce(n.commitment, n.blinding))) fail("NOTE_NONCE");
       if (noteByCommitment.has(n.commitment.toHex())) fail("NOTE_DUPLICATE");
+      if (!isKeyDerivedAccountId(n.owner)) fail("NOTE_OWNER", "note owner is not a v2 key-derived account");
       noteByCommitment.set(n.commitment.toHex(), n);
     }
     // 2b. Note-commitment tree rebuilt in creation order must match the signed root.
     // (The root is compared after the mint and supply checks, so their errors keep precedence.)
     for (const n of l.notes) l.noteTree.append(n.commitment);
-
-    // 2c. Spend-key registry: one self-signed registration per account.
-    for (const reg of data.spendKeys) {
-      if (!reg || typeof reg.account !== "string" || !/^[0-9a-f]{64}$/.test(reg.account) || l.spendKeys.has(reg.account)) fail("SPEND_KEY");
-      if (!verifySpendKeyRegistration(l.networkId, reg)) fail("SPEND_KEY");
-      l.spendKeys.set(reg.account, { account: reg.account, publicKey: reg.publicKey, proof: reg.proof });
-    }
 
     // 3. Transactions replay in order under submit()'s rules.
     const registeredAssets = assetsForNetwork(l.networkId).map((a) => encodeStringToFr(a.assetId));
@@ -1115,15 +1133,19 @@ export class UepLedger {
         if (!noteByCommitment.has(o.commitment.toHex())) fail("TX_OUTPUT_MISSING");
         available.add(o.commitment.toHex());
       }
-      // v0.4.4: membership proof against a root that predates this spend's outputs,
-      // and a sender signature by the registered spend key.
+      // v0.4.4: membership proof against a root that predates this spend's outputs.
+      // v0.4.5: the revealed key hashes to the sender and to every input-note owner,
+      // and signed the envelope (no registry).
       const firstOutput = outs.length > 0 ? Math.min(...outs.map((o) => l.noteTree.indexOf(o.commitment)!)) : l.noteTree.size;
       if (!Array.isArray(tx.inputMembership) || tx.inputMembership.length !== ins.length) fail("TX_MEMBERSHIP");
       ins.forEach((n, i) => {
         const proof = tx.inputMembership![i]!;
         if (proof?.leafIndex !== String(l.noteTree.indexOf(n.commitment)) || !l.noteTree.verify(n.commitment, proof, firstOutput)) fail("TX_MEMBERSHIP");
       });
-      if (!verifySenderAuth(tx, l.spendKeyOf(tx.senderId))) fail("TX_SENDER");
+      const senderFailure = senderAuthFailure(tx);
+      if (senderFailure === "OWNER_KEY") fail("OWNER_KEY", "a spend's revealed key does not hash to its sender account");
+      if (senderFailure) fail("TX_SENDER");
+      if (ins.some((n) => !spendKeyMatchesAccount(tx.senderAuth!.publicKey, n.owner))) fail("OWNER_KEY", "an input note owner does not match the spend's revealed key");
       feesByAsset.set(tx.assetId.toHex(), (feesByAsset.get(tx.assetId.toHex()) ?? 0n) + tx.fee);
     }
 

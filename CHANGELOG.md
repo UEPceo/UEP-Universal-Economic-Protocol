@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.5-public-iot-m2m — 2026-10-02
+
+Key-derived accounts and v2 addresses (option (a) for the spend-key registry left open in v0.4.4), plus the reservation-deposit minimum. See [`PUBLIC-SECURITY-REMEDIATION-v0.4.5.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md) and [`docs/API.md`](./docs/API.md).
+
+### Key-derived accounts (UEP-ADDR-002)
+
+- The account id commits to the deterministic Ed25519 spend key: `accountId = 0x02 ‖ SHA-256("UEP-ACCOUNT-KEY-v2\n" ‖ raw key)[0..31]`. It is always a canonical field element.
+- `IdentitySecrets` gains `spendPublicKey`. New helpers: `accountIdFromSpendKey`, `accountIdFromSecrets`, `isKeyDerivedAccountId`, `spendKeyMatchesAccount`, `senderAuthFailure`.
+- Spends reveal the key and sign (`senderAuth`). `submit()`, pending validation and restore check, without any registry, that the key hashes to the sender and to every input-note owner (`OWNER_KEY`) and that it signed the envelope (`SENDER_AUTH`).
+- Sender and recipient must be key-derived accounts.
+- The v0.4.4 trust-on-snapshot spend-key registry is **removed**: `registerSpendKey`, `spendKeyOf`, `spendKeys`, `SpendKeyRegistration`, `verifySpendKeyRegistration`.
+
+### Addresses v2
+
+- `address = Bech32m("uep", 0x02 ‖ networkTag(4) ‖ keyHash(31))`: 68 characters, BIP-350 checksum, version byte, network tag.
+- New functions: `encodeAccountAddress`, `decodeAccountAddress`, `parseAccountAddress`, `addressFromSpendKey`, `UepAddressV2`.
+- Decode errors: `ADDRESS_CHECKSUM`, `ADDRESS_VERSION`, `ADDRESS_NETWORK`, `ADDRESS_HRP`, `ADDRESS_LENGTH`, `ADDRESS_FORMAT`, `ADDRESS_LEGACY_V1`. `UepAddressV1` is deprecated (encode throws, decode returns null).
+- `ledger.addressOf()` and `ledger.resolveAccount()`. `faucet()` and `prepareSpend()` accept address strings (`FAUCET_ACCOUNT_INVALID`, `INVALID_ADDRESS`).
+
+### Snapshots
+
+- **Format version 5**; formats 3 and 4 are rejected. There is no `spendKeys` field, and a snapshot carrying one is rejected (`INVALID_SNAPSHOT_SPEND_KEY`).
+- Restore checks that every note owner is a key-derived account (`INVALID_SNAPSHOT_NOTE_OWNER`). It also checks every committed spend's key/owner binding (`INVALID_SNAPSHOT_OWNER_KEY`) and signature (`INVALID_SNAPSHOT_TX_SENDER`). Pending entries are validated under the same rule.
+
+### Marketplace and IoT/M2M
+
+- An identity named by a ledger v2 address must register the spend key that address commits to (`IDENTITY_ADDRESS_KEY_MISMATCH`). Malformed, non-canonical, wrong-network and legacy addresses throw `IDENTITY_ADDRESS_INVALID`.
+- New `ledgerNetworkId` option, default `uep-testnet-1`; `ledgerAccountOf()`; testkit `enrollAccountIdentity()`. IoT providers follow the same rule.
+- **UEP-D03:** a configured `reservationDeposit` below 1 unit throws `RESERVATION_DEPOSIT_BELOW_MINIMUM`, unless the test-only flag `testOnlyAllowZeroReservationDeposit: true` permits exactly `0n`. This item was listed as "D02" in the v0.4.4 documents.
+- **UEP-D02 (v0.4.3 report, unsigned `fundOrder`):** confirmed fixed since v0.4.4, because only the buyer's `fund` signature is accepted. A dedicated test was added.
+
+### Migration
+
+- **Old addresses are invalid.** v1 addresses (`uep:<network>:<hex>`) and `H(secret, salt)` account ids from v0.4.4 and earlier no longer work.
+- The same mnemonic now derives a new account and address. Testnet state, snapshots and vaults must be re-created; legacy vaults report `LEGACY_VAULT`. No value migrates; this is a testnet.
+
+### Compatibility breaks
+
+- Account ids changed for every identity. `UepAddressV1` encode throws, `DecodedAddress` changed shape, and `verifySenderAuth(tx)` takes one argument.
+- `registerSpendKey()` / `spendKeyOf()` are removed. Snapshot format 5 is required.
+- `faucet()` / `prepareSpend()` refuse non-key-derived accounts.
+- `reservationDeposit: 0n` requires the test-only flag.
+- Address-shaped marketplace identity ids are validated.
+
+### Tests
+
+- New `key-derived-accounts.test.ts` (6): derivation and encoding; checksum, version, HRP, network, case and legacy errors with BIP-350 vectors; addresses in faucet and spends; mismatched signer key; forged registry entry; restore key/owner mismatch and non-key-derived note owner.
+- New `address-identities.test.ts` (3): D02 buyer-only funding, D03 deposit minimum, address-named identities with conservation.
+- New IoT test (address-named provider and buyer). Existing ledger tests were migrated (no registry; `OWNER_KEY` for foreign keys; format 5).
+- Totals: protocol 67/67, Marketplace/IoT 81/81, scale 3/3, IoT 23/23 on Node 22 and 24. `smoke:testnet`, `quickstart` and `simulate:20k` pass.
+
 ## 0.4.4-public-iot-m2m — 2026-10-02
 
 Pending-queue validation, authenticated note-commitment tree, Marketplace disputes and order access, fee floor, and signed IoT telemetry. These follow the open items of v0.4.3. See [`PUBLIC-SECURITY-REMEDIATION-v0.4.4.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md) for the per-finding status and [`docs/API.md`](./docs/API.md) for the changed signatures.

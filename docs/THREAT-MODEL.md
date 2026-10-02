@@ -36,9 +36,18 @@ Treasury allocation.
 ### Queue injector
 
 Attempts to place spends in another node's pending queue that are not signed by
-the sender's registered spend key, consume notes that do not exist or are already
+the sender's spend key (since v0.4.5, the key its account id commits to), consume notes that do not exist or are already
 spent, or flood the queue. Since v0.4.4 every entry is validated at entry and on
 restore, and the queue is bounded.
+
+### Address and key-substitution attacker
+
+Attempts to spend a note with a key that the owner's address does not commit to. Other attempts in this class:
+
+- planting a forged key-registry entry;
+- injecting a mismatched key into signed history or the pending queue;
+- using a mistyped, legacy or other-network address;
+- registering a marketplace identity under someone else's address.
 
 ### Dispute and order-access attacker
 
@@ -74,7 +83,7 @@ model, not production consensus or production key custody.
 
 Since v0.4.4 the following are also trusted parties of the testnet:
 
-- **Spend-key registry.** The ledger that accepts a spend-key registration has checked that the registrant controls the account. A replica receives the registry through signed snapshots and cannot re-check that proof on its own.
+- **Spend-key registry (removed in v0.4.5).** v0.4.4 trusted a spend-key registry delivered in signed snapshots. Since v0.4.5 account ids commit to the spend key, and spends reveal the key and sign. Any replica can check ownership on its own, so there is no registry left to trust.
 - **Settlement arbiter.** It decides disputed outcomes within the escrowed value; it cannot create value.
 - **Machine keys.** A machine key proves who signed the telemetry, not that the physical service happened. A compromised or dishonest machine can still report false usage.
 

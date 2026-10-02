@@ -31,7 +31,7 @@ The testnet maintains:
 
 - balances keyed by account + asset;
 - note commitments, in an append-only note-commitment Merkle tree (depth 32) whose root and size are part of snapshots; spends carry a membership proof;
-- registered per-account Ed25519 spend keys (sender signatures on every spend);
+- key-derived account ids (v0.4.5, UEP-ADDR-002): every note owner commits to an Ed25519 spend key, and every spend reveals the key and signs it (no key registry); addresses are Bech32m v2 strings (version, network tag, key hash);
 - a Sparse Merkle representation of account/asset state;
 - a nullifier set;
 - accepted transactions;

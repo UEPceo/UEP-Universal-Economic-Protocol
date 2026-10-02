@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.4.4-public-iot-m2m`
+> **Version:** `0.4.5-public-iot-m2m`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -46,6 +46,7 @@ The design goal is to keep the network useful through real services, assets and 
 The public testnet implements a local reference state machine with:
 
 - deterministic account identity derived from test credentials;
+- key-derived account ids and checksummed, versioned Bech32m v2 addresses (v0.4.5);
 - testnet faucet;
 - multi-asset testnet registry;
 - account and note commitments;
@@ -62,7 +63,7 @@ The public testnet implements a local reference state machine with:
 - snapshot/restore support;
 - adversarial tests for replay, double spending, ownership, transaction mutation, forged identities, proof bypass, policy bypass, input-value inflation, domain replay and snapshot/restore.
 
-The transaction path is intentionally explicit about its security boundary: **the public testnet requires sender authentication on every spend, using a deterministic development/reference MAC plus (since v0.4.4) an Ed25519 signature by the account's registered spend key. Neither is a zero-knowledge proof or a production SNARK ceremony.**
+The transaction path is intentionally explicit about its security boundary: **the public testnet requires sender authentication on every spend, using a deterministic development/reference MAC plus (since v0.4.4) an Ed25519 signature by the account's spend key. Since v0.4.5 the account id itself commits to that key, so the signature is verifiable without any key registry. Neither is a zero-knowledge proof or a production SNARK ceremony.**
 
 ### Digital Marketplace
 
@@ -145,9 +146,9 @@ The active public hash is a **reference hardening backend**, not a claim that pr
 
 ---
 
-## 5. Security hardening in v0.4.1 – v0.4.4
+## 5. Security hardening in v0.4.1 – v0.4.5
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 – v0.4.2. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.4.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md) (previous: [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 – v0.4.3. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.5.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md) (previous: [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
@@ -157,21 +158,43 @@ These public testnet releases harden the ledger, the IoT/M2M service layer and M
 - **v0.4.3:** snapshots are signed with **Ed25519** (`node:crypto`, no new dependencies) instead of a shared HMAC secret. `UepLedger.restore(snapshot, trust)` takes only **public keys**; verifiers never need a private key. An optional **k-of-n threshold** (for example 2-of-3) requires `k` valid signatures from distinct listed authorities; the default is 1-of-1 for the local testnet.
 - **v0.4.3:** snapshots form a **hash chain** (`sequence`, `prevSnapshotHash`). Restore can be pinned to a known previous snapshot hash or to a checkpoint (`checkpointOf()`), and `UepLedger.restoreChain()` verifies an ordered series; a reordered, rolled-back or rewritten history is rejected even when it is correctly signed.
 - **v0.4.3:** every faucet mint is signed by a **dedicated faucet (mint) key** that must differ from every snapshot key. Restore rejects unsigned mints, mints signed by any other key (including a snapshot key) and notes that are neither a signed mint nor a transaction output; supply is derived from the signed mints. The snapshot authority therefore cannot invent issuance.
-- v0.4.2 invariants still apply on restore: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags and per-account balances against unspent notes (plus treasury fee income). Snapshot **format version 4** is required since v0.4.4; older snapshots are rejected with `INVALID_SNAPSHOT_VERSION` and must be re-taken.
+- v0.4.2 invariants still apply on restore: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags and per-account balances against unspent notes (plus treasury fee income). Snapshot **format version 5** is required since v0.4.5; older snapshots are rejected with `INVALID_SNAPSHOT_VERSION` and testnet state must be re-created (see the migration note below).
 - Pending reconciliation never settles or applies a queued spend: invalid envelopes are rejected, valid ones stay queued (`LOCAL_VALID`, flagged on conflict) until applied through `submit()`.
-- **v0.4.4:** every spend carries an Ed25519 **sender signature** by the account's registered spend key (`deriveSpendKey(secret, salt)`; registration proves control of the account). `submit()` requires it even when the development ownership proof is disabled.
-- **v0.4.4:** the **pending queue is validated at entry**. A queued spend must be signed by the registered sender, consume notes that exist unspent in the local ledger (same `checkSpendShape()` rules as `submit()`) and carry a valid membership proof. The queue is bounded (`maxPendingTransactions`, default 1024) and de-duplicated, and `restore()` re-validates every pending entry.
+- **v0.4.4:** every spend carries an Ed25519 **sender signature** by the account's spend key (`deriveSpendKey(secret, salt)`). `submit()` requires it even when the development ownership proof is disabled.
+- **v0.4.5:** **key-derived accounts.** The account id commits to the spend public key (`0x02 ‖ SHA-256(tag ‖ key)[0..31]`), and every note owner is such an id. A spend reveals the key and signs the envelope. Any replica checks that the key hashes to the sender and to the input note's owner, without the sender's secret and **without a key registry**: the v0.4.4 trust-on-snapshot spend-key registry is removed. Restore checks that every note owner is a key-derived id and that every committed spend's key matches its sender and input owner.
+- **v0.4.4:** the **pending queue is validated at entry**. A queued spend must be signed by the sender's spend key (since v0.4.5, the key its account id commits to), consume notes that exist unspent in the local ledger (same `checkSpendShape()` rules as `submit()`) and carry a valid membership proof. The queue is bounded (`maxPendingTransactions`, default 1024) and de-duplicated, and `restore()` re-validates every pending entry.
 - **v0.4.4:** an append-only **note-commitment Merkle tree** (depth 32). Its root and size are part of state and snapshots; every spend proves membership of its input against a historical root (`tx.inputMembership`), and restore rebuilds the tree, checks the root, and re-checks each replayed spend's proof and sender signature. A replica can verify that a note exists from the root alone (`verifyNoteMembership`).
+
+### Address format and migration (v0.4.5)
+
+Accounts are identified by **v2 addresses** (UEP-ADDR-002):
+
+```text
+address    = Bech32m(hrp = "uep", version ‖ networkTag ‖ keyHash)   e.g. uep1qgkqzr27…  (68 characters)
+version    = 0x02
+networkTag = SHA-256("UEP-ADDR-NETWORK-v2\n" ‖ networkId)[0..4]
+keyHash    = SHA-256("UEP-ACCOUNT-KEY-v2\n" ‖ raw Ed25519 spend public key)[0..31]
+accountId  = 0x02 ‖ keyHash   (the ledger's note owner / sender / recipient id)
+```
+
+- The **Bech32m** checksum (BIP-350) detects typos.
+- The **version byte** allows future formats.
+- The **network tag** stops an address for one network from decoding on another.
+
+`encodeAccountAddress`, `decodeAccountAddress` / `parseAccountAddress` (errors `ADDRESS_CHECKSUM`, `ADDRESS_VERSION`, `ADDRESS_NETWORK`, `ADDRESS_HRP`, `ADDRESS_LENGTH`, `ADDRESS_FORMAT`, `ADDRESS_LEGACY_V1`), `ledger.addressOf()`, and `faucet()` / `prepareSpend()` accept addresses.
+
+**Migration note.** v1 addresses (`uep:<network>:<hex>`, accounts derived as `H(secret, salt)`) are **invalid** from v0.4.5 on. The same mnemonic derives a new key-derived account and address. Testnet state, snapshots and vaults created with v0.4.4 or earlier cannot be carried over: re-create the testnet state (faucet the new addresses again). This is a testnet; no value migrates.
 
 **Residual trust model (testnet):** whoever holds the snapshot authority private keys controls what their node signs, and whoever holds the faucet key controls testnet issuance on that node. Signatures, the hash chain and checkpoints make tampering by anyone else detectable and keep the two roles separate; they do not make a key holder honest. This is the trust model of the local testnet, not production consensus.
 
 ### Marketplace and IoT/M2M
 
-- **v0.4.3:** reservations cost something. Only identities with a **registered Ed25519 key** (`registerIdentity`) can reserve, and every reservation carries the buyer's signature (`signReservation`). The **deposit** (default 1% of gross, minimum 1 unit; `reservationDeposit` / `reservationDepositBps`) is **locked from the buyer's marketplace balance at `reserve()`**; without funds there is no reservation.
+- **v0.4.3:** reservations cost something. Only identities with a **registered Ed25519 key** (`registerIdentity`) can reserve, and every reservation carries the buyer's signature (`signReservation`). The **deposit** (default 1% of gross, minimum 1 unit; `reservationDeposit` / `reservationDepositBps`) is **locked from the buyer's marketplace balance at `reserve()`**; without funds there is no reservation. Since v0.4.5 a configured deposit below 1 unit is refused (`RESERVATION_DEPOSIT_BELOW_MINIMUM`) unless the explicitly named test-only flag `testOnlyAllowZeroReservationDeposit` is set.
 - When the order is funded, the deposit **counts toward the payment** (`fundOrder(orderId, order.fundingDue)`). An unfunded reservation that **expires** forfeits the deposit to the provider. A signed **buyer cancellation** within `cancellationGraceMs` (default 2 minutes) refunds it; after the window it goes to the provider. Provider or admin cancellation, and expiry of a funded but undelivered order, refund the buyer in full.
 - Per-identity limit on concurrent open reservations (`maxActiveReservationsPerIdentity`, default 8) and a short TTL (`reservationTtlMs`, default 10 minutes); `expire()` is only possible after the TTL. `valueAccounting(asset)` checks conservation across every deposit path.
 - IoT `requestService()` requires the buyer's reservation signature, and `hold()` funds the remainder after the locked deposit, including any sponsored gas fee.
-- **v0.4.4:** every order action is signed (`signAction`; buyer, provider, admin and arbiter alike). Providers must be registered identities; the admin and the arbiter are verified against configured public keys (`adminPublicKey`, `settlementArbiterPublicKey`). Reading or listing an order requires being one of its parties or the admin, with a short-lived signed read authorization.
+- **v0.4.4:** every order action is signed (`signAction`; buyer, provider, admin and arbiter alike), including funding: only the buyer's signature can move the buyer's balance into escrow. Providers must be registered identities; the admin and the arbiter are verified against configured public keys (`adminPublicKey`, `settlementArbiterPublicKey`). Reading or listing an order requires being one of its parties or the admin, with a short-lived signed read authorization.
+- **v0.4.5:** a marketplace or IoT identity may be named by its ledger **v2 address**. It must then register the spend key that address commits to (`IDENTITY_ADDRESS_KEY_MISMATCH`), so an address-named buyer or provider is the same key holder as the ledger account. Plain identity names keep working.
 - **v0.4.4:** a **dispute flow** with defined outcomes. The buyer can open a dispute within the delivery dispute window; the arbiter resolves it as `RELEASE`, `REFUND_BUYER` or `SPLIT`; the provider can concede a refund; an unresolved dispute falls back to a configurable timeout outcome (default: refund the buyer). Every outcome moves the escrow exactly once, and `valueAccounting()` stays conserved.
 - **v0.4.4:** **IoT telemetry is always signed** by the machine's registered Ed25519 key (machines cannot be registered without one), with monotonic sequence numbers and nonce anti-replay. An IoT order is released only against verified telemetry that was delivered for that order and reports the full contracted quantity; a shortfall goes to a dispute. Simulations sign with test machine keys.
 
@@ -323,6 +346,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.2.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.3.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.4.md
+├── PUBLIC-SECURITY-REMEDIATION-v0.4.5.md
 ├── package.json
 ├── package-lock.json
 ├── tsconfig.json
@@ -342,11 +366,11 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 │   │   ├── transition.ts
 │   │   ├── transaction.ts
 │   │   ├── reconciliation.ts
-│   │   ├── address.ts
+│   │   ├── address.ts        # v0.4.5: Bech32m v2 addresses (UEP-ADDR-002)
 │   │   ├── assets.ts
 │   │   ├── security-policy.ts
 │   │   ├── ed25519.ts        # Ed25519 helpers (node:crypto) for snapshots, mints, buyer signatures
-│   │   ├── spend-key.ts      # v0.4.4: per-account spend keys and sender signatures
+│   │   ├── spend-key.ts      # spend keys, key-derived account ids (v0.4.5), sender signatures
 │   │   ├── note-tree.ts      # v0.4.4: note-commitment Merkle tree and membership proofs
 │   │   ├── spend-proof.ts
 │   │   ├── status.ts
@@ -391,7 +415,9 @@ At the public reference layer, a testnet spend conceptually follows:
 ```text
 Identity
    │
-   ├── Account ID = H(secret, salt)
+   ├── Spend key = Ed25519(seed = H(secret, salt))
+   ├── Account ID = 0x02 ‖ H(spend public key)      (v0.4.5)
+   ├── Address = Bech32m v2 (version, network tag, key hash)
    │
    └── Nullifier = H(secret, nonce)
    │
@@ -416,7 +442,7 @@ Submission checks
    ├── fee policy
    ├── asset registry
    ├── ownership / development spend proof
-   ├── sender signature (registered spend key)
+   ├── sender signature (key hashes to the sender and input-note owner)
    ├── input note membership (note-commitment tree)
    └── note commitment validation
    │

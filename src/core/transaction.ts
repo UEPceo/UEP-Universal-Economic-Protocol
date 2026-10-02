@@ -4,7 +4,7 @@
  */
 import { Fr } from "./field.ts";
 import { canonicalTxCommitment, encodeStringToFr, u64ToFr } from "./encoding.ts";
-import { hAccount } from "./hash.ts";
+import { accountIdFromSecrets } from "./spend-key.ts";
 import type { SpendProof } from "./spend-proof.ts";
 import type { Note } from "./note.ts";
 import { serializeNote, deserializeNote } from "./note.ts";
@@ -90,8 +90,9 @@ export function txIdFromCommitment(commitment: Fr, nullifier: Fr): Fr {
   return canonicalTxCommitment([commitment, nullifier]);
 }
 
+/** v0.4.5: the secrets control `senderId` iff their spend key hashes to it. */
 export function verifyOwnership(secret: Fr, salt: Fr, senderId: Fr): boolean {
-  return hAccount(secret, salt).eq(senderId);
+  return accountIdFromSecrets(secret, salt).eq(senderId);
 }
 
 export function serializeTx(tx: UepTransaction) {

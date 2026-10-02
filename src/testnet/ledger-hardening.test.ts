@@ -106,7 +106,6 @@ test("reconcile keeps a valid pending transaction queued and rejects an invented
   const { a, b } = await ids();
   const source = ledger();
   source.faucet(a.accountId, "asset:test:eur", 1000n);
-  source.registerSpendKey(a); // the sender's spend key travels in the signed snapshot
   const l = UepLedger.restore(source.snapshot(), TRUST, NODE_KEYS);
   const asset = encodeStringToFr("asset:test:eur");
   const p = source.prepareSpend(a, b.accountId, "asset:test:eur", 100n);
@@ -263,7 +262,6 @@ test("a valid pending transaction survives reconciliation and snapshot restore",
   const asset = encodeStringToFr("asset:test:eur");
   const source = ledger();
   source.faucet(a.accountId, "asset:test:eur", 1000n);
-  source.registerSpendKey(a);
   const l = UepLedger.restore(source.snapshot(), TRUST, NODE_KEYS);
   const p = source.prepareSpend(a, b.accountId, "asset:test:eur", 100n);
   assert.ok("tx" in p); if (!("tx" in p)) return;

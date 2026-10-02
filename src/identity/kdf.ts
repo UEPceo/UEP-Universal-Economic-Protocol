@@ -6,7 +6,7 @@
  * Status: IMPLEMENTED (Web Crypto). Android analog: Android Keystore.
  */
 import { Fr } from "../core/field.ts";
-import { hAccount } from "../core/hash.ts";
+import { accountIdFromSpendKey, deriveSpendKey } from "../core/spend-key.ts";
 
 const te = new TextEncoder();
 
@@ -77,7 +77,13 @@ export type IdentitySecrets = {
   seed: Uint8Array;
   secret: Fr;
   salt: Fr;
+  /**
+   * v0.4.5: key-derived account id (UEP-ADDR-002), committing to the
+   * deterministic Ed25519 spend key of (secret, salt).
+   */
   accountId: Fr;
+  /** v0.4.5: hex SPKI DER Ed25519 spend public key that `accountId` commits to. */
+  spendPublicKey: string;
 };
 
 export async function deriveIdentity(seed: Uint8Array, mnemonic: string): Promise<IdentitySecrets> {
@@ -85,8 +91,9 @@ export async function deriveIdentity(seed: Uint8Array, mnemonic: string): Promis
   const saltBytes = await hmacSha256(seed, te.encode("UEP v0.1 account salt"));
   const secret = Fr.fromBytesBE(secretBytes);
   const salt = Fr.fromBytesBE(saltBytes);
-  const accountId = hAccount(secret, salt);
-  return { mnemonic, seed, secret, salt, accountId };
+  const spendPublicKey = deriveSpendKey(secret, salt).publicKeyHex;
+  const accountId = accountIdFromSpendKey(spendPublicKey);
+  return { mnemonic, seed, secret, salt, accountId, spendPublicKey };
 }
 
 export const PIN_ITERATIONS = 100_000;

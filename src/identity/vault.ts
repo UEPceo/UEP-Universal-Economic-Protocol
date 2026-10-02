@@ -6,6 +6,7 @@
  */
 import { aesGcmDecrypt, aesGcmEncrypt, fromB64, pbkdf2, PIN_ITERATIONS, toB64, deriveIdentity, type IdentitySecrets } from "./kdf.ts";
 import { mnemonicToSeed } from "./mnemonic.ts";
+import { hAccount } from "../core/hash.ts";
 
 const VAULT_KEY = "uep.wallet.vault.v1";
 
@@ -91,7 +92,13 @@ export async function unlockVault(pin: string): Promise<IdentitySecrets> {
   }
   const parsed = JSON.parse(new TextDecoder().decode(pt)) as { mnemonic: string; seed: string };
   const secrets = await deriveIdentity(fromB64(parsed.seed), parsed.mnemonic);
-  if (secrets.accountId.toHex() !== rec.accountId) throw new Error("Vault integrity check failed");
+  if (secrets.accountId.toHex() !== rec.accountId) {
+    // v0.4.5: account ids are key-derived (UEP-ADDR-002); vaults created earlier
+    // stored the legacy H(secret, salt) id. The mnemonic still restores the
+    // wallet, but its testnet account and address are new.
+    if (rec.accountId === hAccount(secrets.secret, secrets.salt).toHex()) throw new Error("LEGACY_VAULT: created before v0.4.5; re-import the mnemonic to derive the new key-derived account");
+    throw new Error("Vault integrity check failed");
+  }
   return secrets;
 }
 

@@ -34,7 +34,7 @@ function prepared(l: UepLedger, from: IdentitySecrets, to: Fr, amount: bigint): 
   assert.ok("tx" in p, "error" in p ? p.error.message : "");
   return (p as { tx: UepTransaction }).tx;
 }
-/** A receiving node that knows the sender's spend key (registry travels in the signed snapshot). */
+/** A receiving node restored from the source's signed snapshot (v0.4.5: no spend-key registry needed). */
 function replicaOf(source: UepLedger, extra: { connected?: boolean; maxPendingTransactions?: number } = {}): UepLedger {
   const snap = structuredClone(source.snapshotPayload()) as any;
   if (extra.connected !== undefined) snap.connected = extra.connected;
@@ -56,14 +56,13 @@ test("pending: an unsigned spend or one signed by another key is refused", async
   const source = ledger();
   source.faucet(a.accountId, EUR, 1_000n);
   source.faucet(z.accountId, EUR, 1_000n);
-  source.registerSpendKey(a); source.registerSpendKey(z);
   const l = replicaOf(source);
   const tx = prepared(source, a, b.accountId, 100n);
   const { senderAuth: _drop, ...unsigned } = tx;
   assert.equal(code(l.queueConflict(unsigned as UepTransaction)), "SENDER_AUTH");
-  // Signed by z's (registered) spend key instead of the sender's.
+  // Signed by z's spend key instead of the sender's: z's key does not hash to a's account.
   const wrongKey = { ...tx, senderAuth: signSenderAuth(tx, z.secret, z.salt) };
-  assert.equal(code(l.queueConflict(wrongKey)), "SENDER_AUTH");
+  assert.equal(code(l.queueConflict(wrongKey)), "OWNER_KEY");
   // A signature over a different transaction does not transfer.
   const other = prepared(source, a, z.accountId, 50n);
   assert.equal(code(l.queueConflict({ ...tx, senderAuth: other.senderAuth })), "SENDER_AUTH");
@@ -71,17 +70,15 @@ test("pending: an unsigned spend or one signed by another key is refused", async
   assert.equal(code(l.queueConflict(tx)), "OK");
 });
 
-test("pending: a sender without a registered spend key is refused", async () => {
+test("pending: a replica authenticates a first-time sender from its key-derived account alone", async () => {
   const a = await identity(); const b = await identity();
   const source = ledger();
   source.faucet(a.accountId, EUR, 1_000n);
-  const l = replicaOf(source); // snapshot taken before a registered a spend key
-  assert.equal(l.spendKeyOf(a.accountId), undefined);
+  const l = replicaOf(source); // snapshot taken before a ever spent: no key was ever shared
+  assert.equal((l as unknown as { registerSpendKey?: unknown }).registerSpendKey, undefined);
+  assert.equal((l.snapshotPayload() as Record<string, unknown>).spendKeys, undefined);
   const tx = prepared(source, a, b.accountId, 100n);
-  const r = l.queueConflict(tx);
-  assert.equal(code(r), "SENDER_AUTH");
-  // Registering requires the account secrets; afterwards the same spend is accepted.
-  l.registerSpendKey(a);
+  assert.equal(tx.senderAuth!.publicKey, a.spendPublicKey);
   assert.equal(code(l.queueConflict(tx)), "OK");
 });
 
@@ -89,7 +86,6 @@ test("pending: inputs must be canonical unspent notes of this ledger, under the 
   const a = await identity(); const b = await identity(); const z = await identity();
   const source = ledger();
   source.faucet(a.accountId, EUR, 1_000n);
-  source.registerSpendKey(a);
   const l = replicaOf(source);
   // Input note that only exists on another ledger.
   const elsewhere = ledger();
@@ -116,7 +112,6 @@ test("pending: the queue is bounded and the bound is configurable", async () => 
   assert.equal(ledger().maxPendingTransactions, 1024);
   const source = ledger();
   for (const v of [200n, 2_000n, 20_000n]) source.faucet(a.accountId, EUR, v);
-  source.registerSpendKey(a);
   const l = replicaOf(source, { maxPendingTransactions: 2 });
   assert.equal(l.maxPendingTransactions, 2);
   // Three valid spends of three distinct notes, all anchored at the shared note root.
@@ -132,7 +127,6 @@ test("pending: offline submit validates before queueing", async () => {
   const a = await identity(); const b = await identity();
   const source = ledger();
   source.faucet(a.accountId, EUR, 1_000n);
-  source.registerSpendKey(a);
   const offline = replicaOf(source, { connected: false });
   assert.equal(offline.connected, false);
   const tx = prepared(source, a, b.accountId, 100n);
@@ -269,12 +263,11 @@ test("note tree: restore checks the signed root and every committed spend's memb
   const unsignedTx = structuredClone(snap) as any;
   delete unsignedTx.txs[0].senderAuth;
   assert.throws(() => UepLedger.restore(resign(unsignedTx), TRUST), /INVALID_SNAPSHOT_TX_SENDER/);
-  const badKey = structuredClone(snap) as any;
-  badKey.spendKeys[0].publicKey = generateEd25519KeyPair().publicKeyHex;
-  assert.throws(() => UepLedger.restore(resign(badKey), TRUST), /INVALID_SNAPSHOT_SPEND_KEY/);
-  const old = structuredClone(snap) as any;
-  old.formatVersion = 3;
-  assert.throws(() => UepLedger.restore(resign(old), TRUST), /INVALID_SNAPSHOT_VERSION: snapshot formatVersion 3 is no longer supported/);
+  for (const v of [3, 4]) {
+    const old = structuredClone(snap) as any;
+    old.formatVersion = v;
+    assert.throws(() => UepLedger.restore(resign(old), TRUST), new RegExp(`INVALID_SNAPSHOT_VERSION: snapshot formatVersion ${v} is no longer supported`));
+  }
 });
 
 test("submit: the sender signature is required, also when requireProof is disabled", async () => {

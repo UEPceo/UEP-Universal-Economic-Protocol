@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { generateMnemonic, mnemonicToEntropy, mnemonicToSeed } from "./mnemonic.ts";
 import { deriveIdentity } from "./kdf.ts";
-import { hAccount } from "../core/hash.ts";
+import { accountIdFromSpendKey, deriveSpendKey } from "../core/spend-key.ts";
 import { BIP39_ENGLISH } from "./bip39-english.ts";
 
 describe("BIP39 identity", () => {
@@ -12,7 +12,9 @@ describe("BIP39 identity", () => {
     await mnemonicToEntropy(m);
     const seed = await mnemonicToSeed(m);
     const id = await deriveIdentity(seed, m);
-    assert.ok(hAccount(id.secret, id.salt).eq(id.accountId));
+    // v0.4.5: the account id commits to the deterministic spend key (UEP-ADDR-002).
+    assert.equal(deriveSpendKey(id.secret, id.salt).publicKeyHex, id.spendPublicKey);
+    assert.ok(accountIdFromSpendKey(id.spendPublicKey).eq(id.accountId));
     const id2 = await deriveIdentity(seed, m);
     assert.ok(id.accountId.eq(id2.accountId));
   });

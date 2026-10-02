@@ -1,8 +1,105 @@
-# Public API reference: changed signatures (v0.4.3 – v0.4.4)
+# Public API reference: changed signatures (v0.4.3 – v0.4.5)
 
-This page lists the public signatures that changed in `0.4.4-public-iot-m2m` (first section) and `0.4.3-public-iot-m2m` (second section). Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+This page lists the public signatures that changed in `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# v0.4.5
+
+## Key-derived accounts: `src/core/spend-key.ts`
+
+```ts
+ACCOUNT_ID_VERSION = 0x02
+deriveSpendKey(secret, salt): { privateKey, publicKeyHex }   // unchanged (deterministic Ed25519)
+accountIdFromSpendKey(publicKey): Fr        // 0x02 || SHA-256("UEP-ACCOUNT-KEY-v2\n" || raw32(publicKey))[0..31]
+accountIdFromSecrets(secret, salt): Fr      // = accountIdFromSpendKey(deriveSpendKey(secret, salt).publicKeyHex)
+isKeyDerivedAccountId(id): boolean          // leading byte 0x02
+spendKeyHash(publicKey), accountIdFromKeyHash(hash31), keyHashOfAccountId(id), rawEd25519PublicKey(publicKey)
+spendKeyMatchesAccount(publicKey, accountId): boolean
+senderAuthFailure(tx): "MISSING" | "OWNER_KEY" | "SIGNATURE" | undefined
+verifySenderAuth(tx): boolean               // was verifySenderAuth(tx, registeredPublicKey)
+```
+
+**Removed:** `SpendKeyRegistration`, `spendKeyRegistrationMessage()`, `verifySpendKeyRegistration()`.
+
+- `IdentitySecrets.accountId` is now key-derived. The new `IdentitySecrets.spendPublicKey` is the key it commits to.
+- `verifyOwnership(secret, salt, id)` compares against `accountIdFromSecrets`.
+- `hAccount()` is still the state-tree leaf-key hash; it is no longer an identity derivation.
+
+## Addresses: `src/core/address.ts` (UEP-ADDR-002)
+
+```ts
+ADDRESS_VERSION = 2; ADDRESS_HRP = "uep"
+encodeAccountAddress(networkId, accountId): string            // Bech32m("uep", 0x02 || networkTag(4) || keyHash(31)); 68 chars
+addressFromSpendKey(networkId, publicKey): string
+decodeAccountAddress(address, expectedNetworkId?): { ok: true, version: 2, networkTag, accountId } | { ok: false, code, message }
+parseAccountAddress(address, networkId): Fr                   // throws "<code>: message"
+addressNetworkTag(networkId): string                          // SHA-256("UEP-ADDR-NETWORK-v2\n" || networkId)[0..4], hex
+isValidBech32m(s), bech32mEncode(hrp, bytes)                  // BIP-350 helpers
+UepAddressV2: AddressEncoder                                  // encode / decode(address, expectedNetworkId?)
+UepAddressV1                                                  // deprecated: encode throws ADDRESS_LEGACY_V1, decode returns null
+```
+
+Decode error codes:
+
+| Code | Meaning |
+|---|---|
+| `ADDRESS_CHECKSUM` | Bech32m checksum mismatch (typo, substitution, transposition). |
+| `ADDRESS_VERSION` | Unsupported version byte, or encoding a non-key-derived id. |
+| `ADDRESS_NETWORK` | Network tag of another network. |
+| `ADDRESS_HRP` | Prefix other than `uep`. |
+| `ADDRESS_LENGTH` | Wrong overall or payload length. |
+| `ADDRESS_FORMAT` | Mixed case, invalid character, or missing separator. |
+| `ADDRESS_LEGACY_V1` | `uep:<network>:<hex>` addresses from v0.4.4 and earlier. |
+
+`DecodedAddress` is now `{ version, networkTag, accountId }`; `networkId` can no longer be read back from an address, only checked against it.
+
+## Ledger: `src/testnet/ledger.ts`
+
+```ts
+ledger.addressOf(account): string                      // v2 address on this ledger's network
+ledger.resolveAccount(accountOrAddress): Fr            // v2 address string or key-derived Fr; throws ADDRESS_*
+ledger.faucet(accountOrAddress, asset, amount)         // throws FAUCET_ACCOUNT_INVALID for legacy / invalid accounts
+ledger.prepareSpend(secrets, recipientOrAddress, asset, amount)   // INVALID_ADDRESS for bad addresses
+```
+
+**Removed:** `ledger.registerSpendKey()`, `ledger.spendKeyOf()` and `ledger.spendKeys`.
+
+- Spends are verified without a registry. `senderAuth.publicKey` must hash to `senderId` and to every input note's owner (`OWNER_KEY`), and must have signed the envelope (`SENDER_AUTH`).
+- Sender and recipient must be key-derived ids (`INVALID_PARTICIPANTS` in `checkSpendShape`).
+- New `SubmitError` codes: `OWNER_KEY`, `INVALID_ADDRESS`.
+
+### Snapshots (format version 5)
+
+`SNAPSHOT_FORMAT_VERSION = 5`. The `spendKeys` field is removed, and a snapshot that carries one is rejected (`INVALID_SNAPSHOT_SPEND_KEY`). v3/v4 snapshots are rejected (`INVALID_SNAPSHOT_VERSION`).
+
+New restore checks:
+
+- `INVALID_SNAPSHOT_NOTE_OWNER`: a note owner is not a key-derived account id.
+- `INVALID_SNAPSHOT_OWNER_KEY`: a committed spend's revealed key does not hash to its sender or input-note owner.
+- `INVALID_SNAPSHOT_TX_SENDER`: the signature is missing or does not verify.
+- `INVALID_SNAPSHOT_PENDING: OWNER_KEY`: the same rule applied to pending entries.
+
+## Marketplace: `src/marketplace/marketplace.ts`
+
+```ts
+new DigitalServicesMarketplace({
+  ...,
+  ledgerNetworkId?: string,                       // network of address-named identities (default "uep-testnet-1")
+  reservationDeposit?: bigint,                    // now >= MIN_RESERVATION_DEPOSIT (1n) ...
+  testOnlyAllowZeroReservationDeposit?: boolean,  // ... unless this TEST-ONLY flag permits exactly 0n
+})
+marketplace.ledgerAccountOf(identityId): Fr | undefined
+```
+
+- `registerIdentity(identityId, publicKey)`: an id that is a v2 address (`uep1…`) must be canonical lowercase for `ledgerNetworkId`, and the key must be the one the address commits to. Errors: `IDENTITY_ADDRESS_INVALID: <ADDRESS_CODE>` and `IDENTITY_ADDRESS_KEY_MISMATCH`. Legacy `uep:<network>:<hex>` ids are refused. Plain names are unchanged.
+- `reservationDeposit` from 0 to below 1 throws `RESERVATION_DEPOSIT_BELOW_MINIMUM` unless `testOnlyAllowZeroReservationDeposit: true` (UEP-D03). Negative values still throw `INVALID_RESERVATION_LIMIT`.
+- `fundOrder(orderId, amount, auth)` is unchanged since v0.4.4. Only the buyer's `fund` signature is accepted: unsigned calls get `ACTOR_SIGNATURE_REQUIRED`, other parties `ORDER_ACCESS_FORBIDDEN`, wrong keys `ACTOR_SIGNATURE_INVALID` (UEP-D02).
+- `src/marketplace/testkit.ts`: `enrollAccountIdentity(m, secrets, credit?)` registers a ledger identity under its address with its spend key.
+
+IoT/M2M providers are marketplace identities, so the same address rule applies to them. IoT signatures are unchanged.
 
 # v0.4.4
+
+The v0.4.4 signatures below are superseded where the v0.4.5 section above says so. In particular the spend-key registry (`registerSpendKey`, `spendKeyOf`, `spendKeys`) is removed and the snapshot format is 5.
 
 ## Fees: `src/core/fee.ts`, `src/marketplace/economy.ts`
 
