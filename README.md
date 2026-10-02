@@ -4,6 +4,8 @@
 > **Public evaluation release — October 2026**  
 > **Version:** `0.3.1-public-preview`
 
+[![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
+
 UEP (Universal Economic Protocol) is a research and engineering project exploring a neutral economic protocol for exchanging **services, resources and multiple asset types** without requiring a single universal UEP currency.
 
 This repository is the **public reproducible reference slice** of the project. It combines two deliberately separated layers:
