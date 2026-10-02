@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { generateMnemonic, mnemonicToEntropy, mnemonicToSeed } from "./mnemonic.ts";
 import { deriveIdentity } from "./kdf.ts";
 import { hAccount } from "../core/hash.ts";
+import { BIP39_ENGLISH } from "./bip39-english.ts";
 
 describe("BIP39 identity", () => {
   it("roundtrips entropy and derives a stable account id", async () => {
@@ -19,7 +20,9 @@ describe("BIP39 identity", () => {
   it("rejects a corrupted checksum", async () => {
     const m = await generateMnemonic(128);
     const words = m.split(" ");
-    words[11] = words[11] === "zoo" ? "abandon" : "zoo";
+    // Flip the lowest bit of the last word index: for 12 words that bit is a
+    // checksum bit only (entropy unchanged), so the checksum is always invalid.
+    words[11] = BIP39_ENGLISH[BIP39_ENGLISH.indexOf(words[11]) ^ 1];
     await assert.rejects(() => mnemonicToEntropy(words.join(" ")));
   });
 });
