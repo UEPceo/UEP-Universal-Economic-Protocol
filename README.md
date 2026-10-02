@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.4.6-public-iot-m2m`
+> **Version:** `0.4.7-public-iot-m2m`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -15,14 +15,15 @@ This repository is the **public reproducible reference slice** of the project. I
 
 The repository is intended for developers, researchers, security testers and early community participants who want to inspect the implementation, reproduce its tests, attack its assumptions and build compatible experiments.
 
-### Current status (v0.4.6)
+### Current status (v0.4.7)
 
 | Item | Status |
 |---|---|
-| Release | `0.4.6-public-iot-m2m` (tag `v0.4.6-public-iot-m2m`) |
-| Tests | protocol **67/67**, Marketplace + IoT/M2M **94/94**, scale **3/3**, IoT **23/23** |
+| Version | `0.4.7-public-iot-m2m` on `main` (latest tag `v0.4.6-public-iot-m2m`) |
+| Tests | protocol **79/79**, Marketplace + IoT/M2M **104/104**, scale **3/3**, IoT **23/23** |
+| Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
-| CI | Node.js 22.x and 24.x |
+| CI | `npm run test:all` on Node.js 22.x and 24.x |
 | Network | Local, single-node, in-process **testnet only** |
 | External review | Independent adversarial assessments of each release up to v0.4.6; open items in [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) |
 
@@ -61,7 +62,7 @@ The public testnet implements a local reference state machine with:
 - deterministic account identity derived from test credentials;
 - key-derived account ids and checksummed, versioned Bech32m v2 addresses (v0.4.5);
 - testnet faucet;
-- multi-asset testnet registry (balances per account and asset; guaranteed multi-asset semantics are a later roadmap milestone);
+- multi-asset testnet registry (balances per account and asset; since v0.4.7 canonical asset ids, per-asset isolation, issuer keys, policy limits and fee floors; the unit model and an open registry are pending design decisions);
 - account and note commitments;
 - nullifiers and replay protection;
 - Sparse Merkle state representation;
@@ -159,14 +160,14 @@ The active public hash is a **reference hardening backend**, not a claim that pr
 
 ---
 
-## 5. Security hardening in v0.4.1 – v0.4.6
+## 5. Security hardening in v0.4.1 – v0.4.7
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 – v0.4.5. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
 - Transaction input notes are resolved against the receiving ledger's existing unspent note set. Notes carried inside a transaction are evidence, not an issuance authority.
-- The public testnet transaction format uses **one input note per transaction**, because the current envelope carries a single nullifier. A spend needs one note that covers amount plus fee; multi-input aggregation is intentionally not claimed until a nullifier vector is introduced.
+- The public testnet transaction format uses **one input note per transaction**, because the current envelope carries a single nullifier. A spend needs one note that covers amount plus fee; multi-input aggregation is intentionally not claimed until a nullifier vector is introduced. **v0.4.7:** `preparePayment()` + `submitBatch()` pay one recipient from several notes as an atomic batch of single-input spends (all or none, one fee per part).
 - **v0.4.2:** outputs are bound to the transaction: output 0 pays exactly `amount` to the recipient, and the optional output 1 returns exactly `input − amount − fee` to the sender. The transaction nonce must be the consumed note's nonce, so the nullifier is anchored to that note. Sender, recipient and treasury must be distinct accounts.
 - **v0.4.3:** snapshots are signed with **Ed25519** (`node:crypto`, no new dependencies) instead of a shared HMAC secret. `UepLedger.restore(snapshot, trust)` takes only **public keys**; verifiers never need a private key. An optional **k-of-n threshold** (for example 2-of-3) requires `k` valid signatures from distinct listed authorities; the default is 1-of-1 for the local testnet.
 - **v0.4.3:** snapshots form a **hash chain** (`sequence`, `prevSnapshotHash`). Restore can be pinned to a known previous snapshot hash or to a checkpoint (`checkpointOf()`), and `UepLedger.restoreChain()` verifies an ordered series; a reordered, rolled-back or rewritten history is rejected even when it is correctly signed.
@@ -211,6 +212,7 @@ accountId  = 0x02 ‖ keyHash   (the ledger's note owner / sender / recipient id
 - **v0.4.4:** a **dispute flow** with defined outcomes. The buyer can open a dispute within the delivery dispute window; the arbiter resolves it as `RELEASE`, `REFUND_BUYER` or `SPLIT`; the provider can concede a refund; an unresolved dispute falls back to a configurable timeout outcome (default: refund the buyer). Every outcome moves the escrow exactly once, and `valueAccounting()` stays conserved.
 - **v0.4.4:** **IoT telemetry is always signed** by the machine's registered Ed25519 key (machines cannot be registered without one), with monotonic sequence numbers and nonce anti-replay. An IoT order is released only against verified telemetry that was delivered for that order and reports the full contracted quantity; a shortfall goes to a dispute. Simulations sign with test machine keys.
 - **v0.4.6:** a dispute timeout configured as `RELEASE` runs the same category guard. An IoT order without verified telemetry for its full quantity is **refunded to the buyer** instead of paid (`TIMEOUT_REFUND_UNVERIFIED`). The arbiter's explicit release stays final, and its record says whether the guard passed (`categoryGuard: "ARBITER_OVERRIDE"` otherwise).
+- **v0.4.7:** balances, locked deposits and held escrow are kept **per asset and identity**, and every composite key is structural. Asset and identity ids are validated. Optional: an asset-registry mode (`assetRegistryNetworkId`), per-asset minimum fees and deposits, and administrator-signed credits (`requireSignedCredits`).
 - **v0.4.6:** **capacity is returned exactly once** when an order closes without consuming it: in full on cancel, expiry or a refund without execution evidence, and the unpaid units of a split. Units executed per verified IoT telemetry stay consumed. `available` never exceeds `capacity`, and `capacityAccounting(listingId)` checks `capacity = available + reserved + consumed`.
 
 These controls are testnet protections, not a claim of production consensus or production ZK security.
@@ -272,10 +274,28 @@ It does not provide:
 
 The public reference layer intentionally avoids requiring the large private development workspace or a production proving ceremony.
 
+### Quickstart: test everything
+
+```bash
+git clone https://github.com/UEPceo/UEP-Universal-Economic-Protocol.git
+cd UEP-Universal-Economic-Protocol
+npm ci
+npm run test:all
+```
+
+`npm run test:all` runs, in order and stopping at the first failure:
+
+1. `npm test`: protocol/testnet (79), Marketplace + IoT/M2M (104, including the 23 IoT and 3 scale tests);
+2. `npm run smoke:testnet`: prints `SMOKE OK`;
+3. `npm run quickstart`: the first-transaction example;
+4. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`.
+
+It needs no network access or private keys and takes about a minute. CI runs the same command on Node.js 22.x and 24.x. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
+
 ### Minimal reproducible verification
 
 ```bash
-npm install
+npm ci
 npm test
 npm run example
 ```
@@ -374,7 +394,7 @@ Repository layout:
 ├── tsconfig.json
 ├── .gitignore
 ├── .gitattributes
-├── .github/workflows/ci.yml  # CI: npm test + smoke test (Node 22.x / 24.x)
+├── .github/workflows/ci.yml  # CI: npm run test:all (Node 22.x / 24.x)
 ├── .github/ISSUE_TEMPLATE/   # bug report / feature request forms; security goes to SECURITY.md
 ├── .github/pull_request_template.md
 │
@@ -422,7 +442,7 @@ Repository layout:
 │   └── marketplace-20k-simulation.mjs
 │
 └── docs/
-    ├── API.md            # changed public signatures (v0.4.3 – v0.4.6)
+    ├── API.md            # changed public signatures (v0.4.3 – v0.4.7)
     ├── ARCHITECTURE.md   # layers A–N, status table, diagrams
     ├── THREAT-MODEL.md
     └── REPRODUCIBILITY.md
@@ -647,8 +667,8 @@ The full roadmap is in [`ROADMAP.md`](./ROADMAP.md). Its year buckets are goals,
 | Phase | Status |
 |---|---|
 | 0. Foundation | Done |
-| 1. Hardened public testnet | Closing (v0.4.1 – v0.4.6) |
-| Multi-asset | Not started; exit-criteria assessment NO-GO, blockers being worked on |
+| 1. Hardened public testnet | Closing (v0.4.1 – v0.4.7) |
+| Multi-asset | In progress: per-asset hardening in v0.4.7; exit-criteria assessment NO-GO until the remaining design decisions are written |
 | 2. Service economy | In progress: event bus, storage and evidence, API, IoT gateway, SDK, sandbox, simulators |
 | 3. Public developer platform | Planned |
 | 4. Multi-node testnet | Planned |

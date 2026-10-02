@@ -51,13 +51,13 @@ UEP is not simply a blockchain, a cryptocurrency or a marketplace. The goal is a
 | Layer | Status | In this repository today | Main gaps |
 |---|---|---|---|
 | **A. Core protocol** | Implemented (testnet) | `src/core`: transactions and TxIDs, nonces, notes, commitments, nullifiers, state roots, state transition, 0.1% fee with a 1-unit floor, value conservation | Multi-input spends (nullifier vector) |
-| **B. Economic state / ledger** | Implemented (testnet) | `src/testnet/ledger.ts`: 254-bit SMT, note-commitment Merkle tree, Ed25519 k-of-n hash-chained snapshots, signed mints, validated pending queue | One input note per spend; guaranteed multi-asset semantics |
+| **B. Economic state / ledger** | Implemented (testnet) | `src/testnet/ledger.ts`: 254-bit SMT, note-commitment Merkle tree, Ed25519 k-of-n hash-chained snapshots, signed mints, validated pending queue; per-asset hardening (v0.4.7): canonical asset ids, per-asset issuer keys, per-asset policy limits and fee floors, atomic multi-note payments | True multi-input spends (nullifier vector); open asset registry and unit model (pending design decisions) |
 | **C. Cryptography / ZK** | Partial | SHA-256-to-BN254 reference hash (not Poseidon), Ed25519 via `node:crypto`, SMT, note tree, ZK witness contract (not wired), development spend MAC | Production circuits and Poseidon, witness range checks (UEP-A22), production keys and ceremony |
 | **D. Consensus & network** | Future | A `local://` testnet profile only | Replication, consensus, P2P |
-| **E. Marketplace** | Implemented (testnet) | `src/marketplace`: listings, funded reservations, HOLD, delivery, disputes with an arbiter, settlement, treasury, paymaster, reputation | Marketplace snapshot/restore; service schemas and SLA; a real payment rail |
+| **E. Marketplace** | Implemented (testnet) | `src/marketplace`: listings, funded reservations, HOLD, delivery, disputes with an arbiter, settlement, treasury, paymaster, reputation; balances indexed per asset and identity, optional asset-registry mode and signed credits (v0.4.7) | Marketplace snapshot/restore; service schemas and SLA; a real payment rail |
 | **F. Service plane** | Partial | Signed identities, IoT provider and machine registries, listings as the service registry, `attachCategoryService()` | A decoupled layer with typed registries and identity states; a generic execution interface |
 | **G. IoT / M2M** | Implemented (testnet) | `src/service/iot-m2m*.ts`: machine Ed25519 keys, signed canonical-CBOR telemetry, anti-replay, settlement against verified telemetry | Gateway, retry/backoff, machine offline mode, schema validation, physical attestation |
-| **H. Identity & authorization** | Partial | Key-derived accounts, `uep1` Bech32m addresses, a signed `ActorAuth` on every action, admin and arbiter keys | Key rotation and revocation, suspended/revoked states, Sybil resistance |
+| **H. Identity & authorization** | Partial | Key-derived accounts, `uep1` Bech32m addresses, a signed `ActorAuth` on every action, admin and arbiter keys, per-asset issuer key rotation and revocation (v0.4.7) | Rotation of snapshot, admin and arbiter keys; suspended/revoked states, Sybil resistance |
 | **I. Events / storage / API** | Design | Content hashes as delivery evidence; all state is in memory | Event bus, storage abstraction, network API |
 | **J. SDK / developer platform** | Design | TypeScript library API ([`API.md`](./API.md)), the first-transaction example, test kits | `@uep/*` packages, CLI, sandbox |
 | **K. Node / infrastructure** | Future | Role separation inside one node: snapshot authority, faucet key, verify-only node | Node processes, validators, provers, oracles, relayers |
@@ -137,7 +137,9 @@ The testnet maintains:
 
 `restore()` re-derives the whole state (roots, note tree, balances, supply from signed mints, treasury fees, pending queue) and rejects anything `faucet()` and `submit()` could not have produced. A ledger restored with public keys only is verify-only.
 
-Known limits: one input note per transaction (UEP-C04), so a balance split across notes cannot be spent at once. The ledger stores several assets, but multi-asset semantics are not yet a guaranteed property (see the roadmap).
+Since v0.4.7 every asset is isolated: asset ids follow a canonical grammar, notes of another asset are rejected (`ASSET_MISMATCH`), each asset can have its own issuer key (rotation and revocation in snapshot trust), `restore()` rejects unregistered assets, and policy limits and fee floors are per asset.
+
+Known limits: one input note per transaction (UEP-C04). Since v0.4.7 `preparePayment()` + `submitBatch()` pay from several notes as an atomic batch of single-input spends (one fee per part); a true multi-input spend and self-consolidation are not available. The unit model and an open asset registry are pending design decisions (see the roadmap).
 
 ### C. Cryptography / ZK — Partial
 
@@ -255,7 +257,7 @@ Multi-node local
 Public testnet
 ```
 
-Reproduce with `npm test`, `npm run smoke:testnet`, `npm run quickstart` and `npm run simulate:20k` ([`REPRODUCIBILITY.md`](./REPRODUCIBILITY.md)). The testnet is not a real economy.
+Reproduce everything with `npm run test:all` (`npm test`, `npm run smoke:testnet`, `npm run quickstart` and `npm run simulate:20k`; see [`REPRODUCIBILITY.md`](./REPRODUCIBILITY.md)). The testnet is not a real economy.
 
 ### M. Interplanetary extensions — Future
 

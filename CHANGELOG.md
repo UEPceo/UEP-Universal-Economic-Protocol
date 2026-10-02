@@ -39,21 +39,22 @@ Multi-asset hardening of the testnet ledger and the Marketplace, following the e
 - A true multi-input transaction and self-consolidation of notes are not available; a batch pays one fee per part.
 - Unchanged: development MAC (UEP-A11, A12), ZK witness range checks (UEP-A22), self-service identities, read authorizations reusable within their TTL.
 
+### Documentation and testing
+
+- New `npm run test:all`: `npm test` (protocol, Marketplace, IoT/M2M and scale suites), the smoke test, the quickstart and the 20k simulation in one command. CI runs it on Node.js 22.x and 24.x.
+- README Quickstart (clone, `npm ci`, `npm run test:all`), `docs/REPRODUCIBILITY.md` and CONTRIBUTING updated with the command and the expected v0.4.7 results.
+- New [`ROADMAP.md`](./ROADMAP.md): phases 0–9 with goals, deliverables and exit criteria, the next Phase 2 milestones (event bus, storage and evidence, local API, IoT gateway, SDK, sandbox, simulators), and year buckets labelled as goals, not commitments.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) rewritten around layers A–N, with a status table (Implemented on testnet / Partial / Design / Future) and diagrams.
+- README: current-status table (version, test counts, CI), architecture and roadmap sections linking the new documents, corrected `docs/API.md` range and v0.3.2 wording.
+- CONTRIBUTING points to the roadmap for where help is needed; PUBLIC-SCOPE covers the IoT/M2M layer, roadmap and status claims; REPRODUCIBILITY lists the expected results.
+- README, `ROADMAP.md` and `docs/ARCHITECTURE.md` describe the v0.4.7 per-asset hardening and the current test counts.
+
 ### Tests
 
 - New `src/testnet/multi-asset.test.ts` (12): asset id grammar and registry checks, conservation fuzz over 4 assets with snapshot / restore / restoreChain, asset isolation, unregistered assets on restore, issuer key scope / rotation / revocation, per-asset policy limits, fee floors, multi-note payments and batch atomicity, fixed `requireProof`.
 - New `src/marketplace/multi-asset.test.ts` (10): per-asset balance keying, idempotency key scope, id validation, registry mode, per-asset minimums, signed credits, a 240-order lifecycle fuzz over 4 assets checking conservation and capacity after every step, gas asset binding.
 - Two existing ledger tests now use `testOnlyDisableProof` instead of assigning `requireProof`.
 - Totals: protocol 79/79, marketplace + IoT 104/104, scale 3/3, IoT 23/23 on Node 22 and 24; `simulate:20k` 0 errors, value conserved.
-
-## Unreleased
-
-Documentation only; no change to `src/`, scripts, formats or behaviour.
-
-- New [`ROADMAP.md`](./ROADMAP.md): phases 0–9 with goals, deliverables and exit criteria, the next Phase 2 milestones (event bus, storage and evidence, local API, IoT gateway, SDK, sandbox, simulators), and year buckets labelled as goals, not commitments.
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) rewritten around layers A–N, with a status table (Implemented on testnet / Partial / Design / Future) and diagrams.
-- README: current-status table (v0.4.6, test counts, CI), architecture and roadmap sections linking the new documents, corrected `docs/API.md` range and v0.3.2 wording.
-- CONTRIBUTING points to the roadmap for where help is needed; PUBLIC-SCOPE covers the IoT/M2M layer, roadmap and status claims; REPRODUCIBILITY lists the expected results.
 
 ## 0.4.6-public-iot-m2m — 2026-10-02
 

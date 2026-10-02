@@ -10,16 +10,20 @@ TypeScript type stripping for the reference test runner.
 ## Clean run
 
 ```bash
+git clone https://github.com/UEPceo/UEP-Universal-Economic-Protocol.git
+cd UEP-Universal-Economic-Protocol
 npm ci
-npm test
+npm run test:all
 ```
 
-Expected results at `0.4.6-public-iot-m2m` (Node.js 22 and 24):
+`npm run test:all` runs `npm test` (protocol, Marketplace, IoT/M2M and scale suites), the smoke test, the quickstart and the 20k simulation, and stops at the first failure. It takes about a minute. CI runs the same command on Node.js 22.x and 24.x.
+
+Expected results at `0.4.7-public-iot-m2m` (Node.js 22 and 24):
 
 | Command | Expected |
 |---|---|
-| `npm run test:protocol` | 67/67 pass |
-| `npm run test:marketplace` | 94/94 pass (includes the 23 IoT/M2M tests) |
+| `npm run test:protocol` | 79/79 pass |
+| `npm run test:marketplace` | 104/104 pass (includes the 23 IoT/M2M and the 3 scale tests) |
 | `npm run test:scale` | 3/3 pass |
 | `npm run test:iot` | 23/23 pass |
 | `npm run smoke:testnet` | `SMOKE OK` |

@@ -28,12 +28,14 @@ Requires Node.js >= 22.6 (no runtime dependencies):
 
 ```bash
 npm ci
+npm run test:all       # everything below, in order
 npm test               # protocol + Marketplace + IoT/M2M suites
 npm run smoke:testnet  # deterministic testnet smoke test
 npm run quickstart     # first-transaction example with uep1 addresses
+npm run simulate:20k   # in-process 20k settlement simulation
 ```
 
-CI runs `npm test` and the smoke test on Node.js 22.x and 24.x.
+CI runs `npm run test:all` on Node.js 22.x and 24.x.
 
 ## Good public contributions
 
