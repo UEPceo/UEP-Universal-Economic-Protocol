@@ -19,11 +19,13 @@ import { TREASURY_ID } from "../network/profiles.ts";
 import { SecurityPolicy, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
 import { DevelopmentSpendProofProvider, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
+import { createHmac, randomBytes } from "node:crypto";
 
 export type SubmitError =
   | { code: "WRONG_NETWORK"; message: string }
   | { code: "WRONG_OWNER"; message: string }
   | { code: "NOTE_OPENING"; message: string }
+  | { code: "NOTE_NOT_MEMBER"; message: string }
   | { code: "AMOUNT_MISMATCH"; message: string }
   | { code: "ASSET_MISMATCH"; message: string }
   | { code: "DOUBLE_SPEND"; message: string }
@@ -42,6 +44,12 @@ function ak(account: Fr, asset: Fr): AccountKey {
   return account.toHex() + "|" + asset.toHex();
 }
 
+export type UepLedgerSnapshot = ReturnType<UepLedger["snapshot"]>;
+
+function snapshotPayload(data: Omit<UepLedgerSnapshot, "integrity">): string {
+  return JSON.stringify(data, (_key, value) => typeof value === "bigint" ? `${value}n` : value);
+}
+
 export class UepLedger {
   /** Optional security policy gate (TESTNET). */
   policy: SecurityPolicyType = new SecurityPolicy();
@@ -52,6 +60,7 @@ export class UepLedger {
   readonly domainId: string;
   readonly connected: boolean;
   readonly allowFaucet: boolean;
+  private readonly snapshotAuthoritySecret: Buffer;
   state: SparseMerkleTree;
   nullifiers: NullifierSet;
   balances = new Map<AccountKey, bigint>();
@@ -66,11 +75,14 @@ export class UepLedger {
     domainId: string;
     connected: boolean;
     allowFaucet: boolean;
+    /** External snapshot authority secret. Keep outside the snapshot. */
+    snapshotAuthoritySecret?: string | Uint8Array;
   }) {
     this.networkId = opts.networkId;
     this.domainId = opts.domainId;
     this.connected = opts.connected;
     this.allowFaucet = opts.allowFaucet;
+    this.snapshotAuthoritySecret = Buffer.from(opts.snapshotAuthoritySecret ?? randomBytes(32));
     this.state = new SparseMerkleTree(ACCOUNT_DEPTH);
     this.nullifiers = new NullifierSet();
   }
@@ -157,18 +169,18 @@ export class UepLedger {
     if (!verifyOwnership(secrets.secret, secrets.salt, senderId)) {
       return { error: { code: "WRONG_OWNER", message: "Identity does not control this account." } };
     }
-    const available = this.notesOf(senderId).filter((n) => n.assetId.eq(assetId) && openNote(n));
-    let selected: Note[] = [];
-    let total = 0n;
-    for (const n of available) {
-      selected.push(n);
-      total += n.amount;
-      if (total >= amount) break;
-    }
-    if (total < amount) {
-      return { error: { code: "INSUFFICIENT", message: "Not enough unspent notes for this asset." } };
-    }
     const fee = creatorFee(amount);
+    const required = amount + fee;
+    const available = this.notesOf(senderId).filter((n) => n.assetId.eq(assetId) && openNote(n));
+    // v0.4 public testnet deliberately uses one input note per transaction.
+    // This keeps the single-nullifier transaction format sound; multi-input
+    // aggregation requires an explicit nullifier vector in a future protocol version.
+    const spent = available.find((n) => n.amount >= required);
+    if (!spent) {
+      return { error: { code: "INSUFFICIENT", message: "No single unspent note covers amount plus fee." } };
+    }
+    const selected: Note[] = [spent];
+    const total = spent.amount;
     const debit = requiredSenderDebit(amount);
     const senderOld = this.balanceOf(senderId, assetId);
     const recipientOld = this.balanceOf(recipient, assetId);
@@ -182,11 +194,9 @@ export class UepLedger {
     }
 
     const change = total - amount - fee;
-    const spent = selected[0]!;
-    // One-note spend of `amount` from the first covering set: consume selected,
-    // emit recipient output + optional change. Nullifier from the first note
-    // (v0.1 single-nullifier transition, matching UEP-25). Remaining selected
-    // notes are also marked spent and folded into change.
+    // Single-note spend: consume the selected note, emit the recipient output
+    // (`amount`) plus optional change (`total - amount - fee`). The nullifier is
+    // derived from that note (single-nullifier transition, matching UEP-25).
     const nonce = spent.nonce;
     const nullifier = deriveNullifier(secrets.secret, nonce);
     const outBlinding = hLeaf(secrets.secret, new Fr(++this.noteCounter));
@@ -389,18 +399,32 @@ export class UepLedger {
       };
     }
 
-    const stash = this.outputStash.get(tx.txId.toHex());
     const transportedInputs = tx.inputNotes?.map(deserializeNote) ?? [];
-    const inputs = stash?.inputs ?? (transportedInputs.length ? transportedInputs : this.notes.filter((n) => tx.inputCommitments.some((c) => c.eq(n.commitment))));
+    if (transportedInputs.length !== tx.inputCommitments.length) {
+      return { error: { code: "NOTE_OPENING", message: "Every input commitment must carry its note opening." } };
+    }
+    // Transported notes are evidence, not authority. The authoritative ledger
+    // must already contain the exact unspent commitment. A sender cannot mint a
+    // new balance merely by attaching a self-consistent note to a transaction.
+    const inputs: Note[] = [];
+    for (let i = 0; i < tx.inputCommitments.length; i++) {
+      const transported = transportedInputs[i]!;
+      const canonical = this.notes.find((n) => n.commitment.eq(tx.inputCommitments[i]!));
+      if (!canonical) return { error: { code: "NOTE_NOT_MEMBER", message: "Input note is not a member of this ledger." } };
+      if (canonical.spent) return { error: { code: "DOUBLE_SPEND", message: "Input note already spent." } };
+      if (!openNote(transported) || !transported.commitment.eq(canonical.commitment)) return { error: { code: "NOTE_OPENING", message: "Transported note does not match ledger membership." } };
+      if (transported.owner.toHex() !== canonical.owner.toHex() || transported.amount !== canonical.amount || transported.assetId.toHex() !== canonical.assetId.toHex()) return { error: { code: "NOTE_OPENING", message: "Transported note fields do not match ledger membership." } };
+      inputs.push(canonical);
+    }
     if (inputs.length === 0) {
-      return { error: { code: "NOTE_OPENING", message: "Input notes are not in this ledger." } };
+      return { error: { code: "NOTE_OPENING", message: "Transaction has no input notes." } };
     }
     const uniqueInputs = new Set(tx.inputCommitments.map((c) => c.toHex()));
-    if (uniqueInputs.size !== tx.inputCommitments.length || inputs.length !== tx.inputCommitments.length) {
+    if (tx.inputCommitments.length !== 1 || uniqueInputs.size !== tx.inputCommitments.length || inputs.length !== tx.inputCommitments.length) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Input commitments must be unique and exactly match the referenced notes." } };
     }
     const inputTotal = inputs.reduce((sum, n) => sum + n.amount, 0n);
-    const outputs = tx.outputNotes?.map(deserializeNote) ?? stash?.outputs ?? [];
+    const outputs = tx.outputNotes?.map(deserializeNote) ?? [];
     if (outputs.length !== tx.outputCommitments.length || outputs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Output notes do not match transaction commitments." } };
     }
@@ -539,7 +563,7 @@ export class UepLedger {
   }
 
   snapshot() {
-    return {
+    const payload = {
       networkId: this.networkId,
       domainId: this.domainId,
       connected: this.connected,
@@ -554,15 +578,19 @@ export class UepLedger {
       noteCounter: this.noteCounter.toString(),
       lastReconcileAt: this.lastReconcileAt,
     };
+    const integrity = createHmac("sha256", this.snapshotAuthoritySecret).update(snapshotPayload(payload)).digest("hex");
+    return { ...payload, integrity };
   }
 
-  static restore(data: ReturnType<UepLedger["snapshot"]>): UepLedger {
-    if (!data || data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending)) throw new Error("INVALID_SNAPSHOT_SHAPE");
+  static restore(data: UepLedgerSnapshot, snapshotAuthoritySecret: string | Uint8Array): UepLedger {
+    if (!data || data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || typeof data.integrity !== "string") throw new Error("INVALID_SNAPSHOT_SHAPE");
+    const { integrity, ...payload } = data;
     const l = new UepLedger({
       networkId: data.networkId,
       domainId: data.domainId,
       connected: data.connected,
       allowFaucet: data.allowFaucet,
+      snapshotAuthoritySecret,
     });
     l.state = SparseMerkleTree.fromJSON(data.state);
     l.nullifiers = NullifierSet.fromJSON(data.nullifiers);
@@ -586,14 +614,21 @@ export class UepLedger {
     const rebuiltNullifiers = new NullifierSet();
     for (const tx of l.txs) {
       if (!rebuiltNullifiers.insertOnce(tx.nullifier)) throw new Error("INVALID_SNAPSHOT_NULLIFIER_SET");
-      if (!tx.inputNotes || !tx.outputNotes) throw new Error("INVALID_SNAPSHOT_TX_NOTES");
+      if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) throw new Error("INVALID_SNAPSHOT_TX_NOTES");
+      const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
+      if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) throw new Error("INVALID_SNAPSHOT_TX_COMMITMENT");
+      const ins = tx.inputNotes.map(deserializeNote); const outs = tx.outputNotes.map(deserializeNote);
+      if (ins.some((n,i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n,i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) throw new Error("INVALID_SNAPSHOT_TX_NOTES");
+      const inputTotal = ins.reduce((a,n)=>a+n.amount,0n); const outputTotal = outs.reduce((a,n)=>a+n.amount,0n);
+      // Same conservation rule as submit(): outputs (recipient + optional change) == inputs - fee.
+      if (outputTotal !== inputTotal - tx.fee || inputTotal < tx.amount + tx.fee) throw new Error("INVALID_SNAPSHOT_TX_VALUE");
     }
     if (!rebuiltNullifiers.root().eq(l.nullifiers.root())) throw new Error("INVALID_SNAPSHOT_NULLIFIER_ROOT");
     const calculatedBalances = new Map<string,bigint>();
     for (const [k,v] of l.balances) calculatedBalances.set(k,v);
     if (l.notes.some(n => !n.spent && (calculatedBalances.get(ak(n.owner,n.assetId)) ?? 0n) < n.amount)) throw new Error("INVALID_SNAPSHOT_NOTE_BALANCE");
+    const expectedIntegrity = createHmac("sha256", Buffer.from(snapshotAuthoritySecret)).update(snapshotPayload(payload)).digest("hex");
+    if (integrity !== expectedIntegrity) throw new Error("INVALID_SNAPSHOT_INTEGRITY");
     return l;
   }
 }
-
-

@@ -12,8 +12,10 @@ async function ids() {
     b: await identityFromMnemonic(await generateMnemonic(128)),
   };
 }
+const SNAPSHOT_AUTHORITY = "public-testnet-audit-secret-v1";
+
 function ledger() {
-  return new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
+  return new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotAuthoritySecret: SNAPSHOT_AUTHORITY });
 }
 
 test("change is amount minus fee and note conservation holds", async () => {
@@ -45,7 +47,7 @@ test("output and input notes travel with a transaction and survive replica apply
   assert.ok(p.tx.inputNotes?.length === 1);
   assert.ok(p.tx.outputNotes?.length === 2);
 
-  const replica = UepLedger.restore(before);
+  const replica = UepLedger.restore(before, SNAPSHOT_AUTHORITY);
   const result = replica.submit(p.tx, a);
   assert.ok("tx" in result);
   assert.equal(replica.notesOf(b.accountId).length, 1);
@@ -59,7 +61,7 @@ test("restore rejects tampered balance/state root", async () => {
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
   tampered.balances[0]![1] = "999999999";
-  assert.throws(() => UepLedger.restore(tampered), /INVALID_SNAPSHOT_STATE_ROOT/);
+  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_STATE_ROOT/);
 });
 
 test("restore rejects tampered note commitment", async () => {
@@ -69,7 +71,7 @@ test("restore rejects tampered note commitment", async () => {
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
   tampered.notes[0]!.commitment = "01".padStart(64, "0");
-  assert.throws(() => UepLedger.restore(tampered), /INVALID_SNAPSHOT_NOTE_COMMITMENT/);
+  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_NOTE_COMMITMENT/);
 });
 
 test("restore rejects tampered nullifier tree", async () => {
@@ -83,14 +85,14 @@ test("restore rejects tampered nullifier tree", async () => {
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
   tampered.nullifiers.tree.leaves[0]![1] = "02".padStart(64, "0");
-  assert.throws(() => UepLedger.restore(tampered), /INVALID_SNAPSHOT_NULLIFIER_ROOT/);
+  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_NULLIFIER_ROOT/);
 });
 
 test("reconcile keeps a valid pending transaction queued and rejects an invented one", async () => {
   const { a, b } = await ids();
   const source = ledger();
   source.faucet(a.accountId, "asset:test:eur", 1000n);
-  const l = UepLedger.restore(source.snapshot());
+  const l = UepLedger.restore(source.snapshot(), SNAPSHOT_AUTHORITY);
   const asset = encodeStringToFr("asset:test:eur");
   const p = source.prepareSpend(a, b.accountId, "asset:test:eur", 100n);
   assert.ok("tx" in p);
@@ -164,4 +166,120 @@ test("zero-value transactions are rejected", async () => {
   l.faucet(a.accountId, "asset:test:eur", 1000n);
   const p = l.prepareSpend(a, b.accountId, "asset:test:eur", 0n);
   assert.ok("error" in p);
+});
+
+test("submit rejects a fabricated self-consistent input note", async () => {
+  const { a, b } = await ids();
+  const l = ledger();
+  l.faucet(a.accountId, "asset:test:eur", 1000n);
+  const p = l.prepareSpend(a, b.accountId, "asset:test:eur", 100n);
+  assert.ok("tx" in p); if (!("tx" in p)) return;
+  const fake = { ...p.tx, inputNotes: p.tx.inputNotes!.map((n) => ({ ...n, amount: "999999" })) };
+  assert.ok("error" in l.submit(fake, a));
+  assert.equal(l.balanceOf(b.accountId, encodeStringToFr("asset:test:eur")), 0n);
+});
+
+test("restore requires external snapshot authority and rejects a coherent forged snapshot", async () => {
+  const { a } = await ids();
+  const l = ledger(); l.faucet(a.accountId, "asset:test:eur", 1000n);
+  const snap = l.snapshot();
+  assert.throws(() => UepLedger.restore(snap, "wrong-authority"), /INVALID_SNAPSHOT_INTEGRITY/);
+  const tampered = structuredClone(snap) as typeof snap;
+  tampered.balances[0]![1] = "999999";
+  assert.throws(() => UepLedger.restore(tampered, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_STATE_ROOT/);
+  // Internally consistent snapshot produced under a different authority.
+  const other = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotAuthoritySecret: "other-authority" });
+  other.faucet(a.accountId, "asset:test:eur", 1_000_000n);
+  assert.throws(() => UepLedger.restore(other.snapshot(), SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_INTEGRITY/);
+  const metadata = structuredClone(snap) as typeof snap;
+  metadata.noteCounter = "42";
+  assert.throws(() => UepLedger.restore(metadata, SNAPSHOT_AUTHORITY), /INVALID_SNAPSHOT_INTEGRITY/);
+});
+
+test("exact-note balance can pay amount plus fee", async () => {
+  const { a, b } = await ids();
+  const l = ledger(); l.faucet(a.accountId, "asset:test:eur", 100100n);
+  const p = l.prepareSpend(a, b.accountId, "asset:test:eur", 100000n);
+  assert.ok("tx" in p);
+  if (!("tx" in p)) return;
+  assert.equal(p.tx.outputNotes!.reduce((s,n)=>s+BigInt(n.amount),0n), 100000n);
+});
+
+test("honest snapshot restores after one or more submits", async () => {
+  const { a, b } = await ids();
+  const asset = encodeStringToFr("asset:test:eur");
+  const l = ledger();
+  l.faucet(a.accountId, "asset:test:eur", 100_500n);
+  l.faucet(a.accountId, "asset:test:eur", 1_001n);
+  // With change output.
+  const p1 = l.prepareSpend(a, b.accountId, "asset:test:eur", 100_000n);
+  assert.ok("tx" in p1); if (!("tx" in p1)) return;
+  assert.ok("tx" in l.submit(p1.tx, a));
+  const afterOne = UepLedger.restore(l.snapshot(), SNAPSHOT_AUTHORITY);
+  assert.equal(afterOne.stateRoot().toHex(), l.stateRoot().toHex());
+  assert.equal(afterOne.nullifierRoot().toHex(), l.nullifierRoot().toHex());
+  // Exact amount + fee, no change output; then a spend by the recipient.
+  const p2 = l.prepareSpend(a, b.accountId, "asset:test:eur", 1_000n);
+  assert.ok("tx" in p2); if (!("tx" in p2)) return;
+  assert.equal(p2.tx.outputNotes!.length, 1);
+  assert.ok("tx" in l.submit(p2.tx, a));
+  const p3 = l.prepareSpend(b, a.accountId, "asset:test:eur", 50_000n);
+  assert.ok("tx" in p3); if (!("tx" in p3)) return;
+  assert.ok("tx" in l.submit(p3.tx, b));
+  assert.equal(l.txs.length, 3);
+
+  const restored = UepLedger.restore(structuredClone(l.snapshot()), SNAPSHOT_AUTHORITY);
+  assert.equal(restored.stateRoot().toHex(), l.stateRoot().toHex());
+  assert.equal(restored.nullifierRoot().toHex(), l.nullifierRoot().toHex());
+  assert.equal(restored.txs.length, 3);
+  assert.equal(restored.balanceOf(a.accountId, asset), l.balanceOf(a.accountId, asset));
+  assert.equal(restored.balanceOf(b.accountId, asset), l.balanceOf(b.accountId, asset));
+  // The restored ledger keeps working and its own snapshot restores again.
+  const p4 = restored.prepareSpend(b, a.accountId, "asset:test:eur", 10_000n);
+  assert.ok("tx" in p4); if (!("tx" in p4)) return;
+  assert.ok("tx" in restored.submit(p4.tx, b));
+  assert.ok(UepLedger.restore(restored.snapshot(), SNAPSHOT_AUTHORITY));
+});
+
+test("a valid pending transaction survives reconciliation and snapshot restore", async () => {
+  const { a, b } = await ids();
+  const asset = encodeStringToFr("asset:test:eur");
+  const source = ledger();
+  source.faucet(a.accountId, "asset:test:eur", 1000n);
+  const l = UepLedger.restore(source.snapshot(), SNAPSHOT_AUTHORITY);
+  const p = source.prepareSpend(a, b.accountId, "asset:test:eur", 100n);
+  assert.ok("tx" in p); if (!("tx" in p)) return;
+  l.queueConflict(p.tx);
+  const r = l.reconcilePending();
+  assert.equal(r.rejected.length, 0);
+  assert.equal(r.settlements.length, 0);
+  assert.equal(l.pending.length, 1);
+  assert.equal(l.pending[0]!.phase, "LOCAL_VALID");
+  assert.equal(l.txs.length, 0);
+  const restored = UepLedger.restore(l.snapshot(), SNAPSHOT_AUTHORITY);
+  assert.equal(restored.pending.length, 1);
+  assert.equal(restored.reconcilePending().queued.length, 1);
+  assert.ok("tx" in restored.submit(p.tx, a));
+  assert.equal(restored.balanceOf(b.accountId, asset), 100n);
+});
+
+test("prepareSpend rejects a note that covers the amount but not the fee", async () => {
+  const { a, b } = await ids();
+  const l = ledger(); l.faucet(a.accountId, "asset:test:eur", 100_000n);
+  const p = l.prepareSpend(a, b.accountId, "asset:test:eur", 100_000n);
+  assert.ok("error" in p);
+  if ("error" in p) assert.equal(p.error.code, "INSUFFICIENT");
+});
+
+test("a spent input note cannot be referenced by a second transaction", async () => {
+  const { a, b } = await ids();
+  const l = ledger(); l.faucet(a.accountId, "asset:test:eur", 1000n);
+  const p1 = l.prepareSpend(a, b.accountId, "asset:test:eur", 100n);
+  const p2 = l.prepareSpend(a, b.accountId, "asset:test:eur", 200n);
+  assert.ok("tx" in p1 && "tx" in p2); if (!("tx" in p1) || !("tx" in p2)) return;
+  assert.ok("tx" in l.submit(p1.tx, a));
+  const second = l.submit(p2.tx, a);
+  assert.ok("error" in second);
+  if ("error" in second) assert.equal(second.error.code, "DOUBLE_SPEND");
+  assert.equal(l.balanceOf(b.accountId, encodeStringToFr("asset:test:eur")), 100n);
 });

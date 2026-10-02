@@ -98,6 +98,8 @@ export type IoTM2MConfig = {
   now?: () => number;
   telemetryMaxAgeMs?: number;
   telemetryMaxFutureSkewMs?: number;
+  /** Identity authorization for administrative provider/machine lifecycle actions. */
+  adminAuthorizer?: (actorId: string) => boolean;
 };
 
 function stableJson(value: unknown): string {
@@ -168,6 +170,7 @@ export class IoTM2MService {
   private readonly now: () => number;
   private readonly telemetryMaxAgeMs: number;
   private readonly telemetryMaxFutureSkewMs: number;
+  private readonly adminAuthorizer?: (actorId: string) => boolean;
   private readonly providers = new Map<string, IoTProvider>();
   private readonly machines = new Map<string, IoTMachine>();
   private readonly requests = new Map<string, IoTServiceRequest>();
@@ -186,6 +189,7 @@ export class IoTM2MService {
     this.now = config.now ?? (() => Date.now());
     this.telemetryMaxAgeMs = config.telemetryMaxAgeMs ?? 5 * 60 * 1000;
     this.telemetryMaxFutureSkewMs = config.telemetryMaxFutureSkewMs ?? 30_000;
+    this.adminAuthorizer = config.adminAuthorizer;
   }
 
   registerProvider(input: { providerId: string; displayName: string }): IoTProvider {
@@ -196,7 +200,8 @@ export class IoTM2MService {
     return { ...provider };
   }
 
-  deactivateProvider(providerId: string): void {
+  deactivateProvider(providerId: string, actorId?: string): void {
+    this.assertAdmin(actorId);
     const provider = this.provider(providerId);
     provider.active = false;
   }
@@ -219,7 +224,8 @@ export class IoTM2MService {
     return { ...machine };
   }
 
-  deactivateMachine(machineId: string): void {
+  deactivateMachine(machineId: string, actorId?: string): void {
+    this.assertAdmin(actorId);
     const machine = this.machine(machineId);
     machine.active = false;
   }
@@ -281,7 +287,9 @@ export class IoTM2MService {
   hold(requestId: string): ServiceOrder {
     const request = this.request(requestId);
     const contract = this.contractForRequest(request.requestId);
-    return this.marketplace.fundOrder(contract.orderId, contract.grossAmount);
+    const order = this.marketplace.getOrder(contract.orderId, request.buyerId);
+    const required = order.grossAmount + (order.gasFee ?? 0n) + order.reservationDeposit;
+    return this.marketplace.fundOrder(contract.orderId, required, `iot-hold:${request.buyerId}:${requestId}`);
   }
 
   simulateExecution(requestId: string, measurements: Record<string, string>, observedAt = this.now(), signer?: KeyObject | string): IoTTelemetry {
@@ -416,13 +424,19 @@ export class IoTM2MService {
     if (stableJson(registered) !== stableJson(telemetry)) throw new Error("IOT_TELEMETRY_TAMPERED");
   }
 
-  settle(requestId: string): IoTSettlement {
+  settle(requestId: string, actorId?: string): IoTSettlement {
     const request = this.request(requestId);
     const contract = this.contractForRequest(requestId);
     const verification = this.verified.get(requestId);
     if (!verification) throw new Error("IOT_VERIFICATION_REQUIRED");
-    const settlement = this.marketplace.settle(contract.orderId, contract.buyerId);
+    if (!actorId) throw new Error("IOT_AUTHENTICATED_ACTOR_REQUIRED");
+    if (actorId !== contract.buyerId && actorId !== this.marketplace.settlementArbiterId) throw new Error("IOT_SETTLEMENT_ACTOR_FORBIDDEN");
+    const settlement = this.marketplace.settle(contract.orderId, actorId);
     return { ...settlement, requestId, contractId: contract.contractId, machineId: request.machineId };
+  }
+
+  private assertAdmin(actorId?: string): void {
+    if (!actorId || !this.adminAuthorizer || !this.adminAuthorizer(actorId)) throw new Error("IOT_ADMIN_AUTH_REQUIRED");
   }
 
   getRequest(requestId: string): IoTServiceRequest { return { ...this.request(requestId) }; }

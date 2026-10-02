@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.4.0-public-iot-m2m`
+> **Version:** `0.4.1-public-iot-m2m`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -140,7 +140,33 @@ The active public hash is a **reference hardening backend**, not a claim that pr
 
 ---
 
-## 5. Important status: what this repository is NOT
+## 5. Security hardening in v0.4.1
+
+This public testnet release hardens the ledger and the IoT/M2M service layer after the external review of v0.4.0. Details and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.1.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md).
+
+- Transaction input notes are resolved against the receiving ledger's existing unspent note set. Notes carried inside a transaction are evidence, not an issuance authority.
+- The public testnet transaction format uses **one input note per transaction**, because the current envelope carries a single nullifier. A spend needs one note that covers amount plus fee; multi-input aggregation is intentionally not claimed until a nullifier vector is introduced.
+- Snapshots carry an HMAC integrity record. `UepLedger.restore(snapshot, authority)` requires the external `snapshotAuthoritySecret`; keep it outside the snapshot and outside source control. If the secret is lost, the snapshot cannot be restored by design. Restore also re-checks state root, note openings, nullifier root and per-transaction commitments and value conservation.
+- Pending reconciliation never settles or applies a queued spend: invalid envelopes are rejected, valid ones stay queued (`LOCAL_VALID`, flagged on conflict) until applied through `submit()`.
+- IoT settlement requires an authenticated buyer or the configured settlement arbiter. Machine/provider deactivation requires an admin authorization callback.
+- IoT HOLD funds the full required amount, including reservation deposit and sponsored gas fee.
+
+These controls are testnet protections, not a claim of production consensus or production ZK security.
+
+### Snapshot example
+
+```ts
+const authority = process.env.UEP_SNAPSHOT_AUTHORITY!;
+const ledger = new UepLedger({ networkId, domainId, connected: true, allowFaucet: true, snapshotAuthoritySecret: authority });
+const snapshot = ledger.snapshot();
+const restored = UepLedger.restore(snapshot, authority);
+```
+
+Do not commit `UEP_SNAPSHOT_AUTHORITY` or any real deployment secret.
+
+---
+
+## 6. Important status: what this repository is NOT
 
 This repository is **not** a production financial network.
 
@@ -165,7 +191,7 @@ It does not provide:
 
 ---
 
-## 6. Reproducibility
+## 7. Reproducibility
 
 ### Requirements
 
@@ -248,7 +274,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 
 ---
 
-## 7. Public repository architecture
+## 8. Public repository architecture
 
 ```text
 .
@@ -259,6 +285,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── CONTRIBUTING.md
 ├── PUBLIC-SCOPE.md
 ├── CHANGELOG.md
+├── PUBLIC-SECURITY-REMEDIATION-v0.4.1.md
 ├── package.json
 ├── package-lock.json
 ├── tsconfig.json
@@ -315,7 +342,7 @@ The structure is intentionally much smaller than the internal development worksp
 
 ---
 
-## 8. Transaction model
+## 9. Transaction model
 
 At the public reference layer, a testnet spend conceptually follows:
 
@@ -364,7 +391,7 @@ This is a **reference local execution model**, not a claim of globally finalized
 
 ---
 
-## 9. Marketplace lifecycle
+## 10. Marketplace lifecycle
 
 The Marketplace business layer is intentionally understandable independently of consensus:
 
@@ -399,7 +426,7 @@ The design deliberately charges the Marketplace fee only at successful settlemen
 
 ---
 
-## 10. Security philosophy
+## 11. Security philosophy
 
 The public project follows a simple rule:
 
@@ -423,7 +450,7 @@ Known limitations are documented rather than hidden.
 
 ---
 
-## 11. ZK status
+## 12. ZK status
 
 This public release must not be interpreted as a production ZK network.
 
@@ -442,7 +469,7 @@ If a future public release reaches a production-cryptographic milestone, it shou
 
 ---
 
-## 12. Multi-node and interplanetary status
+## 13. Multi-node and interplanetary status
 
 The internal UEP project investigates multi-node consensus, delayed networking, DTN-style transport and interplanetary reconciliation.
 
@@ -459,7 +486,7 @@ In particular:
 
 ---
 
-## 13. What has deliberately been removed from the public release
+## 14. What has deliberately been removed from the public release
 
 The public repository does **not** contain the internal master workspace, including material such as:
 
@@ -480,7 +507,7 @@ See [`PUBLIC-SCOPE.md`](./PUBLIC-SCOPE.md) for the explicit publication boundary
 
 ---
 
-## 14. How to contribute
+## 15. How to contribute
 
 Security findings, reproducibility problems, implementation bugs and protocol questions are welcome.
 
@@ -493,7 +520,7 @@ Do not publish private keys, credentials, personal data, customer information or
 
 ---
 
-## 15. Research transparency
+## 16. Research transparency
 
 UEP is deliberately developed using an adversarial engineering process:
 
@@ -505,7 +532,7 @@ A public release therefore documents limitations even when doing so makes the pr
 
 ---
 
-## 16. Roadmap boundary for this repository
+## 17. Roadmap boundary for this repository
 
 This repository is a foundation for public experimentation, not the entire UEP roadmap.
 
@@ -525,7 +552,7 @@ A future feature should not be considered part of the public protocol merely bec
 
 ---
 
-## 17. Test wallet seeds and BIP-39
+## 18. Test wallet seeds and BIP-39
 
 All BIP-39 recovery phrases used by the public examples and tests are generated at runtime with the platform cryptographic random generator. No fixed mnemonic, private key, seed phrase or personal wallet credential is embedded in this repository. Test identities are disposable testnet identities and must never be funded with real-world value.
 
@@ -533,7 +560,7 @@ This repository audit found no hard-coded BIP-39 mnemonic or personal wallet see
 
 ---
 
-## 18. License and acceptable use
+## 19. License and acceptable use
 
 This repository is released under the **Apache License 2.0 (Apache-2.0)**. It is a permissive open-source license that permits use, modification, distribution and commercial use subject to its terms. The repository remains a testnet/reference implementation: publication under Apache-2.0 does not imply that UEP is production-ready, that testnet assets have real-world value, or that any separate UEP trademark, service, production credential or unpublished project material is licensed.
 
@@ -541,7 +568,7 @@ Read the complete terms in [`LICENSE`](./LICENSE) before using the code.
 
 ---
 
-## 19. Disclaimer
+## 20. Disclaimer
 
 This software is experimental. It is provided for research, evaluation and testing purposes. No representation is made that the implementation is secure, fault tolerant, economically viable, legally compliant in every jurisdiction, or suitable for production use.
 
@@ -549,7 +576,7 @@ Nothing in this repository constitutes an offer, solicitation, investment produc
 
 ---
 
-## 20. Project principle
+## 21. Project principle
 
 UEP is being developed around a simple principle:
 
@@ -559,7 +586,7 @@ That principle is why this public release contains a reproducible testnet and a 
 
 ---
 
-## 21. Supporting the project
+## 22. Supporting the project
 
 UEP is an independent research project. If you want to support its development, you can send a voluntary Bitcoin donation to:
 

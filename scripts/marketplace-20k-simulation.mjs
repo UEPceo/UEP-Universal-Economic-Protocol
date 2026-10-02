@@ -18,7 +18,7 @@ for(let i=0;i<20000;i++){
   try{
     const o=m.acceptOrder({listingId:l.listingId,buyerId:buyer,quantity:1n,idempotencyKey:idem}); accepted++;
     const o2=m.acceptOrder({listingId:l.listingId,buyerId:buyer,quantity:1n,idempotencyKey:idem}); if(o2.orderId===o.orderId) idempotent++;
-    m.fundOrder(o.orderId,o.grossAmount,`fund-${i}`); fund++;
+    m.fundOrder(o.orderId,o.grossAmount + o.reservationDeposit + (o.gasFee ?? 0n),`fund-${i}`); fund++;
     m.deliver(o.orderId,l.providerId,Buffer.from(`LICENSE:${i}`),`deliver-${i}`); delivered++;
     m.settle(o.orderId,buyer); settled++;
     if(i%100===0) m.recordSellerReview({orderId:o.orderId,buyerId:buyer,rating:(i%5+1)});

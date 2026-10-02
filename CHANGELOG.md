@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.1-public-iot-m2m — 2026-10-02
+
+Ledger and IoT/M2M hardening following the external adversarial audit of v0.4.0 (`676fee6`). See [`PUBLIC-SECURITY-REMEDIATION-v0.4.1.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md) for the per-finding status.
+
+### Ledger
+
+- Input notes must be existing unspent members of the receiving ledger; transaction-carried notes are evidence and must match the canonical note. They cannot mint balances.
+- The public testnet transaction format is explicitly single-input while the envelope exposes one nullifier; multi-input aggregation is deferred until a nullifier vector is introduced.
+- `prepareSpend` selects one note covering `amount + fee` and otherwise returns a structured `INSUFFICIENT` error.
+- Snapshots are integrity-authenticated with an HMAC keyed by an external `snapshotAuthoritySecret`, which is never embedded in the snapshot; `UepLedger.restore(snapshot, authority)` requires it.
+- `restore()` validates state/nullifier roots, note commitments, transaction commitments, transaction value conservation and snapshot integrity.
+
+### IoT/M2M
+
+- `settle(requestId, actorId)` requires the buyer or the configured settlement arbiter.
+- IoT HOLD funds gross amount, gas fee and reservation deposit.
+- Provider/machine deactivation requires an explicit administrator authorization callback.
+
+### Fixed during integration
+
+- `restore()` and pending validation used a value-conservation rule inconsistent with `submit()`: honest snapshots containing any transaction could not be restored and honest pending transactions were rejected. Both now apply the same rule as `submit()`.
+- Pending reconciliation had reverted to marking validated transactions settled without applying them (and in practice discarded every pending transaction). The 0.4.0 semantics are restored: invalid envelopes are rejected; valid ones stay queued (`LOCAL_VALID`, flagged on conflict) until applied through authenticated `submit()`.
+- Restored from 0.4.0: sorted insertion in the reservation-expiry queue, non-zero exit of the 20k simulation on errors, the deterministic BIP-39 checksum test, the CI workflow and badge, the project contact address, the README "Supporting the project" section and the full changelog history.
+- `ledger-hardening.test.ts` runs once (protocol suite); restore tampering tests assert the precise error again.
+- New regression tests: honest snapshot restore after several submits, valid pending transaction surviving reconciliation and restore, exact-amount spend without fee coverage, reuse of a spent input note, fabricated input note, foreign-authority snapshot, IoT settlement/deactivation authorization and deposit-aware HOLD.
+
+### Known open issues
+
+- Output notes are checked for value conservation but are not bound to the declared recipient and amount.
+- The snapshot authority secret is symmetric; restore does not yet check that unspent notes sum to balances, that the nullifier `seen` set matches the tree, or total supply.
+- Input membership is checked against the local note set; there is no authenticated note-commitment tree yet.
+- A balance split across several notes cannot be spent in a single transaction until multi-input spends are supported.
+- Pending validation has no sender authentication and the pending queue is unbounded.
+- Sender authentication is still a development MAC that requires the spender's secret on the node, and `requireProof` can still be disabled.
+- Marketplace: no dispute/refund flow; identities are caller-supplied strings; reservation deposit defaults to 0; order listings and `acceptOrder` with an existing `orderId` are not actor-scoped.
+- Testnet and Marketplace fees still round down to zero for small amounts; the ZK witness contract is unchanged (not wired, no u64 range checks).
+
+### Verification
+
+- `npm test`: protocol suite 30/30, Marketplace/IoT suite 43/43 (Node 22 and Node 24).
+- `npm run test:scale`: 3/3; smoke test and quickstart pass.
+- `npm run simulate:20k`: 20,000/20,000 main-flow settlements, 0 errors.
+
 ## 0.4.0-public-iot-m2m — 2026-10-02
 
 Public repository updated with the agreed Marketplace + IoT/M2M implementation and security hardening, addressing part of the external audit of v0.3.2 (`fde6e26`).

@@ -27,7 +27,7 @@ describe("UEP IoT/M2M service", () => {
     assert.equal(delivered.status, "DELIVERED");
     const verification = iot.verifyTelemetry(requested.requestId, telemetry);
     assert.equal(verification.ok, true);
-    const settled = iot.settle(requested.requestId);
+    const settled = iot.settle(requested.requestId, "buyer-1");
     assert.equal(settled.requestId, requested.requestId);
     assert.equal(settled.machineId, "machine-01");
     assert.equal(settled.marketplaceFee, 3n);
@@ -62,10 +62,10 @@ describe("UEP IoT/M2M service", () => {
     assert.throws(() => iot.simulateExecution(r.requestId, { status: "OK" }), /IOT_EXECUTION_REQUIRES_HOLD/);
     iot.hold(r.requestId);
     const t = iot.simulateExecution(r.requestId, { status: "OK" });
-    assert.throws(() => iot.settle(r.requestId), /IOT_VERIFICATION_REQUIRED/);
+    assert.throws(() => iot.settle(r.requestId, "buyer"), /IOT_VERIFICATION_REQUIRED/);
     iot.deliverTelemetry(r.requestId, t);
     iot.verifyTelemetry(r.requestId, t);
-    assert.equal(iot.settle(r.requestId).marketplaceFee, 3n);
+    assert.equal(iot.settle(r.requestId, "buyer").marketplaceFee, 3n);
   });
 
   it("rejects telemetry tampering, wrong machine and replayed sequence", () => {
@@ -100,8 +100,8 @@ describe("UEP IoT/M2M service", () => {
     const t = iot.simulateExecution(r.requestId, { status: "OK" });
     iot.deliverTelemetry(r.requestId, t);
     iot.verifyTelemetry(r.requestId, t);
-    const first = iot.settle(r.requestId);
-    const second = iot.settle(r.requestId);
+    const first = iot.settle(r.requestId, "buyer");
+    const second = iot.settle(r.requestId, "buyer");
     assert.deepEqual(second, first);
     assert.equal(iot.marketplace.treasury.totalOf("EUR"), 3n);
   });
@@ -154,5 +154,47 @@ describe("UEP IoT/M2M hardening", () => {
     iot.hold(r.requestId);
     const t = iot.simulateExecution(r.requestId, { status: "OK" }, 1_030_001);
     assert.throws(() => iot.verifyTelemetry(r.requestId, t), /IOT_TELEMETRY_FUTURE_TIMESTAMP/);
+  });
+});
+
+describe("IoT authorization hardening", () => {
+  it("requires an authenticated buyer/arbiter to settle", () => {
+    const { iot, listing } = setup();
+    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "machine-01", quantity: 1n });
+    iot.hold(r.requestId);
+    const t = iot.simulateExecution(r.requestId, { status: "OK" });
+    iot.deliverTelemetry(r.requestId, t); iot.verifyTelemetry(r.requestId, t);
+    assert.throws(() => iot.settle(r.requestId), /IOT_AUTHENTICATED_ACTOR_REQUIRED/);
+    assert.throws(() => iot.settle(r.requestId, "attacker"), /IOT_SETTLEMENT_ACTOR_FORBIDDEN/);
+    assert.equal(iot.settle(r.requestId, "buyer").grossAmount, 100n);
+  });
+
+  it("requires authorization to deactivate a machine or provider", () => {
+    const unconfigured = new IoTM2MService(new DigitalServicesMarketplace());
+    unconfigured.registerProvider({ providerId: "p", displayName: "P" });
+    unconfigured.registerMachine({ machineId: "m", providerId: "p", serviceType: "x", model: "m1", endpointRef: "sim://m" });
+    assert.throws(() => unconfigured.deactivateMachine("m", "attacker"), /IOT_ADMIN_AUTH_REQUIRED/);
+    assert.throws(() => unconfigured.deactivateMachine("m"), /IOT_ADMIN_AUTH_REQUIRED/);
+
+    const iot = new IoTM2MService(new DigitalServicesMarketplace(), { adminAuthorizer: (id) => id === "admin" });
+    iot.registerProvider({ providerId: "p", displayName: "P" });
+    iot.registerMachine({ machineId: "m", providerId: "p", serviceType: "x", model: "m1", endpointRef: "sim://m" });
+    assert.throws(() => iot.deactivateMachine("m", "attacker"), /IOT_ADMIN_AUTH_REQUIRED/);
+    assert.throws(() => iot.deactivateProvider("p", "attacker"), /IOT_ADMIN_AUTH_REQUIRED/);
+    iot.deactivateMachine("m", "admin");
+    iot.deactivateProvider("p", "admin");
+    assert.throws(() => iot.registerMachine({ machineId: "m2", providerId: "p", serviceType: "x", model: "m1", endpointRef: "sim://m2" }), /IOT_PROVIDER_INACTIVE/);
+  });
+
+  it("includes reservation deposit and gas fee in IoT hold", () => {
+    let now = 1_000_000;
+    const marketplace = new DigitalServicesMarketplace({ now: () => now, reservationDeposit: 25n });
+    const iot = new IoTM2MService(marketplace, { now: () => now });
+    iot.registerProvider({ providerId: "p", displayName: "P" });
+    iot.registerMachine({ machineId: "m", providerId: "p", serviceType: "x", model: "m1", endpointRef: "sim://m" });
+    const listing = marketplace.publishListing({ providerId: "p", title: "iot", description: "iot", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 100n, capacity: 1n });
+    const r = iot.requestService({ buyerId: "buyer", listingId: listing.listingId, machineId: "m", quantity: 1n });
+    const held = iot.hold(r.requestId);
+    assert.equal(held.heldAmount, 125n);
   });
 });
