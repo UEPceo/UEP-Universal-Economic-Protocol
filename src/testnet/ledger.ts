@@ -6,7 +6,7 @@ import { Fr } from "../core/field.ts";
 import { ACCOUNT_DEPTH } from "../core/smt.ts";
 import { NullifierSet } from "../core/nullifier.ts";
 import { SparseMerkleTree } from "../core/smt.ts";
-import { applySettlements, markConflicts, reconcile, settlementRoot } from "../core/reconciliation.ts";
+import { markConflicts, reconcile, settlementRoot } from "../core/reconciliation.ts";
 import { assetsForNetwork, findAsset } from "../core/assets.ts";
 import { hAccount, hLeaf } from "../core/hash.ts";
 import { creatorFee, requiredSenderDebit } from "../core/fee.ts";
@@ -477,7 +477,8 @@ export class UepLedger {
 
   /**
    * Queue a conflicting spend of the same notes (developer / adversarial).
-   * Used to exercise UEP-009. Does not apply state until reconcile().
+   * Used to exercise UEP-009. reconcilePending() validates queued spends but never
+   * applies or settles them; see reconcilePending().
    */
   queueConflict(tx: UepTransaction): void {
     this.pending.push(tx);
@@ -497,31 +498,44 @@ export class UepLedger {
     if (ins.some((n, i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) return { error: { code: "NOTE_OPENING", message: "Pending note commitment mismatch." } };
     const inputTotal = ins.reduce((a, n) => a + n.amount, 0n);
     const outputTotal = outs.reduce((a, n) => a + n.amount, 0n);
-    if (inputTotal !== tx.amount + tx.fee + outputTotal) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction does not conserve value." } };
+    if (outputTotal !== inputTotal - tx.fee || inputTotal < tx.amount + tx.fee) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction does not conserve value." } };
     return { tx };
   }
 
-  reconcilePending(): { settlements: ReturnType<typeof reconcile>; root: Fr } {
+  reconcilePending(): {
+    settlements: ReturnType<typeof reconcile>;
+    root: Fr;
+    queued: UepTransaction[];
+    rejected: Array<{ txId: string; code: SubmitError["code"]; message: string }>;
+  } {
     // LOCAL_FINAL transactions have already mutated balances and the nullifier set.
     // They are not eligible to be overturned by a later pending conflict.
-    // Reconcile only pending transactions, and deterministically invalidate any
-    // pending spend whose nullifier is already committed locally.
+    //
+    // Pending transactions cannot be applied here: the development MAC can only be
+    // verified with the sender's secret, so reconciliation has no way to authenticate
+    // a pending spend. Therefore:
+    //   - invalid envelopes (bad commitment, notes, fee, value, or an already
+    //     committed nullifier) are rejected and removed from the queue;
+    //   - structurally valid ones STAY queued in phase LOCAL_VALID (never SETTLED
+    //     without a state transition), flagged `inConflict` when several queued
+    //     spends share a nullifier. They must be applied through submit().
     const committedNullifiers = new Set(this.txs.map((t) => t.nullifier.toHex()));
-    const pendingCandidates = this.pending.filter((t) => !committedNullifiers.has(t.nullifier.toHex()));
+    const rejected: Array<{ txId: string; code: SubmitError["code"]; message: string }> = [];
     const validCandidates: UepTransaction[] = [];
-    for (const candidate of pendingCandidates) {
+    for (const candidate of this.pending) {
+      if (committedNullifiers.has(candidate.nullifier.toHex())) {
+        rejected.push({ txId: candidate.txId.toHex(), code: "REPLAY", message: "Nullifier already committed locally." });
+        continue;
+      }
       const check = this.validatePending(candidate);
-      if (check.ok) validCandidates.push(candidate);
+      if ("tx" in check) validCandidates.push(candidate);
+      else rejected.push({ txId: candidate.txId.toHex(), code: check.error.code, message: check.error.message });
     }
-    const marked = markConflicts(validCandidates);
-    const settlements = reconcile(marked);
-    const applied = applySettlements(marked, settlements);
-    for (const t of applied) {
-      if (!this.txs.some((x) => x.txId.eq(t.txId))) this.txs.push(t);
-    }
-    this.pending = [];
+    const queued = markConflicts(validCandidates).map((t) => ({ ...t, phase: "LOCAL_VALID" as const }));
+    this.pending = queued;
     this.lastReconcileAt = Date.now();
-    return { settlements, root: settlementRoot(settlements) };
+    const settlements: ReturnType<typeof reconcile> = [];
+    return { settlements, root: settlementRoot(settlements), queued: queued.map((t) => ({ ...t })), rejected };
   }
 
   snapshot() {

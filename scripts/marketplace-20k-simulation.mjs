@@ -20,7 +20,7 @@ for(let i=0;i<20000;i++){
     const o2=m.acceptOrder({listingId:l.listingId,buyerId:buyer,quantity:1n,idempotencyKey:idem}); if(o2.orderId===o.orderId) idempotent++;
     m.fundOrder(o.orderId,o.grossAmount,`fund-${i}`); fund++;
     m.deliver(o.orderId,l.providerId,Buffer.from(`LICENSE:${i}`),`deliver-${i}`); delivered++;
-    m.settle(o.orderId); settled++;
+    m.settle(o.orderId,buyer); settled++;
     if(i%100===0) m.recordSellerReview({orderId:o.orderId,buyerId:buyer,rating:(i%5+1)});
   } catch(e){ errors++; }
 }
@@ -31,3 +31,4 @@ let hotAccepted=0, hotRejected=0;
 for(let i=0;i<1000;i++){try{m.acceptOrder({listingId:hot.listingId,buyerId:`hot-${i}`,quantity:1n,idempotencyKey:`hot-${i}`});hotAccepted++;}catch{hotRejected++;}}
 const t2=performance.now();
 console.log(JSON.stringify({users:20000,regions,providers:200,listings:listings.length,listingFailures,accepted,fund,delivered,settled,cancelled,errors,idempotentReplayChecks:idempotent,hotCapacity:100,hotAccepted,hotRejected,hotRemaining:m.getListing(hot.listingId).available,totalTreasuryEUR:String(m.treasury.totalOf('EUR')),durationMs:Math.round(t2-start),mainFlowMs:Math.round(t1-t0),contentionMs:Math.round(t2-t1),orders:m.listOrders().length},(k,v)=>typeof v==='bigint'?v.toString():v,2));
+if(errors>0||listingFailures>0) process.exitCode=1;

@@ -514,8 +514,11 @@ export class DigitalServicesMarketplace {
 
   private enqueueReservation(order: ServiceOrder): void {
     if (order.reservationExpiresAt === undefined) return;
-    this.reservationQueue.push({ at: order.reservationExpiresAt, orderId: order.orderId });
-    this.reservationQueue.sort((a, b) => a.at - b.at);
+    // Binary insertion keeps the queue ordered in O(log n) comparisons (no full re-sort per order).
+    const entry = { at: order.reservationExpiresAt, orderId: order.orderId };
+    let lo = 0, hi = this.reservationQueue.length;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (this.reservationQueue[mid]!.at <= entry.at) lo = mid + 1; else hi = mid; }
+    this.reservationQueue.splice(lo, 0, entry);
   }
 
   private decrementActiveReservation(buyerId: string): void {
