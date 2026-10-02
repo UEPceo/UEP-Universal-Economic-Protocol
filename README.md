@@ -190,7 +190,7 @@ The security regression suite is part of `npm test`. It covers the public harden
 npm run test:protocol
 ```
 
-### Run only Marketplace tests
+### Run only Marketplace tests (including IoT/M2M)
 
 ```bash
 npm run test:marketplace

@@ -2,20 +2,22 @@
 
 ## 0.4.0-public-iot-m2m — 2026-10-02
 
-Public repository updated with the agreed Marketplace + IoT/M2M implementation and security hardening.
+Public repository updated with the agreed Marketplace + IoT/M2M implementation and security hardening, addressing part of the external audit of v0.3.2 (`fde6e26`).
 
 ### Ledger
+
 - Full 254-bit BN254 account/nullifier SMT keys.
 - Fee-aware change calculation.
 - Transaction-carried input/output notes with commitment verification.
 - Snapshot root and note/nullifier integrity validation.
 - Security-policy state retained by snapshots.
-- Pending transactions validated before reconciliation.
+- Pending transactions are validated during reconciliation: invalid envelopes are rejected; valid ones stay queued (never marked settled without applying the transfer) until applied through authenticated `submit()`.
 - Zero-value transfers rejected.
 
 ### Marketplace
+
 - IoT/M2M service category.
-- Authenticated order access and settlement actions.
+- Actor identity required for order access and settlement actions.
 - Delivered orders cannot be cancelled or expired.
 - Reserved legacy admin identity blocked.
 - Reservation deposit/identity limits and ordered expiration queue.
@@ -23,11 +25,32 @@ Public repository updated with the agreed Marketplace + IoT/M2M implementation a
 - Treasury withdrawal authorization verification.
 
 ### IoT/M2M
+
 - Provider and machine registration.
 - Optional Ed25519 machine identity.
 - Deterministic canonical CBOR telemetry.
 - Sequence, nonce, replay and freshness protection.
 - Marketplace-backed HOLD → delivery → verification → settlement lifecycle.
+
+### Fixed during integration
+
+- Pending reconciliation silently dropped every pending transaction (result check never matched) and its value-conservation check double-counted the amount.
+- The 20k Marketplace simulation did not pass a settlement actor (all 20,000 settlements failed) and exited successfully on errors; it now settles all orders and exits non-zero on any error.
+- The reservation-expiry queue was fully re-sorted on every order (20k orders took ~3.2 s); it now uses sorted insertion (~60 ms).
+- `ledger-hardening.test.ts` ran twice (in both protocol and marketplace suites); it now runs once, in the protocol suite.
+
+### Known open issues
+
+- Sender authentication is still a development MAC that requires the spender's secret on the node, and `requireProof` can still be disabled.
+- Multi-input spends still insert a single nullifier.
+- Pending/offline transactions cannot yet be applied by reconciliation (they need authenticated `submit()`).
+- Snapshot restore does not check that unspent notes sum to balances or that the nullifier `seen` set matches the tree.
+- Input notes carried by a transaction are not checked for membership in the receiving ledger (no note-commitment tree).
+- Marketplace identities are caller-supplied strings; reservations are free by default (deposit 0) and sybil identities are not limited; `acceptOrder` with an existing `orderId` returns that order to any caller.
+- Gas-quote expiry is not checked against the Paymaster's own quote.
+- Testnet and Marketplace fees still round down to zero for small amounts.
+- The ZK witness contract is unchanged (not wired, no u64 range checks).
+- IoT/M2M was not covered by the external audit of v0.3.2.
 
 This remains a local/testnet reference implementation; production distributed infrastructure and production ZK are not claimed.
 
