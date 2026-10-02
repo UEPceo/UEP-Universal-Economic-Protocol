@@ -78,7 +78,10 @@ test("address v2: checksum, version, HRP, network, case and legacy errors", asyn
     const c = addr[i] === "q" ? "p" : "q";
     assert.equal(err(addr.slice(0, i) + c + addr.slice(i + 1)), "ADDRESS_CHECKSUM");
   }
-  assert.equal(err(addr.slice(0, 30) + addr[31] + addr[30] + addr.slice(32)), "ADDRESS_CHECKSUM"); // transposition
+  // Transposition of two adjacent, different data characters (swapping equal ones is a no-op).
+  let t = 30;
+  while (addr[t] === addr[t + 1]) t++;
+  assert.equal(err(addr.slice(0, t) + addr[t + 1] + addr[t] + addr.slice(t + 2)), "ADDRESS_CHECKSUM");
   // Correct checksum, unsupported version byte.
   const payload = Buffer.from([0x02, ...Buffer.from(addressNetworkTag(NET), "hex"), ...Buffer.from(a.accountId.toHex().slice(2), "hex")]);
   assert.equal(bech32mEncode(ADDRESS_HRP, payload), addr);
