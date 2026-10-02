@@ -3,13 +3,13 @@
   "version": "0.4.7-public-iot-m2m",
   "private": false,
   "type": "module",
-  "description": "Public reproducible UEP testnet Marketplace implementation with IoT/M2M service integration.",
+  "description": "Public reproducible UEP testnet: hardened core, Marketplace and IoT/M2M, plus research labs (consensus, ZK/Groth16 dev circuit, agents, service API).",
   "engines": {
     "node": ">=22.6"
   },
   "scripts": {
     "test": "npm run test:protocol && npm run test:marketplace",
-    "test:all": "npm test && npm run smoke:testnet && npm run quickstart && npm run simulate:20k",
+    "test:all": "npm test && npm run smoke:testnet && npm run quickstart && npm run simulate:20k && npm run test:rust && npm run build:uep-zk && npm run test:lab",
     "test:protocol": "node --experimental-strip-types --test src/testnet/*.test.ts src/identity/*.test.ts src/core/uep-smt-key-hardening.test.ts",
     "test:marketplace": "node --experimental-strip-types --test src/marketplace/*.test.ts src/service/iot-m2m.test.ts",
     "smoke:testnet": "node --experimental-strip-types scripts/testnet-smoke.ts",
@@ -17,7 +17,11 @@
     "simulate:20k": "node --experimental-strip-types scripts/marketplace-20k-simulation.mjs",
     "test:scale": "node --experimental-strip-types --test src/marketplace/scale-20k.test.ts",
     "example": "node --experimental-strip-types examples/first-transaction.ts",
-    "test:iot": "node --experimental-strip-types --test src/service/iot-m2m.test.ts"
+    "test:iot": "node --experimental-strip-types --test src/service/iot-m2m.test.ts",
+    "test:rust": "bash scripts/test-rust.sh",
+    "build:uep-zk": "bash scripts/build-uep-zk.sh",
+    "test:lab": "node scripts/test-lab.mjs",
+    "smoke:zk": "node scripts/zk-local-smoke.mjs"
   },
   "license": "Apache-2.0"
 }

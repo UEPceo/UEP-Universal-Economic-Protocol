@@ -1,0 +1,24 @@
+{
+  "version": "37.1",
+  "status": "TEMPLATE — fill with UepPoseidon / uep-zk offline",
+  "canonicalDepth": 32,
+  "formula": "note_commitment = H_LEAF(H_LEAF(owner, H_LEAF(asset, amount)), blinding)",
+  "hash": "BN254-Poseidon-t3-alpha5",
+  "cases": [
+    {
+      "id": "note-1",
+      "owner": "0x2a",
+      "asset": "0x1",
+      "amount": "1000",
+      "blinding": "0x0",
+      "expectedLeaf": "FILL_FROM_RUST",
+      "expectedIndexD32": "FILL_FROM_RUST"
+    }
+  ],
+  "smt": {
+    "depth": 32,
+    "leaves": [],
+    "expectedRoot": "FILL_FROM_RUST"
+  },
+  "notes": "Generate with: cargo test -p uep-26-spend-circuit -- --nocapture (note_commitment UepPoseidon) and native_smt root."
+}

@@ -1,0 +1,3 @@
+# Cargo settings for building uep-zk from source (crates.io).
+[net]
+git-fetch-with-cli = true

@@ -1,0 +1,27 @@
+[package]
+name = "uep-22-final-poseidon-r1cs"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# IMPORTANT:
+# This prototype pins the Arkworks 0.3-era Poseidon gadget stack because the
+# published arkworks-r1cs-gadgets PoseidonGadget API used by the reference
+# implementation is tied to that API generation. Do not mix it with 0.4/0.5
+# Poseidon parameter types without a cross-vector test.
+
+[dependencies]
+ark-bn254 = "0.3"
+ark-ff = "0.3"
+ark-relations = "0.3"
+ark-r1cs-std = "0.3"
+ark-groth16 = "0.3"
+ark-crypto-primitives = "0.3"
+arkworks-native-gadgets = "1"
+arkworks-r1cs-gadgets = "1"
+arkworks-utils = "1"
+ark-std = "0.3"
+thiserror = "1"
+
+[dev-dependencies]
+rand = "0.8"

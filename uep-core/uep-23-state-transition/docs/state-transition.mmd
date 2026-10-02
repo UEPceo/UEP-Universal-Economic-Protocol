@@ -1,0 +1,12 @@
+flowchart TD
+  A[Old State Root] --> B[SMT Membership Proof]
+  B --> C[Old Sender Leaf]
+  C --> D[Balance Conservation]
+  D --> E[New Sender Leaf]
+  E --> F[New State Root]
+  D --> G[Fee = floor(amount / 1000)]
+  G --> H[Treasury Commitment = Poseidon(domain, fee)]
+  D --> I[Nullifier = Poseidon(secret, nonce)]
+  H --> J[Protocol Fee Accumulator]
+  I --> K[Global Nullifier Set]
+  F --> L[Groth16 / Nova]

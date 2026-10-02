@@ -22,6 +22,7 @@ The repository is intended for developers, researchers, security testers and ear
 | Version | `0.4.7-public-iot-m2m` on `main` (latest tag `v0.4.6-public-iot-m2m`) |
 | Tests | protocol **79/79**, Marketplace + IoT/M2M **104/104**, scale **3/3**, IoT **23/23** |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
+| Research labs | Experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
 | CI | `npm run test:all` on Node.js 22.x and 24.x |
 | Network | Local, single-node, in-process **testnet only** |
@@ -271,6 +272,7 @@ It does not provide:
 
 - Node.js **22.6 or newer**
 - Git
+- Rust **1.85** (`cargo`), only for the research labs in `npm run test:all` (`npm test` does not need it)
 
 The public reference layer intentionally avoids requiring the large private development workspace or a production proving ceremony.
 
@@ -288,9 +290,12 @@ npm run test:all
 1. `npm test`: protocol/testnet (79), Marketplace + IoT/M2M (104, including the 23 IoT and 3 scale tests);
 2. `npm run smoke:testnet`: prints `SMOKE OK`;
 3. `npm run quickstart`: the first-transaction example;
-4. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`.
+4. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`;
+5. `npm run test:rust`: Rust tests of the research crates in `uep-core/` (Poseidon, prototype, UEP-26 spend circuit);
+6. `npm run build:uep-zk`: builds the research Groth16 prover `uep-zk` from source into `uep-core/target/`;
+7. `npm run test:lab`: the research labs in `src/lab/`, `src/agent/` and the service/API lab in `src/service/` (see [`docs/LABS.md`](./docs/LABS.md)).
 
-It needs no network access or private keys and takes about a minute. CI runs the same command on Node.js 22.x and 24.x. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
+Steps 1–4 need no network access and take about a minute. Steps 5–7 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs the same command on Node.js 22.x and 24.x. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
 
 ### Minimal reproducible verification
 
@@ -426,7 +431,9 @@ Repository layout:
 │   ├── network/              # Public TESTNET profile only
 │   ├── testnet/              # Local UEP ledger reference implementation + tests
 │   ├── marketplace/          # Marketplace business layer (signed actions, disputes) + tests
-│   └── service/              # Content integrity + IoT/M2M service layer
+│   ├── lab/                  # Research labs (experimental, not the testnet), see docs/LABS.md
+│   ├── agent/                # Research lab: agent foundation
+│   └── service/              # Content integrity + IoT/M2M service layer (+ service/API research lab)
 │       ├── content-hash.ts
 │       ├── iot-m2m.ts
 │       ├── iot-m2m-codec.ts
@@ -439,13 +446,19 @@ Repository layout:
 │
 ├── scripts/
 │   ├── testnet-smoke.ts
-│   └── marketplace-20k-simulation.mjs
+│   ├── marketplace-20k-simulation.mjs
+│   ├── test-rust.sh / build-uep-zk.sh   # research Rust crates and uep-zk prover
+│   ├── test-lab.mjs                     # research lab runner (+ lab-known-issues.json)
+│   └── zk-local-smoke.mjs
+│
+├── uep-core/                 # Research Rust crates, specs, vectors and benchmarks (experimental)
 │
 └── docs/
     ├── API.md            # changed public signatures (v0.4.3 – v0.4.7)
     ├── ARCHITECTURE.md   # layers A–N, status table, diagrams
     ├── THREAT-MODEL.md
-    └── REPRODUCIBILITY.md
+    ├── REPRODUCIBILITY.md
+    └── LABS.md           # research labs: scope, how to run, known differences from the core
 ```
 
 The structure is intentionally much smaller than the internal development workspace.
@@ -590,6 +603,8 @@ The internal project contains additional ZK research and implementation work, bu
 - internal ZK worker deployment configuration;
 - confidential audit material.
 
+The research Groth16 spend circuit (UEP-26) and its TypeScript bridge are published as **labs** under `uep-core/` and `src/lab/` (see [`docs/LABS.md`](./docs/LABS.md)). They use development keys generated from fixed seeds on each run, have no trusted setup, and do not provide production soundness. They are not used by the testnet transaction path.
+
 If a future public release reaches a production-cryptographic milestone, it should be published as a separately reviewed and versioned cryptographic release rather than silently upgrading the claims of this repository.
 
 ---
@@ -598,7 +613,7 @@ If a future public release reaches a production-cryptographic milestone, it shou
 
 The internal UEP project investigates multi-node consensus, delayed networking, DTN-style transport and interplanetary reconciliation.
 
-Those areas are **research tracks**, not features that this repository claims to provide as a live network.
+Those areas are **research tracks**, not features that this repository claims to provide as a live network. Some of the multi-node consensus experiments are published as labs in `src/lab/` (local processes on one machine; see [`docs/LABS.md`](./docs/LABS.md)).
 
 In particular:
 
@@ -624,7 +639,7 @@ The public repository does **not** contain the internal master workspace, includ
 - Grok/agent operational prompts and private workflow files;
 - private PWA/authentication infrastructure;
 - internal screenshots and development artifacts;
-- experimental consensus branches not required for the public reference testnet;
+- experimental consensus branches that have not been reviewed for publication (the reviewed ones are in `src/lab/`, see [`docs/LABS.md`](./docs/LABS.md));
 - private deployment tooling;
 - unrelated application code.
 

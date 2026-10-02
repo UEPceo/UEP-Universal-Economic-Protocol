@@ -1,0 +1,72 @@
+{
+  "benchmarkVersion": "35.7.1",
+  "seed": 20260928,
+  "generatedAtIso": "2026-09-28T15:00:32.487Z",
+  "note": "LAB only — not production network TPS",
+  "runs": [
+    {
+      "nodes": 4,
+      "environment": "LAB / single-process / SimulatedNetwork",
+      "classicBftSize": true,
+      "wallClockMs": 48.020512999999994,
+      "messages": 48,
+      "delivered": 48,
+      "bytes": 72939,
+      "proposals": 1,
+      "votes": 12,
+      "commits": 16,
+      "finalities": 4,
+      "honestSameRoot": true,
+      "conflictingFinality": false,
+      "note": "consensusBytes approx messages with PROPOSAL/VOTE/CERT; data plane includes headers/bodies"
+    },
+    {
+      "nodes": 8,
+      "environment": "LAB / single-process / SimulatedNetwork",
+      "classicBftSize": false,
+      "wallClockMs": 17.687505999999985,
+      "messages": 84,
+      "delivered": 84,
+      "bytes": 50267,
+      "proposals": 1,
+      "votes": 56,
+      "commits": 0,
+      "finalities": 0,
+      "honestSameRoot": true,
+      "conflictingFinality": false,
+      "note": "consensusBytes approx messages with PROPOSAL/VOTE/CERT; data plane includes headers/bodies"
+    },
+    {
+      "nodes": 16,
+      "environment": "LAB / single-process / SimulatedNetwork",
+      "classicBftSize": false,
+      "wallClockMs": 789.51552,
+      "messages": 780,
+      "delivered": 780,
+      "bytes": 3357105,
+      "proposals": 1,
+      "votes": 240,
+      "commits": 256,
+      "finalities": 16,
+      "honestSameRoot": true,
+      "conflictingFinality": false,
+      "note": "consensusBytes approx messages with PROPOSAL/VOTE/CERT; data plane includes headers/bodies"
+    },
+    {
+      "nodes": 32,
+      "environment": "LAB / single-process / SimulatedNetwork",
+      "classicBftSize": false,
+      "wallClockMs": 166.44868099999985,
+      "messages": 1116,
+      "delivered": 1116,
+      "bytes": 739629,
+      "proposals": 1,
+      "votes": 992,
+      "commits": 0,
+      "finalities": 0,
+      "honestSameRoot": true,
+      "conflictingFinality": false,
+      "note": "consensusBytes approx messages with PROPOSAL/VOTE/CERT; data plane includes headers/bodies"
+    }
+  ]
+}

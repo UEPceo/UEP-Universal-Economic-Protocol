@@ -17,7 +17,7 @@ jobs:
   test:
     name: Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +33,21 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+
+      - name: Set up Rust 1.85.1 (uep-core lab crates)
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup default 1.85.1
+          cargo --version
+
+      - name: Cache cargo registry and uep-core/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            uep-core/target
+          key: cargo-${{ runner.os }}-1.85.1-${{ hashFiles('uep-core/**/Cargo.lock') }}
 
       - name: Install dependencies
         run: npm ci

@@ -15,6 +15,7 @@ This document defines what may be published in the public repository and what re
 - Reproducibility scripts and examples.
 - Public-facing architecture, roadmap and threat-model documentation (`docs/ARCHITECTURE.md`, `ROADMAP.md`, `docs/THREAT-MODEL.md`).
 - Per-release changelog and public security remediation notes for findings that have been fixed and disclosed.
+- Research labs (`src/lab/`, `src/agent/`, the service/API lab in `src/service/`, `uep-core/`), after review for publication and clearly marked as experimental. They are not part of the testnet reference path. See `docs/LABS.md`.
 
 ## Excluded
 
@@ -26,7 +27,9 @@ This document defines what may be published in the public repository and what re
 - Details of vulnerabilities that are not yet fixed and disclosed (report and track them privately, see `SECURITY.md`).
 - Internal agent prompts, Grok workflows and operational instructions.
 - Internal PWA/authentication/application infrastructure unrelated to the public testnet.
-- Internal consensus experiments that are not required to reproduce the public local testnet.
+- Internal consensus experiments that have not been reviewed for publication.
+- Prebuilt binaries (for example the `uep-zk` prover); build them from source.
+- Exploit reproductions and test suites written for findings that are not yet fixed and disclosed.
 - Internal screenshots, temporary artifacts and development-only outputs.
 - Personal data and confidential third-party information.
 

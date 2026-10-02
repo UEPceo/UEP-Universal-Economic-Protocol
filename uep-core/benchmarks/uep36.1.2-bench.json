@@ -1,0 +1,17 @@
+{
+  "version": "36.1.2",
+  "seed": 3612,
+  "transactions": 200,
+  "waves": 25,
+  "digestAggregationMs": 1.2797139999999843,
+  "conflictAnalysisMs": 1.3649130000000014,
+  "sequentialExecutionMs": 0.43188299999999913,
+  "scheduledExecutionMs": 0.49802199999999175,
+  "stateRootComputationMs": 0.05277599999999438,
+  "sequentialRoot": "1a35ee1f2c7d1c08e4e837d0fa6f1380c92ab2730f627e53c214ccc657f93cc9",
+  "scheduledRoot": "1a35ee1f2c7d1c08e4e837d0fa6f1380c92ab2730f627e53c214ccc657f93cc9",
+  "aggregateDigest": "c4beef4faa161e1be1b9098edae443a49e9b1921fe4439602a28ff32d5eba4e3",
+  "rootsMatch": true,
+  "heightsEqual": true,
+  "note": "LAB only; scheduled path is sequential waves, not concurrent"
+}

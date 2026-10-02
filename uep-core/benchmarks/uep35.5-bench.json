@@ -1,0 +1,44 @@
+[
+  {
+    "n": 100,
+    "environment": "LAB / single-process / no-network",
+    "intakeMs": 0.5088570000000061,
+    "batchingMs": 0.25316399999999817,
+    "conflictMs": 4.684986999999978,
+    "sequentialExecMs": 5.278074000000004,
+    "parallelExecMs": 5.194909999999993,
+    "waveCount": 20,
+    "seqCommitment": "cbb6a83ddc171925024a28940098be2b53a4c4563bd6db8c2f8a9bec7bfad7ac",
+    "parCommitment": "cbb6a83ddc171925024a28940098be2b53a4c4563bd6db8c2f8a9bec7bfad7ac",
+    "commitmentsMatch": true,
+    "note": "Execution sample capped at 200 TX for wall-time; intake/batching full n"
+  },
+  {
+    "n": 1000,
+    "environment": "LAB / single-process / no-network",
+    "intakeMs": 1.1011190000000113,
+    "batchingMs": 1.0282029999999907,
+    "conflictMs": 89.97413400000002,
+    "sequentialExecMs": 4.190848000000017,
+    "parallelExecMs": 5.710509000000002,
+    "waveCount": 97,
+    "seqCommitment": "04e377ffca4042bb2a5f777b03c09497d708935679ddadf7f7b742c8ca1684e8",
+    "parCommitment": "04e377ffca4042bb2a5f777b03c09497d708935679ddadf7f7b742c8ca1684e8",
+    "commitmentsMatch": true,
+    "note": "Execution sample capped at 200 TX for wall-time; intake/batching full n"
+  },
+  {
+    "n": 10000,
+    "environment": "LAB / single-process / no-network",
+    "intakeMs": 3.7001060000000052,
+    "batchingMs": 6.132903999999996,
+    "conflictMs": 7831.060708,
+    "sequentialExecMs": 3.492529000000104,
+    "parallelExecMs": 5.389199999999619,
+    "waveCount": 402,
+    "seqCommitment": "339dbdda200c874c3c8b3e6c26a2d708dee4f8e4c6dfc30346ee18d3178370a5",
+    "parCommitment": "339dbdda200c874c3c8b3e6c26a2d708dee4f8e4c6dfc30346ee18d3178370a5",
+    "commitmentsMatch": true,
+    "note": "Execution sample capped at 200 TX for wall-time; intake/batching full n"
+  }
+]

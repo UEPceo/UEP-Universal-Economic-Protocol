@@ -1,0 +1,91 @@
+{
+  "benchmarkVersion": "35.6.2",
+  "packageVersion": "unknown",
+  "seed": 20260928,
+  "generatedAtIso": "2026-09-28T14:38:31.539Z",
+  "note": "LAB only — not network TPS. conflictEdgesIndexed = real undirected pairs. wallClock ≠ simulation time.",
+  "scheduler": [
+    {
+      "n": 100,
+      "environment": "LAB / single-process / no-network",
+      "seed": 20260928,
+      "wallClockMs": {
+        "legacy": 5.866297000000003,
+        "indexed": 0.7817849999999851
+      },
+      "simulationTimeMs": null,
+      "waveCount": 20,
+      "maxWave": 5,
+      "conflictEdgesIndexed": 1350,
+      "speedup": 7.503721611440633
+    },
+    {
+      "n": 1000,
+      "environment": "LAB / single-process / no-network",
+      "seed": 20260928,
+      "wallClockMs": {
+        "legacy": 79.658702,
+        "indexed": 5.120790999999997
+      },
+      "simulationTimeMs": null,
+      "waveCount": 96,
+      "maxWave": 15,
+      "conflictEdgesIndexed": 48915,
+      "speedup": 15.555936963644884
+    },
+    {
+      "n": 10000,
+      "environment": "LAB / single-process / no-network",
+      "seed": 20260928,
+      "wallClockMs": {
+        "legacy": 7328.016731000001,
+        "indexed": 90.94300500000008
+      },
+      "simulationTimeMs": null,
+      "waveCount": 200,
+      "maxWave": 50,
+      "conflictEdgesIndexed": 1475000,
+      "speedup": 80.57812396896269
+    },
+    {
+      "n": 50000,
+      "environment": "LAB / single-process / no-network",
+      "seed": 20260928,
+      "wallClockMs": {
+        "legacy": null,
+        "indexed": 2737.201720000001
+      },
+      "simulationTimeMs": null,
+      "waveCount": 1000,
+      "maxWave": 50,
+      "conflictEdgesIndexed": null,
+      "speedup": null
+    }
+  ],
+  "network": [
+    {
+      "nodes": 10,
+      "environment": "LAB / simulated topology",
+      "wallClockMs": 0.21733300000050804,
+      "attempts": 10,
+      "ok": 9,
+      "failed": 1
+    },
+    {
+      "nodes": 50,
+      "environment": "LAB / simulated topology",
+      "wallClockMs": 0.06542799999806448,
+      "attempts": 50,
+      "ok": 46,
+      "failed": 4
+    },
+    {
+      "nodes": 100,
+      "environment": "LAB / simulated topology",
+      "wallClockMs": 0.08520700000008219,
+      "attempts": 100,
+      "ok": 93,
+      "failed": 7
+    }
+  ]
+}

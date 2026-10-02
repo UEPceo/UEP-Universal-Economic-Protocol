@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "field": "BN254 scalar Fr",
+  "field_encoding": "32-byte big-endian canonical hex",
+  "permutation": "Poseidon t=3 alpha=5, arkworks-utils Curve::Bn254 (poseidon_bn254_x5_3)",
+  "domain_composition": "H(d,a,b)=Poseidon(Poseidon(Fr(d),a),b)",
+  "vectors": [
+    {
+      "id": "PV-001",
+      "kind": "poseidon2input",
+      "inputs": ["0x1", "0x2"],
+      "expected_be_hex": "0x115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-002",
+      "kind": "poseidon2input",
+      "inputs": ["0x7", "0xb"],
+      "expected_be_hex": "0x2e7148e460381c2100d9e589706223b5907de3231ccd752e7807a83e8a6603d8",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-003",
+      "kind": "domain",
+      "domain": 1,
+      "domain_name": "Account",
+      "inputs": ["0x1", "0x2"],
+      "expected_be_hex": "0x2532efcfe78ab9af5e8c8e4ee0b167d6cb0e36610b6f0a63f24355aa3c3913d8",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-004",
+      "kind": "domain",
+      "domain": 2,
+      "domain_name": "Nullifier",
+      "inputs": ["0x1", "0x2"],
+      "expected_be_hex": "0x2ad927924b3ad565b8672e32fd2d67d45496bd17d39b2c1e560092a939594f4b",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-005",
+      "kind": "domain",
+      "domain": 3,
+      "domain_name": "MerkleNode",
+      "inputs": ["0x1", "0x2"],
+      "expected_be_hex": "0x0581acb2e2c47e75eac65918e47495a3fdc38cd2c8bff2f65419082a5fd4bb83",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-006",
+      "kind": "domain",
+      "domain": 4,
+      "domain_name": "Leaf",
+      "inputs": ["0x1", "0x2"],
+      "expected_be_hex": "0x2046fd805613ec436c2ec436be6e3bc4867693510f55193052f06bcac7b229fc",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-007",
+      "kind": "domain",
+      "domain": 5,
+      "domain_name": "Transaction",
+      "inputs": ["0x1", "0x2"],
+      "expected_be_hex": "0x1d8e9b7b988bea72be2170e46368fa1e5d8d64ee7a6ec8d34eaf7d650544df91",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-008",
+      "kind": "note_commitment",
+      "inputs": {
+        "owner": "0x1",
+        "asset": "0x2",
+        "amount": "0x3e8",
+        "blinding": "0x3"
+      },
+      "expected_be_hex": "0x134d9216314aa1d02feb32f6f7baff462634c35463af489e7d6d1074c7b6e67e",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-008b",
+      "kind": "note_nonce",
+      "inputs": {
+        "commitment": "0x134d9216314aa1d02feb32f6f7baff462634c35463af489e7d6d1074c7b6e67e",
+        "blinding": "0x3"
+      },
+      "expected_be_hex": "0x0165395b5bcce6dc8bfece0962a959b6239cfd347041ebd7a155315e7c7d8310",
+      "status": "GOLDEN"
+    },
+    {
+      "id": "PV-009",
+      "kind": "nullifier",
+      "inputs": {
+        "secret": "0xa",
+        "nonce": "0x0165395b5bcce6dc8bfece0962a959b6239cfd347041ebd7a155315e7c7d8310"
+      },
+      "expected_be_hex": "0x0a405457a3d4d5b33a6c81511b28a15945d6dc7ba8bcbeb86b63ed9cd630a4b8",
+      "status": "GOLDEN"
+    }
+  ],
+  "generated_by": "uep21-poseidon-r1cs print_uep26_poseidon_vectors (arkworks-utils 1.0.1 + poseidon_bn254_x5_3)",
+  "generated_at": "2026-09-24"
+}

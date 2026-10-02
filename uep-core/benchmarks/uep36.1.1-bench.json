@@ -1,0 +1,18 @@
+{
+  "version": "36.1.1",
+  "seed": 3611,
+  "nodes": 0,
+  "batches": 50,
+  "transactions": 200,
+  "waves": 25,
+  "conflictsImplied": true,
+  "digestAggregationMs": 5.318452999999977,
+  "conflictAnalysisMs": 3.6765709999999956,
+  "waveConstructionIncludedInConflictMs": true,
+  "parallelSafeSchedulingMs": 7.333237999999994,
+  "stateRootMs": 0.0007890000000259079,
+  "rootsMatch": true,
+  "sampleAggregateDigest": "221b019b575d30c5",
+  "sampleStateRoot": "fa104d801b1d5f13",
+  "note": "LAB metrics only — not production TPS; scheduling is sequential waves"
+}

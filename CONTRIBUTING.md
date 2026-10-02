@@ -24,7 +24,7 @@ Please read:
 
 ## Local setup
 
-Requires Node.js >= 22.6 (no runtime dependencies):
+Requires Node.js >= 22.6 (no runtime dependencies). The research labs in `npm run test:all` also need Rust 1.85 (`cargo`):
 
 ```bash
 npm ci
@@ -33,7 +33,12 @@ npm test               # protocol + Marketplace + IoT/M2M suites
 npm run smoke:testnet  # deterministic testnet smoke test
 npm run quickstart     # first-transaction example with uep1 addresses
 npm run simulate:20k   # in-process 20k settlement simulation
+npm run test:rust      # research Rust crates (uep-core/)
+npm run build:uep-zk   # build the research uep-zk prover from source
+npm run test:lab       # research labs (src/lab, src/agent, service/API lab), see docs/LABS.md
 ```
+
+Lab code is experimental. Changes to protocol rules belong in `src/core` and `src/testnet` first; labs import those modules rather than copying them.
 
 CI runs `npm run test:all` on Node.js 22.x and 24.x.
 

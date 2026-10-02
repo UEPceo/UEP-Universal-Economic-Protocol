@@ -1,0 +1,25 @@
+{
+  "project": "Universal Economic Protocol",
+  "milestone": "UEP-25",
+  "status": "advanced prototype scaffold",
+  "production_ready": false,
+  "implemented": [
+    "atomic sender-recipient-treasury transition model",
+    "0.1 percent fee policy",
+    "ownership binding interface",
+    "nullifier lifecycle model",
+    "domain-separated hash interface",
+    "sparse Merkle path/update model",
+    "adversarial tests"
+  ],
+  "remaining": [
+    "freeze concrete Poseidon/Poseidon2 parameters",
+    "implement concrete R1CS hash gadget",
+    "implement concrete SMT R1CS gadgets",
+    "complete nullifier non-membership/insertion circuit",
+    "generate real Groth16 proofs",
+    "integrate Nova IVC",
+    "benchmark reproducibly",
+    "testnet node/wallet/network"
+  ]
+}

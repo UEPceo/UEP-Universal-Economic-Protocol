@@ -1,0 +1,45 @@
+[package]
+name = "uep-26-spend-circuit"
+version = "0.8.2"
+edition = "2021"
+license = "Apache-2.0"
+description = "UEP-26/27 spend circuit + Groth16 path"
+
+[dependencies]
+ark-bn254 = "0.3"
+ark-ff = "0.3"
+ark-relations = "0.3"
+ark-r1cs-std = "0.3"
+ark-groth16 = "0.3"
+ark-snark = "0.3"
+ark-serialize = { version = "0.3", features = ["derive"] }
+rand = "0.8"
+sha2 = "0.10"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+uep21-poseidon-r1cs = { path = "../uep-21-poseidon" }
+arkworks-native-gadgets = "1.2.0"
+arkworks-r1cs-gadgets = "1.2.0"
+zeroize = "=1.6.0"
+zeroize_derive = "=1.4.2"
+pest = "=2.7.14"
+proc-macro2 = "=1.0.86"
+quote = "=1.0.37"
+syn = { version = "=2.0.87", features = ["full"] }
+rayon = "=1.10.0"
+rayon-core = "=1.12.1"
+crossbeam-utils = "=0.8.19"
+crossbeam-epoch = "=0.9.18"
+crossbeam-deque = "=0.8.5"
+
+[dev-dependencies]
+ark-std = "0.3"
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "uep-zk"
+path = "src/bin/uep_zk.rs"

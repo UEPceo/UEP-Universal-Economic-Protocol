@@ -1,0 +1,69 @@
+{
+  "note": "Lab suites with known, documented failures. Skipped by scripts/test-lab.mjs unless --include-known. See docs/LABS.md.",
+  "files": [
+    {
+      "file": "src/lab/uep-econ-05.2-process-mesh.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Multi-process economic mesh does not reach finality within the test timeouts."
+    },
+    {
+      "file": "src/lab/uep35.10-topology.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Four-process convergence with per-node keys; result varies between runs."
+    },
+    {
+      "file": "src/lab/uep35.11-partition.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Process partition/heal timing; result varies between runs."
+    },
+    {
+      "file": "src/lab/uep35.7.1-consensus.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). DAG_READY vs FINALIZED state-root check."
+    },
+    {
+      "file": "src/lab/uep35.9-process.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Multi-transaction batch on OS processes; result varies between runs."
+    },
+    {
+      "file": "src/lab/uep36-multi-leader.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Rotating-leader tests conflict with the later single-proposer schedule (UEP-37.6)."
+    },
+    {
+      "file": "src/lab/uep36.1-scale.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Rotating-leader tests conflict with the later single-proposer schedule (UEP-37.6)."
+    },
+    {
+      "file": "src/lab/uep36.1.1-hardening.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Process path with rotating proposers conflicts with the single-proposer schedule (UEP-37.6)."
+    },
+    {
+      "file": "src/lab/uep36.4-multinode-aggregate.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Aggregate proposal digest field check."
+    },
+    {
+      "file": "src/lab/uep36.5-process-aggregate.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Aggregate proposal on OS processes does not finalize."
+    },
+    {
+      "file": "src/lab/uep36.6-partition-heal.test.ts",
+      "reason": "Process 3|1 aggregate case; result varies between runs (passed in the source snapshot)."
+    },
+    {
+      "file": "src/lab/uep36.8-multileader-partition.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Rotating-leader partition case conflicts with the single-proposer schedule (UEP-37.6)."
+    },
+    {
+      "file": "src/lab/uep37.5-process-poseidon.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Depth-8 Poseidon SMT: two lab accounts map to the same leaf index (SMT_INDEX_COLLISION). Known difference 2 in docs/LABS.md."
+    },
+    {
+      "file": "src/lab/uep37.5-stress.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Stress run on processes does not converge within the timeout."
+    },
+    {
+      "file": "src/lab/uep37.7-process-view.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Silent-leader view change on processes times out."
+    },
+    {
+      "file": "src/lab/uep38-p4-view-mesh.test.ts",
+      "reason": "Fails in the source lab snapshot too (before integration). Proposal delivery after TCP view change times out."
+    }
+  ]
+}

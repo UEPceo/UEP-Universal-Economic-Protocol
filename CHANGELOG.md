@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — research labs integration
+
+Publishes the project's research labs next to the testnet so that everything builds and tests with one command. The testnet, Marketplace and IoT/M2M code and their rules are unchanged; no native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged. See [`docs/LABS.md`](./docs/LABS.md).
+
+- Add `src/lab/` (execution engine, node protocol and transport, local consensus experiments, economic labs, address and payment-request labs, network adaptation simulation, ZK bridge), `src/agent/`, a service/API lab in `src/service/`, and the Rust crates and design notes in `uep-core/`. All are experimental. Lab benchmark output goes to `artifacts/`, which is git-ignored.
+- Labs import the hardened primitives from `src/core` instead of carrying their own copies. Where a lab design differs from the core (hash, tree layout, small-amount fee, account ids, v1 addresses), the core wins and the affected lab checks are skipped with a note. The open points are listed in `docs/LABS.md`.
+- `uep-zk` is built from source (`npm run build:uep-zk`); no prebuilt binary is committed.
+- `npm run test:all` now also runs `test:rust`, `build:uep-zk` and `test:lab`. CI installs Rust 1.85.1 and caches the cargo build.
+
 ## 0.4.7-public-iot-m2m — 2026-10-02
 
 Multi-asset hardening of the testnet ledger and the Marketplace, following the external multi-asset (P4) exit-criteria review. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged. Testnet only, single node, same trust model. See [`docs/API.md`](./docs/API.md).
