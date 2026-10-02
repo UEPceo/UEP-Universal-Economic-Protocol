@@ -19,6 +19,10 @@
  * carries `unitsDelivered`; the marketplace only releases an IoT order through
  * the normal settle() path when the delivered telemetry was verified and
  * reports the full contracted quantity. A shortfall goes to a dispute.
+ *
+ * v0.4.6 (UEP-D04/D05): a dispute timeout configured as RELEASE runs the same
+ * guard and refunds the buyer when it fails; units executed per verified
+ * telemetry are reported to the marketplace as consumed capacity.
  */
 import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from "node:crypto";
 import { encodeCanonicalCbor } from "./iot-m2m-codec.ts";
@@ -226,8 +230,12 @@ export class IoTM2MService {
     this.telemetryMaxAgeMs = config.telemetryMaxAgeMs ?? 5 * 60 * 1000;
     this.telemetryMaxFutureSkewMs = config.telemetryMaxFutureSkewMs ?? 30_000;
     this.adminAuthorizer = config.adminAuthorizer;
-    // Normal settlement of IoT orders requires verified, complete telemetry.
-    this.orders = marketplace.attachCategoryService(IOT_M2M_CATEGORY, { settlementGuard: (order) => this.assertSettleable(order) });
+    // Every release of an IoT order (settle, dispute withdrawal, RELEASE timeout)
+    // requires verified, complete telemetry; verified units count as consumed capacity.
+    this.orders = marketplace.attachCategoryService(IOT_M2M_CATEGORY, {
+      settlementGuard: (order) => this.assertSettleable(order),
+      consumedUnits: (order) => this.verifiedUnitsOf(order),
+    });
   }
 
   /** Register an IoT provider (v0.4.4: a registered marketplace identity, provider-signed). */
@@ -509,14 +517,31 @@ export class IoTM2MService {
     return { ...settlement, requestId, contractId: contract.contractId, machineId: request.machineId };
   }
 
-  /** Settlement guard installed on the marketplace for IOT_M2M orders. */
+  /**
+   * Settlement guard installed on the marketplace for IOT_M2M orders: the
+   * delivered report of this order was verified and covers its full quantity.
+   * v0.4.6 (UEP-D04): also gates a dispute timeout configured as RELEASE.
+   */
   private assertSettleable(order: ServiceOrder): void {
     const requestId = this.requestByOrder.get(order.orderId);
     if (!requestId) throw new Error("IOT_VERIFIED_TELEMETRY_REQUIRED");
     const verification = this.verified.get(requestId);
     if (!verification) throw new Error("IOT_VERIFICATION_REQUIRED");
     if (verification.deliveryHash !== order.deliveryHash) throw new Error("IOT_TELEMETRY_NOT_DELIVERED");
-    if (!verification.fullyDelivered) throw new Error("IOT_USAGE_SHORTFALL");
+    if (!verification.fullyDelivered || verification.unitsDelivered !== order.quantity) throw new Error("IOT_USAGE_SHORTFALL");
+  }
+
+  /**
+   * v0.4.6 (UEP-D05): units of the order executed per verified telemetry of the
+   * delivered report (0 without such a verification). The marketplace does not
+   * return these units to the listing's capacity on a refund or split.
+   */
+  private verifiedUnitsOf(order: ServiceOrder): bigint {
+    const requestId = this.requestByOrder.get(order.orderId);
+    if (!requestId) return 0n;
+    const verification = this.verified.get(requestId);
+    if (!verification || verification.deliveryHash !== order.deliveryHash) return 0n;
+    return verification.unitsDelivered;
   }
 
   private assertAdmin(auth: ActorAuth | undefined, action: "iot-provider-deactivate" | "iot-machine-deactivate", target: string): void {

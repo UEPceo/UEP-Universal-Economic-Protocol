@@ -1,6 +1,43 @@
-# Public API reference: changed signatures (v0.4.3 – v0.4.5)
+# Public API reference: changed signatures (v0.4.3 – v0.4.6)
 
-This page lists the public signatures that changed in `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+This page lists the public signatures that changed in `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# v0.4.6
+
+## Marketplace: `src/marketplace/marketplace.ts`
+
+```ts
+type CategoryServiceHooks = {
+  settlementGuard?: (order: ServiceOrder) => void;   // now also gates a RELEASE dispute timeout
+  consumedUnits?: (order: ServiceOrder) => bigint;   // new: units proven executed (clamped to [0, quantity])
+};
+ServiceOrder.disputeOutcome   // + "TIMEOUT_REFUND_UNVERIFIED"
+ServiceOrder.capacityConsumed?: bigint   // units kept consumed when the order closed
+ServiceOrder.capacityRestored?: bigint   // units returned to the listing (set exactly once)
+SettlementRecord.categoryGuard?: "PASSED" | "TIMEOUT_REFUNDED" | "ARBITER_OVERRIDE"   // guarded categories only
+SettlementRecord.capacityRestored?: bigint
+capacityAccounting(listingId): CapacityAccounting
+type CapacityAccounting = { listingId, capacity, available, reserved, consumed, conserved }
+```
+
+- **Dispute timeout (UEP-D04).**
+  - With `disputeTimeoutOutcome: "RELEASE"`, `settle()` on a timed-out dispute pays the provider only if the category guard passes. The outcome is then `RELEASE`, with `disputeOutcome` `TIMEOUT_RELEASE` and `categoryGuard` `PASSED` for guarded categories.
+  - Otherwise the order closes as `REFUND_BUYER`, with `disputeOutcome` `TIMEOUT_REFUND_UNVERIFIED` and `categoryGuard` `TIMEOUT_REFUNDED`.
+  - A category is guarded if it is `IOT_M2M` or has a `settlementGuard` attached. An IoT listing without an attached IoT service always fails the guard.
+- **Guarded release paths:** `settle()` on DELIVERED orders, the buyer's dispute withdrawal, and the RELEASE timeout.
+- **Arbiter resolution.** `resolveDispute()` RELEASE / SPLIT is not blocked by the guard (arbiter trust). Its record carries `categoryGuard` `PASSED` or `ARBITER_OVERRIDE` for guarded categories. REFUND_BUYER never carries it.
+- **Capacity (UEP-D05).** When an order closes, capacity returns exactly once:
+  - cancel / expire: the full quantity;
+  - full release: 0;
+  - refund / split: `quantity − max(consumedUnits evidence, ceil(providerAmount × quantity / gross))`.
+- The capacity check runs before any value moves. Errors: `CAPACITY_ALREADY_RESTORED`, `CAPACITY_ACCOUNTING_INVALID`. `available` never exceeds `capacity`.
+- `capacityAccounting()` is public listing data: open orders count as `reserved`, closed orders as `consumed` (`capacityConsumed`).
+
+## IoT/M2M: `src/service/iot-m2m.ts`
+
+- The attached hooks are `settlementGuard` (now also used by the RELEASE timeout) and `consumedUnits`.
+- `consumedUnits` returns the `unitsDelivered` of the verification bound to the order's delivered report, or 0 if there is none.
+- The guard additionally requires `verification.unitsDelivered === order.quantity` (`IOT_USAGE_SHORTFALL`).
 
 # v0.4.5
 

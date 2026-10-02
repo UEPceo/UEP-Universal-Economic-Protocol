@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.4.6-public-iot-m2m — 2026-10-02
+
+Fixes the two new P3 findings of the external review of v0.4.5 (UEP-D04, UEP-D05). See [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) and [`docs/API.md`](./docs/API.md).
+
+### Dispute timeout and category guards (UEP-D04)
+
+- With `disputeTimeoutOutcome: "RELEASE"`, a timed-out dispute now runs the category settlement guard before paying the provider. For IoT/M2M orders, the guard requires verified telemetry of the delivered report covering the full quantity.
+- If the guard fails, the order closes as `REFUND_BUYER`: gross amount and gas are returned and no fee is charged. The order gets `disputeOutcome: "TIMEOUT_REFUND_UNVERIFIED"` and the settlement record `categoryGuard: "TIMEOUT_REFUNDED"`.
+- The rule is generic: it applies to any category with an attached `settlementGuard`, and IoT listings without an attached IoT service always fail it (`IOT_SETTLEMENT_GUARD_REQUIRED`).
+- Every release path the marketplace controls is now guarded:
+  - `settle()` on a DELIVERED order (buyer, provider after the window, arbiter);
+  - the buyer's dispute withdrawal;
+  - the RELEASE timeout.
+- The arbiter's explicit `resolveDispute()` RELEASE or SPLIT stays final, as documented (arbiter trust). For guarded categories its record carries `categoryGuard: "PASSED"` or `"ARBITER_OVERRIDE"`.
+- The IoT guard now also checks that the verified units equal the order quantity (defence in depth; `IOT_USAGE_SHORTFALL`).
+- Default `disputeTimeoutOutcome` is still `REFUND_BUYER`. Its behaviour is unchanged.
+
+### Capacity after post-delivery outcomes (UEP-D05)
+
+- Capacity is returned to the listing exactly once, when the order closes:
+  - Cancel / expire (nothing delivered): the whole quantity, as before.
+  - Full release: nothing; the units are consumed.
+  - Refund or split: the quantity minus the consumed units. Consumed units are the larger of the units proven executed by category evidence and the units paid for, rounded up: `ceil(providerAmount × quantity / gross)`.
+- Category evidence comes from a new optional hook, `CategoryServiceHooks.consumedUnits(order)`, clamped to `[0, quantity]`.
+  - The IoT service reports the units of verified telemetry bound to the delivered report.
+  - So a refunded IoT order that was executed per verified telemetry does not get its executed units back. A refunded order without such evidence gets its full quantity back.
+- The capacity return is computed and validated before any value moves. It fails with `CAPACITY_ALREADY_RESTORED` / `CAPACITY_ACCOUNTING_INVALID` instead of over-filling the listing. `available` never exceeds `capacity`.
+- New `ServiceOrder.capacityConsumed` / `capacityRestored` and `SettlementRecord.capacityRestored` fields.
+- New `capacityAccounting(listingId)`: `capacity === available + reserved + consumed`.
+
+### Compatibility
+
+- **Behaviour change (RELEASE timeouts):** a marketplace configured with `disputeTimeoutOutcome: "RELEASE"` now refunds, instead of paying, a timed-out dispute whose category guard fails. Unguarded categories release as before.
+- **Behaviour change (capacity):** a post-delivery refund or split now returns unconsumed capacity, where v0.4.5 kept the units reserved forever.
+- Additive types: `disputeOutcome` value `TIMEOUT_REFUND_UNVERIFIED`, `SettlementRecord.categoryGuard` / `capacityRestored`, `ServiceOrder.capacityConsumed` / `capacityRestored`, `CategoryServiceHooks.consumedUnits`, `CapacityAccounting`. No ledger, address or snapshot format change.
+
+### Known open issues
+
+- The arbiter's explicit release or split of a guarded order remains a trusted decision. It is labelled, not blocked.
+- Verified telemetry proves which machine key signed a report, not that the physical service happened (machine-key trust).
+- Capacity consumption is evidence-based. An IoT execution that was delivered but never verified counts as not consumed and is returned on refund. For non-IoT categories, a split is assumed to consume the units paid for, rounded up.
+- Unchanged: development MAC / `requireProof` (UEP-A11, A12), ZK witness range checks (UEP-A22), self-service identities (no Sybil resistance), the `creditAccount()` stub, no key rotation, read authorizations reusable within their TTL.
+
+### Tests
+
+- New `timeout-guard-capacity.test.ts` (13). D04 tests:
+  - a RELEASE timeout with verified telemetry pays the provider;
+  - without verified telemetry it refunds in full, with no value lost and idempotent replays;
+  - a verified shortfall refunds;
+  - an IoT listing without an IoT service refunds;
+  - a custom guard on another category gates the timeout, and unguarded categories still release;
+  - the default timeout is unchanged and the withdrawal is still guarded;
+  - the arbiter's explicit release is labelled.
+- D05 tests:
+  - a refund returns capacity once, with every replay path tried;
+  - provider refund and timeout refund versus release;
+  - a split returns only the unpaid units;
+  - IoT units executed per verified telemetry stay consumed;
+  - out-of-range evidence is clamped;
+  - capacity stays within `[0, capacity]` and conserved across repeated fill-and-drain rounds.
+- Totals: protocol 67/67, Marketplace/IoT 94/94, scale 3/3, IoT 23/23 on Node 22 and 24.
+
 ## 0.4.5-public-iot-m2m — 2026-10-02
 
 Key-derived accounts and v2 addresses (option (a) for the spend-key registry left open in v0.4.4), plus the reservation-deposit minimum. See [`PUBLIC-SECURITY-REMEDIATION-v0.4.5.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md) and [`docs/API.md`](./docs/API.md).

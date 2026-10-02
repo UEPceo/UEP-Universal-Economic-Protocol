@@ -48,8 +48,20 @@ export type DisputeOutcome = "RELEASE" | "REFUND_BUYER" | "SPLIT";
 export type DisputeResolution = { outcome: DisputeOutcome; /** SPLIT: part of grossAmount paid to the provider (before the Marketplace fee). */ providerAmount?: bigint };
 /** Hooks a category service (e.g. IoT / M2M) attaches to the marketplace. */
 export type CategoryServiceHooks = {
-  /** Throws to block the normal settle() path (buyer release / provider claim) of an order in this category. */
+  /**
+   * Throws to block a release of an order in this category: the normal settle()
+   * path (buyer release / provider claim / arbiter release of a DELIVERED order),
+   * the buyer's dispute withdrawal and, since v0.4.6 (UEP-D04), a dispute timeout
+   * configured as RELEASE (which then falls back to REFUND_BUYER).
+   */
   settlementGuard?: (order: ServiceOrder) => void;
+  /**
+   * v0.4.6 (UEP-D05): units of the order the category can prove were executed
+   * (e.g. verified IoT telemetry bound to the delivered report). Those units are
+   * treated as consumed and are not returned to the listing's capacity when the
+   * order closes with a refund or split. Values are clamped to [0, quantity].
+   */
+  consumedUnits?: (order: ServiceOrder) => bigint;
 };
 /** Capability returned to the category service: read orders of its own category only. */
 export type CategoryServiceAccess = { readOrder(orderId: string): ServiceOrder };
@@ -105,7 +117,16 @@ export type ServiceOrder = {
   disputedAt?: number;
   disputeReasonHash?: string;
   disputeDeadline?: number;
-  disputeOutcome?: DisputeOutcome | "WITHDRAWN" | "PROVIDER_REFUND" | "TIMEOUT_REFUND" | "TIMEOUT_RELEASE";
+  /**
+   * v0.4.6: TIMEOUT_REFUND_UNVERIFIED = the dispute timed out with
+   * `disputeTimeoutOutcome: "RELEASE"` but the category settlement guard (e.g.
+   * IoT verified telemetry for the full quantity) did not pass, so the buyer was refunded.
+   */
+  disputeOutcome?: DisputeOutcome | "WITHDRAWN" | "PROVIDER_REFUND" | "TIMEOUT_REFUND" | "TIMEOUT_RELEASE" | "TIMEOUT_REFUND_UNVERIFIED";
+  /** v0.4.6 (UEP-D05): units treated as consumed when the order closed (never returned to capacity). */
+  capacityConsumed?: bigint;
+  /** v0.4.6 (UEP-D05): units returned to the listing's available capacity when the order closed (set exactly once). */
+  capacityRestored?: bigint;
   createdAt: number;
   updatedAt: number;
   reservationExpiresAt?: number;
@@ -124,6 +145,29 @@ export type SettlementRecord = {
   outcome?: DisputeOutcome;
   /** v0.4.4: amount returned to the buyer (refund / split), including refunded gas. */
   buyerRefund?: bigint;
+  /**
+   * v0.4.6 (UEP-D04): category settlement guard status for orders in a guarded
+   * category (IoT, or any category with an attached guard); absent otherwise.
+   *  - PASSED: the guard passed for this payout.
+   *  - TIMEOUT_REFUNDED: a RELEASE timeout failed the guard and refunded the buyer instead.
+   *  - ARBITER_OVERRIDE: the arbiter's explicit RELEASE / SPLIT paid the provider although the guard did not pass.
+   */
+  categoryGuard?: "PASSED" | "TIMEOUT_REFUNDED" | "ARBITER_OVERRIDE";
+  /** v0.4.6 (UEP-D05): units returned to the listing's capacity by this outcome. */
+  capacityRestored?: bigint;
+};
+
+/** v0.4.6 (UEP-D05): capacity accounting of one listing. */
+export type CapacityAccounting = {
+  listingId: string;
+  capacity: bigint;
+  available: bigint;
+  /** Units held by open orders (ACCEPTED, HELD, DELIVERED, DISPUTED). */
+  reserved: bigint;
+  /** Units consumed by closed orders (released, split, or executed per category evidence). */
+  consumed: bigint;
+  /** capacity === available + reserved + consumed, and available <= capacity. */
+  conserved: boolean;
 };
 
 export type MarketplaceConfig = {
@@ -630,7 +674,8 @@ export class DigitalServicesMarketplace {
    *  - Administrator and anyone else: not authorized.
    * A DISPUTED order past its resolution deadline closes with `disputeTimeoutOutcome`
    * when the buyer, provider or arbiter calls settle().
-   * Category settlement guards (e.g. IoT verified telemetry) apply to the release paths.
+   * Category settlement guards (e.g. IoT verified telemetry) apply to every release
+   * path here; a RELEASE timeout whose guard fails refunds the buyer (v0.4.6, UEP-D04).
    */
   settle(orderId: string, auth: ActorAuth | undefined): SettlementRecord {
     const actor = this.authenticateActor(auth, "settle", orderId);
@@ -651,7 +696,7 @@ export class DigitalServicesMarketplace {
       if (!isBuyer) throw new Error("DISPUTE_PENDING");
       // The buyer withdraws its own dispute and releases payment.
       this.runSettlementGuard(order);
-      return this.payout(order, order.grossAmount, "RELEASE", "WITHDRAWN");
+      return this.payout(order, order.grossAmount, "RELEASE", "WITHDRAWN", this.isGuardedCategory(order) ? "PASSED" : undefined);
     }
     if (order.status !== "DELIVERED") {
       this.assertReservationLive(order);
@@ -659,7 +704,7 @@ export class DigitalServicesMarketplace {
     }
     if (isProvider && !isBuyer && !isArbiter && this.now() < (order.deliveredAt ?? order.updatedAt) + this.deliveryDisputeWindowMs) throw new Error("SETTLEMENT_DISPUTE_WINDOW_ACTIVE");
     this.runSettlementGuard(order);
-    return this.payout(order, order.grossAmount, "RELEASE");
+    return this.payout(order, order.grossAmount, "RELEASE", undefined, this.isGuardedCategory(order) ? "PASSED" : undefined);
   }
 
   /**
@@ -689,7 +734,9 @@ export class DigitalServicesMarketplace {
 
   /**
    * Arbiter resolves an open dispute ("resolve" signature over { outcome, providerAmount }).
-   *  - RELEASE: normal settlement to the provider.
+   *  - RELEASE: normal settlement to the provider. This explicit decision is not
+   *    blocked by a category settlement guard (arbiter trust); for guarded
+   *    categories the record carries categoryGuard PASSED or ARBITER_OVERRIDE.
    *  - REFUND_BUYER: gross amount and gas returned to the buyer; no fee.
    *  - SPLIT: `providerAmount` (0 < x < gross) goes to the provider minus the
    *    Marketplace fee on x; gross - x returns to the buyer; gas is captured.
@@ -706,12 +753,14 @@ export class DigitalServicesMarketplace {
       if (existing) return { ...existing };
     }
     if (order.status !== "DISPUTED") throw new Error("DISPUTE_NOT_OPEN");
-    if (resolution.outcome === "RELEASE") return this.payout(order, order.grossAmount, "RELEASE");
+    // The arbiter's explicit decision is final (documented arbiter trust); for guarded
+    // categories the record shows whether the guard passed (v0.4.6, UEP-D04).
+    if (resolution.outcome === "RELEASE") return this.payout(order, order.grossAmount, "RELEASE", undefined, this.arbiterGuardStatus(order));
     if (resolution.outcome === "REFUND_BUYER") return this.payout(order, 0n, "REFUND_BUYER");
     if (providerAmount! < 0n || providerAmount! > order.grossAmount) throw new Error("DISPUTE_SPLIT_INVALID");
     if (providerAmount === 0n) return this.payout(order, 0n, "REFUND_BUYER");
-    if (providerAmount === order.grossAmount) return this.payout(order, order.grossAmount, "RELEASE");
-    return this.payout(order, providerAmount!, "SPLIT");
+    if (providerAmount === order.grossAmount) return this.payout(order, order.grossAmount, "RELEASE", undefined, this.arbiterGuardStatus(order));
+    return this.payout(order, providerAmount!, "SPLIT", undefined, this.arbiterGuardStatus(order));
   }
 
   /** Provider refunds the buyer in full for a DELIVERED or DISPUTED order ("refund" signature). */
@@ -842,10 +891,101 @@ export class DigitalServicesMarketplace {
     if (hooks?.settlementGuard) hooks.settlementGuard({ ...order });
   }
 
+  /** True when releases of this order's category are gated by a settlement guard (IoT always is). */
+  private isGuardedCategory(order: ServiceOrder): boolean {
+    const category = this.listing(order.listingId).category;
+    return category === "IOT_M2M" || this.categoryServices.get(category)?.settlementGuard !== undefined;
+  }
+
+  /** Runs the category guard without throwing: true when it passes (or the category has none). */
+  private settlementGuardPasses(order: ServiceOrder): boolean {
+    try {
+      this.runSettlementGuard(order);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * v0.4.6 (UEP-D04): a timed-out dispute configured as RELEASE pays the provider
+   * only if the category settlement guard passes (for IoT: verified telemetry of
+   * the delivered report covering the full quantity). Otherwise the buyer is
+   * refunded (REFUND_BUYER, disputeOutcome TIMEOUT_REFUND_UNVERIFIED).
+   */
   private timeoutDispute(order: ServiceOrder): SettlementRecord {
-    return this.disputeTimeoutOutcome === "RELEASE"
-      ? this.payout(order, order.grossAmount, "RELEASE", "TIMEOUT_RELEASE")
-      : this.payout(order, 0n, "REFUND_BUYER", "TIMEOUT_REFUND");
+    if (this.disputeTimeoutOutcome !== "RELEASE") return this.payout(order, 0n, "REFUND_BUYER", "TIMEOUT_REFUND");
+    const guarded = this.isGuardedCategory(order);
+    if (!guarded || this.settlementGuardPasses(order)) {
+      return this.payout(order, order.grossAmount, "RELEASE", "TIMEOUT_RELEASE", guarded ? "PASSED" : undefined);
+    }
+    return this.payout(order, 0n, "REFUND_BUYER", "TIMEOUT_REFUND_UNVERIFIED", "TIMEOUT_REFUNDED");
+  }
+
+  /**
+   * Arbiter's explicit RELEASE / SPLIT (documented arbiter trust): not blocked by
+   * the category guard, but the record states whether the guard passed.
+   */
+  private arbiterGuardStatus(order: ServiceOrder): SettlementRecord["categoryGuard"] {
+    if (!this.isGuardedCategory(order)) return undefined;
+    return this.settlementGuardPasses(order) ? "PASSED" : "ARBITER_OVERRIDE";
+  }
+
+  /**
+   * v0.4.6 (UEP-D05): units of a closing order returned to capacity.
+   *  - Full release (providerAmount = gross): everything consumed, nothing returned.
+   *  - Otherwise consumed = max(units proven executed by the category evidence,
+   *    units paid for = ceil(providerAmount * quantity / gross)); the rest returns.
+   * A refund without execution evidence returns the whole quantity; a refund of an
+   * IoT order whose verified telemetry shows k executed units returns quantity - k.
+   */
+  private capacityToRestore(order: ServiceOrder, providerAmount: bigint): { consumed: bigint; restore: bigint } {
+    if (providerAmount >= order.grossAmount) return { consumed: order.quantity, restore: 0n };
+    const hook = this.categoryServices.get(this.listing(order.listingId).category)?.consumedUnits;
+    let evidence = 0n;
+    if (hook) {
+      const units = hook({ ...order });
+      evidence = typeof units === "bigint" ? (units < 0n ? 0n : units > order.quantity ? order.quantity : units) : 0n;
+    }
+    const paid = providerAmount <= 0n ? 0n : (providerAmount * order.quantity + order.grossAmount - 1n) / order.grossAmount;
+    const consumed = evidence > paid ? evidence : paid;
+    return { consumed, restore: order.quantity - consumed };
+  }
+
+  /** Validate (no mutation) that returning `units` keeps capacity consistent; called before any value moves. */
+  private assertCapacityRestorable(order: ServiceOrder, units: bigint): void {
+    if (order.capacityRestored !== undefined) throw new Error("CAPACITY_ALREADY_RESTORED");
+    const listing = this.listing(order.listingId);
+    if (units < 0n || units > order.quantity || listing.available + units > listing.capacity) throw new Error("CAPACITY_ACCOUNTING_INVALID");
+  }
+
+  private applyCapacityRestore(order: ServiceOrder, consumed: bigint, units: bigint): void {
+    this.listing(order.listingId).available += units;
+    order.capacityConsumed = consumed;
+    order.capacityRestored = units;
+  }
+
+  /**
+   * v0.4.6 (UEP-D05): capacity accounting of a listing (public listing data):
+   * capacity === available + reserved (open orders) + consumed (closed orders).
+   */
+  capacityAccounting(listingId: string): CapacityAccounting {
+    const listing = this.listing(listingId);
+    let reserved = 0n;
+    let consumed = 0n;
+    for (const order of this.orders.values()) {
+      if (order.listingId !== listingId) continue;
+      if (order.status === "ACCEPTED" || order.status === "HELD" || order.status === "DELIVERED" || order.status === "DISPUTED") reserved += order.quantity;
+      else consumed += order.capacityConsumed ?? 0n;
+    }
+    return {
+      listingId,
+      capacity: listing.capacity,
+      available: listing.available,
+      reserved,
+      consumed,
+      conserved: listing.available <= listing.capacity && listing.capacity === listing.available + reserved + consumed,
+    };
   }
 
   /**
@@ -854,7 +994,7 @@ export class DigitalServicesMarketplace {
    *   0 < providerAmount < gross -> provider net(x) + fee(x) + gas, buyer gross - x (SPLIT)
    *   providerAmount = 0      -> buyer gross + gas, paymaster sponsorship released (REFUND_BUYER)
    */
-  private payout(order: ServiceOrder, providerAmount: bigint, outcome: DisputeOutcome, disputeOutcome?: ServiceOrder["disputeOutcome"]): SettlementRecord {
+  private payout(order: ServiceOrder, providerAmount: bigint, outcome: DisputeOutcome, disputeOutcome?: ServiceOrder["disputeOutcome"], categoryGuard?: SettlementRecord["categoryGuard"]): SettlementRecord {
     const gas = order.gasFee ?? 0n;
     const required = order.grossAmount + gas;
     if (order.heldAmount !== required) throw new Error("HOLD_NOT_COMPLETE");
@@ -862,6 +1002,9 @@ export class DigitalServicesMarketplace {
     const held = this.held.get(heldKey) ?? 0n;
     if (held < order.heldAmount) throw new Error("HELD_BALANCE_INSUFFICIENT");
     if (providerAmount < 0n || providerAmount > order.grossAmount) throw new Error("PAYOUT_AMOUNT_INVALID");
+    // v0.4.6 (UEP-D05): decide and validate the capacity return before any value moves.
+    const capacity = this.capacityToRestore(order, providerAmount);
+    this.assertCapacityRestorable(order, capacity.restore);
     let fee = 0n;
     let providerNet = 0n;
     let gasCaptured = 0n;
@@ -894,6 +1037,7 @@ export class DigitalServicesMarketplace {
     order.status = providerAmount > 0n ? "SETTLED" : "REFUNDED";
     if (disputeOutcome || order.disputedAt !== undefined) order.disputeOutcome = disputeOutcome ?? outcome;
     order.updatedAt = this.now();
+    this.applyCapacityRestore(order, capacity.consumed, capacity.restore);
     this.decrementActiveReservation(order.buyerId);
     const record: SettlementRecord = {
       orderId: order.orderId,
@@ -906,7 +1050,9 @@ export class DigitalServicesMarketplace {
       gasFee: gasCaptured,
       outcome,
       buyerRefund,
+      capacityRestored: capacity.restore,
     };
+    if (categoryGuard) record.categoryGuard = categoryGuard;
     this.settlements.set(order.orderId, record);
     return { ...record };
   }
@@ -1000,6 +1146,8 @@ export class DigitalServicesMarketplace {
 
   /** Close an open (ACCEPTED / HELD) order, moving every unit of value exactly once. */
   private closeOrder(order: ServiceOrder, status: "CANCELLED" | "EXPIRED", forfeitDeposit: boolean): void {
+    // Nothing was delivered: the whole quantity returns to capacity, exactly once.
+    this.assertCapacityRestorable(order, order.quantity);
     const buyerKey = key(order.asset, order.buyerId);
     const providerKey = key(order.asset, order.providerId);
     let refund = 0n;
@@ -1027,7 +1175,7 @@ export class DigitalServicesMarketplace {
     if (refund > 0n) this.add(this.accounts, buyerKey, refund);
     order.fundingDue = 0n;
     this.releasePaymaster(order);
-    this.listing(order.listingId).available += order.quantity;
+    this.applyCapacityRestore(order, 0n, order.quantity);
     order.status = status;
     order.updatedAt = this.now();
     this.decrementActiveReservation(order.buyerId);

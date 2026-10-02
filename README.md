@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.4.5-public-iot-m2m`
+> **Version:** `0.4.6-public-iot-m2m`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -146,9 +146,9 @@ The active public hash is a **reference hardening backend**, not a claim that pr
 
 ---
 
-## 5. Security hardening in v0.4.1 – v0.4.5
+## 5. Security hardening in v0.4.1 – v0.4.6
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 – v0.4.3. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.5.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md) (previous: [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 – v0.4.5. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
@@ -197,6 +197,8 @@ accountId  = 0x02 ‖ keyHash   (the ledger's note owner / sender / recipient id
 - **v0.4.5:** a marketplace or IoT identity may be named by its ledger **v2 address**. It must then register the spend key that address commits to (`IDENTITY_ADDRESS_KEY_MISMATCH`), so an address-named buyer or provider is the same key holder as the ledger account. Plain identity names keep working.
 - **v0.4.4:** a **dispute flow** with defined outcomes. The buyer can open a dispute within the delivery dispute window; the arbiter resolves it as `RELEASE`, `REFUND_BUYER` or `SPLIT`; the provider can concede a refund; an unresolved dispute falls back to a configurable timeout outcome (default: refund the buyer). Every outcome moves the escrow exactly once, and `valueAccounting()` stays conserved.
 - **v0.4.4:** **IoT telemetry is always signed** by the machine's registered Ed25519 key (machines cannot be registered without one), with monotonic sequence numbers and nonce anti-replay. An IoT order is released only against verified telemetry that was delivered for that order and reports the full contracted quantity; a shortfall goes to a dispute. Simulations sign with test machine keys.
+- **v0.4.6:** a dispute timeout configured as `RELEASE` runs the same category guard. An IoT order without verified telemetry for its full quantity is **refunded to the buyer** instead of paid (`TIMEOUT_REFUND_UNVERIFIED`). The arbiter's explicit release stays final, and its record says whether the guard passed (`categoryGuard: "ARBITER_OVERRIDE"` otherwise).
+- **v0.4.6:** **capacity is returned exactly once** when an order closes without consuming it: in full on cancel, expiry or a refund without execution evidence, and the unpaid units of a split. Units executed per verified IoT telemetry stay consumed. `available` never exceeds `capacity`, and `capacityAccounting(listingId)` checks `capacity = available + reserved + consumed`.
 
 These controls are testnet protections, not a claim of production consensus or production ZK security.
 
@@ -347,6 +349,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.3.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.4.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.5.md
+├── PUBLIC-SECURITY-REMEDIATION-v0.4.6.md
 ├── package.json
 ├── package-lock.json
 ├── tsconfig.json
@@ -502,6 +505,8 @@ The design deliberately charges the Marketplace fee only at successful settlemen
 Since v0.4.3 the reservation step is signed and funded: a registered buyer signs the reservation, the reservation deposit is locked from the buyer's balance, and funding pays the remainder (`grossAmount + gasFee − deposit`). The deposit is refunded on a buyer cancellation within the grace window and on provider/admin cancellation; it goes to the provider when an unfunded reservation expires or the buyer cancels after the grace window. A funded order that expires undelivered is refunded in full.
 
 Since v0.4.4 every step is a signed action, and only the order's parties (or the admin) can read it. After delivery the buyer can open a dispute within `deliveryDisputeWindowMs`. The arbiter resolves it (release, refund or split); the provider can concede a refund; and if nobody resolves it within `disputeResolutionWindowMs`, the configured timeout outcome applies (default: refund the buyer). A split charges the Marketplace fee only on the provider's share; a refund charges none.
+
+Since v0.4.6 a `RELEASE` timeout pays only when the category guard passes (IoT: verified telemetry for the full quantity) and otherwise refunds the buyer. Unconsumed capacity returns to the listing once: on cancel or expiry, on a refund, and for the unpaid units of a split. Units executed per verified IoT telemetry are not returned.
 
 ---
 

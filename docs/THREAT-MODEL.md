@@ -84,7 +84,7 @@ model, not production consensus or production key custody.
 Since v0.4.4 the following are also trusted parties of the testnet:
 
 - **Spend-key registry (removed in v0.4.5).** v0.4.4 trusted a spend-key registry delivered in signed snapshots. Since v0.4.5 account ids commit to the spend key, and spends reveal the key and sign. Any replica can check ownership on its own, so there is no registry left to trust.
-- **Settlement arbiter.** It decides disputed outcomes within the escrowed value; it cannot create value.
+- **Settlement arbiter.** It decides disputed outcomes within the escrowed value; it cannot create value. Since v0.4.6 its explicit release of a guarded (e.g. IoT) order is not blocked by the category guard, but the settlement record shows whether the guard passed (`categoryGuard`). Unattended timeouts never bypass the guard.
 - **Machine keys.** A machine key proves who signed the telemetry, not that the physical service happened. A compromised or dishonest machine can still report false usage.
 
 ## Out of scope
