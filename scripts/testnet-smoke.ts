@@ -1,0 +1,65 @@
+/**
+ * Reproducible local UEP TESTNET smoke test.
+ *
+ * This is an in-process reference testnet. It does not connect to a public
+ * network and it does not use a production ZK proving/verifying ceremony.
+ */
+import assert from "node:assert/strict";
+import { encodeStringToFr } from "../src/core/encoding.ts";
+import { identityFromMnemonic, generateMnemonic } from "../src/identity/index.ts";
+import { UepLedger } from "../src/testnet/ledger.ts";
+import { TESTNET } from "../src/network/profiles.ts";
+import { UepAddressV1 } from "../src/core/address.ts";
+import { creatorFee } from "../src/core/fee.ts";
+
+async function main() {
+  console.log("UEP TESTNET smoke (public reference implementation)");
+  console.log("network:", TESTNET.networkId);
+
+  const alice = await identityFromMnemonic(await generateMnemonic(128));
+  const bob = await identityFromMnemonic(await generateMnemonic(128));
+
+  const node = new UepLedger({
+    networkId: TESTNET.networkId,
+    domainId: "EARTH",
+    connected: true,
+    allowFaucet: true,
+  });
+
+  const asset = "asset:test:energy";
+  node.faucet(alice.accountId, asset, 1_000_000n);
+
+  const sendAmount = 250_000n;
+  const prepared = node.prepareSpend(alice, bob.accountId, asset, sendAmount);
+  assert.ok("tx" in prepared);
+  if (!("tx" in prepared)) throw new Error(prepared.error.message);
+
+  const submitted = node.submit(prepared.tx, alice);
+  assert.ok("tx" in submitted);
+  if (!("tx" in submitted)) throw new Error(submitted.error.message);
+
+  const fee = creatorFee(sendAmount);
+  const aliceBal = node.balanceOf(alice.accountId, encodeStringToFr(asset));
+  const bobBal = node.balanceOf(bob.accountId, encodeStringToFr(asset));
+
+  assert.equal(bobBal, sendAmount);
+  assert.equal(aliceBal, 1_000_000n - sendAmount - fee);
+
+  const addr = UepAddressV1.encode(TESTNET.networkId, bob.accountId);
+
+  console.log("TX ID:       ", submitted.tx.txId.toHex());
+  console.log("sender:      ", alice.accountId.toHex());
+  console.log("recipient:   ", bob.accountId.toHex());
+  console.log("amount:      ", sendAmount.toString());
+  console.log("fee:         ", fee.toString());
+  console.log("nullifier:   ", submitted.tx.nullifier.toHex());
+  console.log("state root:  ", node.stateRoot().toHex());
+  console.log("bob address: ", addr);
+  console.log("verification: PASS (local reference path)");
+  console.log("SMOKE OK");
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
