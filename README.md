@@ -15,6 +15,19 @@ This repository is the **public reproducible reference slice** of the project. I
 
 The repository is intended for developers, researchers, security testers and early community participants who want to inspect the implementation, reproduce its tests, attack its assumptions and build compatible experiments.
 
+### Current status (v0.4.6)
+
+| Item | Status |
+|---|---|
+| Release | `0.4.6-public-iot-m2m` (tag `v0.4.6-public-iot-m2m`) |
+| Tests | protocol **67/67**, Marketplace + IoT/M2M **94/94**, scale **3/3**, IoT **23/23** |
+| Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
+| CI | Node.js 22.x and 24.x |
+| Network | Local, single-node, in-process **testnet only** |
+| External review | Independent adversarial assessments of each release up to v0.4.6; open items in [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) |
+
+Architecture by layer: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). Phases and next milestones: [`ROADMAP.md`](./ROADMAP.md).
+
 ---
 
 ## 1. What UEP is trying to solve
@@ -48,7 +61,7 @@ The public testnet implements a local reference state machine with:
 - deterministic account identity derived from test credentials;
 - key-derived account ids and checksummed, versioned Bech32m v2 addresses (v0.4.5);
 - testnet faucet;
-- multi-asset testnet registry;
+- multi-asset testnet registry (balances per account and asset; guaranteed multi-asset semantics are a later roadmap milestone);
 - account and note commitments;
 - nullifiers and replay protection;
 - Sparse Merkle state representation;
@@ -131,7 +144,7 @@ The Marketplace Treasury is separate from the protocol-level testnet treasury.
 
 ## 4. Security hardening in v0.3.2
 
-This release follows external review `UEP-RR-2026-10-02-001`. The previous public alpha had critical weaknesses in its provisional hash and optional authentication path. They are addressed in this release. In particular:
+Release v0.3.2 followed external review `UEP-RR-2026-10-02-001`. The previous public alpha had critical weaknesses in its provisional hash and optional authentication path. v0.3.2 addressed them. In particular:
 
 - the reversible/commutative algebraic placeholder is no longer the active public hash backend;
 - sender authentication is required by default;
@@ -333,7 +346,11 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 
 ---
 
-## 8. Public repository architecture
+## 8. Architecture and repository layout
+
+UEP is described as fourteen layers (A. core protocol to N. public economic network). [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) has the diagrams and a status table that marks each layer as *Implemented (testnet)*, *Partial*, *Design* or *Future*. In short: the core protocol, ledger, Marketplace, IoT/M2M and local testnet are implemented on the testnet; cryptography/ZK, the service plane and identity are partial; events/storage/API, SDK and the public economy are design; consensus, node infrastructure and interplanetary extensions are future work.
+
+Repository layout:
 
 ```text
 .
@@ -345,6 +362,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── CODE_OF_CONDUCT.md
 ├── PUBLIC-SCOPE.md
 ├── CHANGELOG.md
+├── ROADMAP.md                # phases 0–9, goals, deliverables, exit criteria
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.1.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.2.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.3.md
@@ -404,8 +422,8 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 │   └── marketplace-20k-simulation.mjs
 │
 └── docs/
-    ├── API.md            # changed public signatures (v0.4.3 – v0.4.4)
-    ├── ARCHITECTURE.md
+    ├── API.md            # changed public signatures (v0.4.3 – v0.4.6)
+    ├── ARCHITECTURE.md   # layers A–N, status table, diagrams
     ├── THREAT-MODEL.md
     └── REPRODUCIBILITY.md
 ```
@@ -596,7 +614,7 @@ See [`PUBLIC-SCOPE.md`](./PUBLIC-SCOPE.md) for the explicit publication boundary
 
 ## 15. How to contribute
 
-Security findings, reproducibility problems, implementation bugs and protocol questions are welcome.
+Security findings, reproducibility problems, implementation bugs and protocol questions are welcome. [`ROADMAP.md`](./ROADMAP.md) shows where help is most useful right now.
 
 Please read:
 
@@ -622,21 +640,20 @@ A public release therefore documents limitations even when doing so makes the pr
 
 ---
 
-## 17. Roadmap boundary for this repository
+## 17. Roadmap
 
-This repository is a foundation for public experimentation, not the entire UEP roadmap.
+The full roadmap is in [`ROADMAP.md`](./ROADMAP.md). Its year buckets are goals, not commitments.
 
-Future work may include, subject to independent verification:
-
-- stronger public testnet execution;
-- reproducible multi-node deployments;
-- formally specified consensus/finality components;
-- production-grade ZK proving and verification;
-- public network APIs;
-- external service-provider adapters;
-- delayed-network/DTN experiments;
-- cross-domain settlement research;
-- additional real-world asset/resource attestations.
+| Phase | Status |
+|---|---|
+| 0. Foundation | Done |
+| 1. Hardened public testnet | Closing (v0.4.1 – v0.4.6) |
+| Multi-asset | Not started; exit-criteria assessment NO-GO, blockers being worked on |
+| 2. Service economy | In progress: event bus, storage and evidence, API, IoT gateway, SDK, sandbox, simulators |
+| 3. Public developer platform | Planned |
+| 4. Multi-node testnet | Planned |
+| 5. Public testnet | Planned |
+| 6 – 9. Economic network, production protocol, autonomous infrastructure, interplanetary network | Future / research |
 
 A future feature should not be considered part of the public protocol merely because it exists in an internal branch or research document.
 

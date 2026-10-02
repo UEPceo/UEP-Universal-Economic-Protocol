@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Documentation only; no change to `src/`, scripts, formats or behaviour.
+
+- New [`ROADMAP.md`](./ROADMAP.md): phases 0–9 with goals, deliverables and exit criteria, the next Phase 2 milestones (event bus, storage and evidence, local API, IoT gateway, SDK, sandbox, simulators), and year buckets labelled as goals, not commitments.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) rewritten around layers A–N, with a status table (Implemented on testnet / Partial / Design / Future) and diagrams.
+- README: current-status table (v0.4.6, test counts, CI), architecture and roadmap sections linking the new documents, corrected `docs/API.md` range and v0.3.2 wording.
+- CONTRIBUTING points to the roadmap for where help is needed; PUBLIC-SCOPE covers the IoT/M2M layer, roadmap and status claims; REPRODUCIBILITY lists the expected results.
+
 ## 0.4.6-public-iot-m2m — 2026-10-02
 
 Fixes the two new P3 findings of the external review of v0.4.5 (UEP-D04, UEP-D05). See [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) and [`docs/API.md`](./docs/API.md).

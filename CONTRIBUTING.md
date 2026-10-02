@@ -7,6 +7,8 @@ Thank you for testing UEP.
 Please read:
 
 - `README.md`
+- `ROADMAP.md`
+- `docs/ARCHITECTURE.md`
 - `PUBLIC-SCOPE.md`
 - `SECURITY.md`
 - `CODE_OF_CONDUCT.md`
@@ -14,6 +16,7 @@ Please read:
 
 ## Where to start
 
+- **Where help is needed:** [`ROADMAP.md`](./ROADMAP.md) lists the current phases and milestones. The most useful areas right now are Phase 2 (event bus, storage and evidence, local API, SDK, simulators), additional negative and property-based tests, and reproducibility reports. [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) shows which layers are implemented, partial or still design.
 - **Questions and ideas:** use [GitHub Discussions](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/discussions) (Q&A, Ideas, Show and tell).
 - **First contributions:** look for issues labelled [`good first issue`](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/labels/good%20first%20issue) or [`help wanted`](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/labels/help%20wanted). Area labels (`area:ledger`, `area:marketplace`, `area:iot`, `area:docs`) show which part of the code an issue touches.
 - **Bugs and feature requests:** open an issue with the [bug report](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/issues/new?template=bug_report.yml) or [feature request](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/issues/new?template=feature_request.yml) form.
