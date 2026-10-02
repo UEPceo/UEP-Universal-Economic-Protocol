@@ -12,12 +12,21 @@
  *
  * Execution is intentionally simulated. Telemetry is content-addressed and
  * bound to provider, machine, contract, request and monotonic sequence.
+ *
+ * v0.4.4 (UEP-B13): every machine has a registered Ed25519 key and every usage
+ * report must be signed by it (no unsigned SIMULATED mode). Providers and
+ * machines are registered with the provider's marketplace signature. Telemetry
+ * carries `unitsDelivered`; the marketplace only releases an IoT order through
+ * the normal settle() path when the delivered telemetry was verified and
+ * reports the full contracted quantity. A shortfall goes to a dispute.
  */
 import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from "node:crypto";
 import { encodeCanonicalCbor } from "./iot-m2m-codec.ts";
-import type { DigitalServicesMarketplace, ServiceOrder } from "../marketplace/marketplace.ts";
+import { contentHash } from "./content-hash.ts";
+import type { CategoryServiceAccess, DigitalServicesMarketplace, ServiceOrder } from "../marketplace/marketplace.ts";
+import type { ActorAuth } from "../marketplace/identity.ts";
 
-export const IOT_M2M_VERSION = "0.2" as const;
+export const IOT_M2M_VERSION = "0.3" as const;
 export const IOT_M2M_CATEGORY = "IOT_M2M" as const;
 
 export type IoTProvider = {
@@ -33,8 +42,8 @@ export type IoTMachine = {
   serviceType: string;
   model: string;
   endpointRef: string;
-  /** SPKI DER hex. Presence upgrades the machine from simulation to signed telemetry. */
-  publicKeyHex?: string;
+  /** SPKI DER hex of the machine's Ed25519 key (required since v0.4.4). Every usage report is signed by it. */
+  publicKeyHex: string;
   registeredAt: number;
   active: boolean;
 };
@@ -73,9 +82,11 @@ export type IoTTelemetry = {
   sequence: number;
   observedAt: number;
   measurements: Readonly<Record<string, string>>;
+  /** v0.4.4: units of the contracted service the machine reports as delivered (decimal string). */
+  unitsDelivered: string;
   /** Unique machine-scoped nonce. Replay of an already verified nonce is rejected. */
   nonce: string;
-  /** Ed25519 signature over the unsigned canonical telemetry envelope. */
+  /** Ed25519 signature by the machine key over the unsigned canonical telemetry envelope (required). */
   signature?: string;
 };
 
@@ -85,7 +96,12 @@ export type IoTVerification = {
   verifiedAt: number;
   machineId: string;
   sequence: number;
-  authentication: "ED25519" | "SIMULATED";
+  authentication: "ED25519";
+  /** v0.4.4: verified units and whether they cover the contracted quantity. */
+  unitsDelivered: bigint;
+  fullyDelivered: boolean;
+  /** Content hash of the delivered telemetry payload (bound to the marketplace order). */
+  deliveryHash: string;
 };
 
 export type IoTSettlement = ReturnType<DigitalServicesMarketplace["settle"]> & {
@@ -98,7 +114,10 @@ export type IoTM2MConfig = {
   now?: () => number;
   telemetryMaxAgeMs?: number;
   telemetryMaxFutureSkewMs?: number;
-  /** Identity authorization for administrative provider/machine lifecycle actions. */
+  /**
+   * Optional extra gate for deactivation, evaluated after the marketplace
+   * administrator's signature verifies (v0.4.4: a signature is always required).
+   */
   adminAuthorizer?: (actorId: string) => boolean;
 };
 
@@ -118,6 +137,11 @@ function hash(value: unknown): string {
 
 function id(prefix: string, value: unknown): string {
   return `${prefix}_${hash(value).slice(0, 24)}`;
+}
+
+/** Machine terms bound into the provider's "iot-machine-register" signature. */
+export function iotMachineTerms(input: { providerId: string; serviceType: string; model: string; endpointRef: string; publicKeyHex: string }): Record<string, unknown> {
+  return { providerId: input.providerId, serviceType: input.serviceType, model: input.model, endpointRef: input.endpointRef, publicKeyHex: input.publicKeyHex };
 }
 
 export type IoTMachineIdentity = {
@@ -152,7 +176,8 @@ function verifyIoTTelemetrySignature(telemetry: IoTTelemetry, publicKeyHex: stri
   }
 }
 
-function telemetryPayload(telemetry: IoTTelemetry): Buffer {
+/** Canonical bytes delivered to the marketplace for a telemetry report. */
+export function iotTelemetryPayload(telemetry: IoTTelemetry): Buffer {
   return encodeCanonicalCbor({
     requestId: telemetry.requestId,
     contractId: telemetry.contractId,
@@ -162,8 +187,16 @@ function telemetryPayload(telemetry: IoTTelemetry): Buffer {
     observedAt: telemetry.observedAt,
     nonce: telemetry.nonce,
     measurements: telemetry.measurements,
+    unitsDelivered: telemetry.unitsDelivered,
   });
 }
+
+/** Delivery hash the provider signs when delivering a telemetry report ("deliver" action). */
+export function iotTelemetryDeliveryHash(telemetry: IoTTelemetry): string {
+  return contentHash(iotTelemetryPayload(telemetry));
+}
+
+const telemetryPayload = iotTelemetryPayload;
 
 export class IoTM2MService {
   readonly version = IOT_M2M_VERSION;
@@ -181,6 +214,9 @@ export class IoTM2MService {
   private readonly telemetrySequences = new Map<string, number>();
   private readonly verifiedMachineSequences = new Map<string, number>();
   private readonly verifiedNonces = new Map<string, number>();
+  private readonly requestByOrder = new Map<string, string>();
+  /** Category capability: read IoT orders only (no access to other marketplace orders). */
+  private readonly orders: CategoryServiceAccess;
 
   readonly marketplace: DigitalServicesMarketplace;
 
@@ -190,43 +226,56 @@ export class IoTM2MService {
     this.telemetryMaxAgeMs = config.telemetryMaxAgeMs ?? 5 * 60 * 1000;
     this.telemetryMaxFutureSkewMs = config.telemetryMaxFutureSkewMs ?? 30_000;
     this.adminAuthorizer = config.adminAuthorizer;
+    // Normal settlement of IoT orders requires verified, complete telemetry.
+    this.orders = marketplace.attachCategoryService(IOT_M2M_CATEGORY, { settlementGuard: (order) => this.assertSettleable(order) });
   }
 
-  registerProvider(input: { providerId: string; displayName: string }): IoTProvider {
+  /** Register an IoT provider (v0.4.4: a registered marketplace identity, provider-signed). */
+  registerProvider(input: { providerId: string; displayName: string }, auth?: ActorAuth): IoTProvider {
     if (!input.providerId || !input.displayName) throw new Error("IOT_PROVIDER_METADATA_REQUIRED");
+    if (!this.marketplace.isIdentityRegistered(input.providerId)) throw new Error("IDENTITY_NOT_REGISTERED");
+    if (this.marketplace.authenticateActor(auth, "iot-provider-register", input.providerId, { displayName: input.displayName }) !== input.providerId) throw new Error("IOT_PROVIDER_NOT_AUTHORIZED");
     if (this.providers.has(input.providerId)) throw new Error("IOT_PROVIDER_ALREADY_REGISTERED");
     const provider: IoTProvider = { providerId: input.providerId, displayName: input.displayName, registeredAt: this.now(), active: true };
     this.providers.set(provider.providerId, provider);
     return { ...provider };
   }
 
-  deactivateProvider(providerId: string, actorId?: string): void {
-    this.assertAdmin(actorId);
+  /** Deactivate a provider (marketplace administrator signature, "iot-provider-deactivate"). */
+  deactivateProvider(providerId: string, auth?: ActorAuth): void {
+    this.assertAdmin(auth, "iot-provider-deactivate", providerId);
     const provider = this.provider(providerId);
     provider.active = false;
   }
 
-  registerMachine(input: Omit<IoTMachine, "registeredAt" | "active">): IoTMachine {
+  /**
+   * Register a machine (v0.4.4): `publicKeyHex` (Ed25519) is required and the
+   * provider signs "iot-machine-register" over the machine's key and metadata.
+   */
+  registerMachine(input: Omit<IoTMachine, "registeredAt" | "active">, auth?: ActorAuth): IoTMachine {
     const provider = this.provider(input.providerId);
     if (!provider.active) throw new Error("IOT_PROVIDER_INACTIVE");
     if (!input.machineId || !input.serviceType || !input.model || !input.endpointRef) throw new Error("IOT_MACHINE_METADATA_REQUIRED");
-    if (input.publicKeyHex) {
-      try {
-        const key = createPublicKey({ key: Buffer.from(input.publicKeyHex, "hex"), type: "spki", format: "der" });
-        if (key.asymmetricKeyType !== "ed25519") throw new Error("not-ed25519");
-      } catch {
-        throw new Error("IOT_MACHINE_PUBLIC_KEY_INVALID");
-      }
+    if (!input.publicKeyHex) throw new Error("IOT_MACHINE_PUBLIC_KEY_REQUIRED");
+    try {
+      const key = createPublicKey({ key: Buffer.from(input.publicKeyHex, "hex"), type: "spki", format: "der" });
+      if (key.asymmetricKeyType !== "ed25519") throw new Error("not-ed25519");
+    } catch {
+      throw new Error("IOT_MACHINE_PUBLIC_KEY_INVALID");
     }
+    if (this.marketplace.authenticateActor(auth, "iot-machine-register", input.machineId, iotMachineTerms(input)) !== input.providerId) throw new Error("IOT_PROVIDER_NOT_AUTHORIZED");
     if (this.machines.has(input.machineId)) throw new Error("IOT_MACHINE_ALREADY_REGISTERED");
-    const machine: IoTMachine = { ...input, registeredAt: this.now(), active: true };
+    const machine: IoTMachine = { machineId: input.machineId, providerId: input.providerId, serviceType: input.serviceType, model: input.model, endpointRef: input.endpointRef, publicKeyHex: input.publicKeyHex, registeredAt: this.now(), active: true };
     this.machines.set(machine.machineId, machine);
     return { ...machine };
   }
 
-  deactivateMachine(machineId: string, actorId?: string): void {
-    this.assertAdmin(actorId);
+  /** Deactivate a machine: marketplace administrator or the machine's own provider ("iot-machine-deactivate"). */
+  deactivateMachine(machineId: string, auth?: ActorAuth): void {
     const machine = this.machine(machineId);
+    let actor: string | undefined;
+    try { actor = this.marketplace.authenticateActor(auth, "iot-machine-deactivate", machineId); } catch { throw new Error("IOT_ADMIN_AUTH_REQUIRED"); }
+    if (actor !== machine.providerId) this.assertAdmin(auth, "iot-machine-deactivate", machineId);
     machine.active = false;
   }
 
@@ -258,6 +307,7 @@ export class IoTM2MService {
     const requestId = input.requestId ?? id("iotreq", `${input.buyerId}|${input.listingId}|${input.machineId}|${input.quantity}|${this.now()}`);
     if (this.requests.has(requestId)) throw new Error("IOT_REQUEST_ALREADY_EXISTS");
     const order = this.marketplace.reserve(reservation);
+    this.requestByOrder.set(order.orderId, requestId);
     const request: IoTServiceRequest = {
       requestId,
       buyerId: input.buyerId,
@@ -287,38 +337,47 @@ export class IoTM2MService {
     return { ...request, order, contract };
   }
 
-  hold(requestId: string): ServiceOrder {
-    const request = this.request(requestId);
-    const contract = this.contractForRequest(request.requestId);
-    const order = this.marketplace.getOrder(contract.orderId, request.buyerId);
-    // The reservation deposit already locked at request time counts toward the payment.
-    const due = order.grossAmount + (order.gasFee ?? 0n) - order.reservationDeposit;
-    return this.marketplace.fundOrder(contract.orderId, due, `iot-hold:${request.buyerId}:${requestId}`);
+  /** Amount the buyer funds at hold() (gross + gas - locked deposit); sign "fund" over it. */
+  holdAmount(requestId: string): bigint {
+    const order = this.orders.readOrder(this.contractForRequest(requestId).orderId);
+    return order.grossAmount + (order.gasFee ?? 0n) - order.reservationDeposit;
   }
 
-  simulateExecution(requestId: string, measurements: Record<string, string>, observedAt = this.now(), signer?: KeyObject | string): IoTTelemetry {
+  /** Buyer funds the escrow ("fund" signature by the buyer over { amount: holdAmount() }). */
+  hold(requestId: string, auth?: ActorAuth): ServiceOrder {
+    const request = this.request(requestId);
+    const contract = this.contractForRequest(request.requestId);
+    // The reservation deposit already locked at request time counts toward the payment.
+    return this.marketplace.fundOrder(contract.orderId, this.holdAmount(requestId), auth, `iot-hold:${request.buyerId}:${requestId}`);
+  }
+
+  /**
+   * Simulated execution: the machine produces a usage report signed with its
+   * registered key (`signer` is the machine's private key; required).
+   * `unitsDelivered` defaults to the contracted quantity.
+   */
+  simulateExecution(requestId: string, measurements: Record<string, string>, observedAt = this.now(), signer?: KeyObject, unitsDelivered?: bigint): IoTTelemetry {
     const request = this.request(requestId);
     const contract = this.contractForRequest(requestId);
     const machine = this.machine(request.machineId);
     if (!machine.active) throw new Error("IOT_MACHINE_INACTIVE");
-    const order = this.marketplace.getOrder(contract.orderId, contract.providerId);
+    const order = this.orders.readOrder(contract.orderId);
     if (order.status !== "HELD") throw new Error("IOT_EXECUTION_REQUIRES_HOLD");
+    if (!signer || typeof signer !== "object") throw new Error("IOT_SIGNED_TELEMETRY_REQUIRED");
+    const units = unitsDelivered ?? contract.quantity;
+    if (typeof units !== "bigint" || units < 0n || units > contract.quantity) throw new Error("IOT_TELEMETRY_UNITS_INVALID");
     const generatedSequence = this.telemetrySequences.get(machine.machineId) ?? 0;
     const observedSequence = [...this.telemetry.values()]
       .filter((t) => t.machineId === machine.machineId)
       .reduce((max, t) => Math.max(max, t.sequence), 0);
     const sequence = Math.max(generatedSequence, observedSequence) + 1;
     const nonce = hash({ machineId: machine.machineId, requestId, sequence, observedAt }).slice(0, 32);
-    const telemetryId = id("telemetry", { requestId, contractId: contract.contractId, machineId: machine.machineId, sequence, measurements, observedAt, nonce });
+    const telemetryId = id("telemetry", { requestId, contractId: contract.contractId, machineId: machine.machineId, sequence, measurements, observedAt, nonce, unitsDelivered: units.toString() });
     if (this.telemetry.has(telemetryId)) throw new Error("IOT_TELEMETRY_REPLAY");
-    let signature: string | undefined;
-    if (machine.publicKeyHex) {
-      if (!signer || typeof signer === "string") throw new Error("IOT_SIGNED_TELEMETRY_REQUIRED");
-      signature = signIoTTelemetry({ telemetryId, requestId, contractId: contract.contractId, providerId: contract.providerId, machineId: machine.machineId, sequence, observedAt, measurements: { ...measurements }, nonce }, signer);
-    } else if (typeof signer === "string") {
-      signature = signer;
-    }
-    const row: IoTTelemetry = { telemetryId, requestId, contractId: contract.contractId, providerId: contract.providerId, machineId: machine.machineId, sequence, observedAt, measurements: { ...measurements }, nonce, ...(signature ? { signature } : {}) };
+    const unsigned: IoTTelemetry = { telemetryId, requestId, contractId: contract.contractId, providerId: contract.providerId, machineId: machine.machineId, sequence, observedAt, measurements: { ...measurements }, unitsDelivered: units.toString(), nonce };
+    const signature = signIoTTelemetry(unsigned, signer);
+    if (!verifyIoTTelemetrySignature({ ...unsigned, signature }, machine.publicKeyHex)) throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
+    const row: IoTTelemetry = { ...unsigned, signature };
     this.telemetry.set(telemetryId, row);
     this.telemetrySequences.set(machine.machineId, sequence);
     return { ...row, measurements: { ...row.measurements } };
@@ -332,7 +391,7 @@ export class IoTM2MService {
       if (stableJson(existing) !== stableJson(telemetry)) throw new Error("IOT_TELEMETRY_TAMPERED");
       throw new Error("IOT_TELEMETRY_REPLAY");
     }
-    if (machine.publicKeyHex && !verifyIoTTelemetrySignature(telemetry, machine.publicKeyHex)) {
+    if (!verifyIoTTelemetrySignature(telemetry, machine.publicKeyHex)) {
       throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
     }
     const verifiedSequence = this.verifiedMachineSequences.get(machine.machineId) ?? 0;
@@ -344,13 +403,14 @@ export class IoTM2MService {
     return { ...telemetry, measurements: { ...telemetry.measurements } };
   }
 
-  deliverTelemetry(requestId: string, telemetry: IoTTelemetry): ServiceOrder {
+  /** Provider delivers a signed usage report ("deliver" signature over { deliveryHash: iotTelemetryDeliveryHash(t) }). */
+  deliverTelemetry(requestId: string, telemetry: IoTTelemetry, providerAuth?: ActorAuth): ServiceOrder {
     if (!this.telemetry.has(telemetry.telemetryId)) this.ingestTelemetry(requestId, telemetry);
     this.assertTelemetryBinding(requestId, telemetry);
     const bytes = telemetryPayload(telemetry);
     return this.marketplace.deliverWithExpectedHash(
       this.contractForRequest(requestId).orderId,
-      telemetry.providerId,
+      providerAuth,
       bytes,
       createHash("sha256").update(bytes).digest("hex"),
       `iot-delivery:${telemetry.telemetryId}`,
@@ -374,27 +434,33 @@ export class IoTM2MService {
     if (stableJson(lastObserved) !== stableJson(telemetry)) throw new Error("IOT_TELEMETRY_TAMPERED");
     if (this.now() - telemetry.observedAt > this.telemetryMaxAgeMs) throw new Error("IOT_TELEMETRY_STALE");
     if (telemetry.observedAt > this.now() + this.telemetryMaxFutureSkewMs) throw new Error("IOT_TELEMETRY_FUTURE_TIMESTAMP");
-    const authentication = machine.publicKeyHex
-      ? (verifyIoTTelemetrySignature(telemetry, machine.publicKeyHex) ? "ED25519" : "SIMULATED")
-      : "SIMULATED";
-    if (machine.publicKeyHex && authentication !== "ED25519") throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
-    const verification: IoTVerification = { ok: true, telemetryHash: hash(telemetry), verifiedAt: this.now(), machineId: machine.machineId, sequence: telemetry.sequence, authentication };
+    if (!verifyIoTTelemetrySignature(telemetry, machine.publicKeyHex)) throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
+    if (typeof telemetry.unitsDelivered !== "string" || !/^[0-9]+$/.test(telemetry.unitsDelivered)) throw new Error("IOT_TELEMETRY_UNITS_INVALID");
+    const unitsDelivered = BigInt(telemetry.unitsDelivered);
+    if (unitsDelivered > contract.quantity) throw new Error("IOT_TELEMETRY_UNITS_INVALID");
+    // Only the report actually delivered to the marketplace order can be verified.
+    const deliveryHash = iotTelemetryDeliveryHash(telemetry);
+    const order = this.orders.readOrder(contract.orderId);
+    if (order.deliveryHash !== deliveryHash) throw new Error("IOT_TELEMETRY_NOT_DELIVERED");
+    const verification: IoTVerification = { ok: true, telemetryHash: hash(telemetry), verifiedAt: this.now(), machineId: machine.machineId, sequence: telemetry.sequence, authentication: "ED25519", unitsDelivered, fullyDelivered: unitsDelivered === contract.quantity, deliveryHash };
     this.verifiedMachineSequences.set(machine.machineId, telemetry.sequence);
     this.verifiedNonces.set(`${machine.machineId}:${telemetry.nonce}`, this.now());
     this.verified.set(requestId, verification);
     return verification;
   }
 
-  serviceStatus(requestId: string) {
+  /** Status of a request for a party or the admin (marketplace "read" authorization on the order). */
+  serviceStatus(requestId: string, auth?: ActorAuth) {
     const request = this.request(requestId);
     const contract = this.contractForRequest(requestId);
-    const order = this.marketplace.getOrder(contract.orderId, contract.buyerId);
+    const order = this.marketplace.getOrder(contract.orderId, auth);
     const verification = this.verified.get(requestId);
     const nextAction = order.status === "ACCEPTED" ? "HOLD"
       : order.status === "HELD" ? "EXECUTE_AND_DELIVER"
       : order.status === "DELIVERED" && !verification ? "VERIFY_TELEMETRY"
+      : order.status === "DELIVERED" && !verification.fullyDelivered ? "DISPUTE_USAGE_SHORTFALL"
       : order.status === "DELIVERED" ? "SETTLE"
-      : order.status === "SETTLED" ? "COMPLETE"
+      : order.status === "SETTLED" || order.status === "REFUNDED" ? "COMPLETE"
       : order.status;
     return {
       requestId,
@@ -405,6 +471,8 @@ export class IoTM2MService {
       marketplaceFeeEstimate: order.marketplaceFeeEstimate,
       providerNetEstimate: order.providerNetEstimate,
       verification: verification ? { ...verification } : null,
+      /** For a usage shortfall: provider share an arbiter SPLIT would pay (verified units x unit price). */
+      verifiedUsageAmount: verification ? verification.unitsDelivered * contract.unitPrice : null,
       nextAction,
     } as const;
   }
@@ -428,29 +496,63 @@ export class IoTM2MService {
     if (stableJson(registered) !== stableJson(telemetry)) throw new Error("IOT_TELEMETRY_TAMPERED");
   }
 
-  settle(requestId: string, actorId?: string): IoTSettlement {
+  /**
+   * Settle through the marketplace ("settle" signature by the buyer, the
+   * provider after the dispute window, or the arbiter). The marketplace's IoT
+   * settlement guard requires verified telemetry covering the full quantity.
+   */
+  settle(requestId: string, auth?: ActorAuth): IoTSettlement {
     const request = this.request(requestId);
     const contract = this.contractForRequest(requestId);
-    const verification = this.verified.get(requestId);
-    if (!verification) throw new Error("IOT_VERIFICATION_REQUIRED");
-    if (!actorId) throw new Error("IOT_AUTHENTICATED_ACTOR_REQUIRED");
-    if (actorId !== contract.buyerId && actorId !== this.marketplace.settlementArbiterId) throw new Error("IOT_SETTLEMENT_ACTOR_FORBIDDEN");
-    const settlement = this.marketplace.settle(contract.orderId, actorId);
+    if (!this.verified.get(requestId)) throw new Error("IOT_VERIFICATION_REQUIRED");
+    const settlement = this.marketplace.settle(contract.orderId, auth);
     return { ...settlement, requestId, contractId: contract.contractId, machineId: request.machineId };
   }
 
-  private assertAdmin(actorId?: string): void {
-    if (!actorId || !this.adminAuthorizer || !this.adminAuthorizer(actorId)) throw new Error("IOT_ADMIN_AUTH_REQUIRED");
+  /** Settlement guard installed on the marketplace for IOT_M2M orders. */
+  private assertSettleable(order: ServiceOrder): void {
+    const requestId = this.requestByOrder.get(order.orderId);
+    if (!requestId) throw new Error("IOT_VERIFIED_TELEMETRY_REQUIRED");
+    const verification = this.verified.get(requestId);
+    if (!verification) throw new Error("IOT_VERIFICATION_REQUIRED");
+    if (verification.deliveryHash !== order.deliveryHash) throw new Error("IOT_TELEMETRY_NOT_DELIVERED");
+    if (!verification.fullyDelivered) throw new Error("IOT_USAGE_SHORTFALL");
   }
 
-  getRequest(requestId: string): IoTServiceRequest { return { ...this.request(requestId) }; }
-  getContract(contractId: string): IoTContract { return { ...this.contract(contractId) }; }
-  getTelemetry(telemetryId: string): IoTTelemetry { const t = this.telemetry.get(telemetryId); if (!t) throw new Error("IOT_TELEMETRY_NOT_FOUND"); return { ...t, measurements: { ...t.measurements } }; }
+  private assertAdmin(auth: ActorAuth | undefined, action: "iot-provider-deactivate" | "iot-machine-deactivate", target: string): void {
+    let actor: string;
+    try { actor = this.marketplace.authenticateActor(auth, action, target); } catch { throw new Error("IOT_ADMIN_AUTH_REQUIRED"); }
+    if (actor !== this.marketplace.adminIdentity) throw new Error("IOT_ADMIN_AUTH_REQUIRED");
+    if (this.adminAuthorizer && !this.adminAuthorizer(actor)) throw new Error("IOT_ADMIN_AUTH_REQUIRED");
+  }
+
+  /** v0.4.4: request / contract / telemetry records require a "read" authorization on the order (party or admin). */
+  getRequest(requestId: string, auth?: ActorAuth): IoTServiceRequest {
+    this.marketplace.getOrder(this.contractForRequest(requestId).orderId, auth);
+    return { ...this.request(requestId) };
+  }
+  getContract(contractId: string, auth?: ActorAuth): IoTContract {
+    const contract = this.contract(contractId);
+    this.marketplace.getOrder(contract.orderId, auth);
+    return { ...contract };
+  }
+  getTelemetry(telemetryId: string, auth?: ActorAuth): IoTTelemetry {
+    const t = this.telemetry.get(telemetryId);
+    if (!t) throw new Error("IOT_TELEMETRY_NOT_FOUND");
+    this.marketplace.getOrder(this.contractForRequest(t.requestId).orderId, auth);
+    return { ...t, measurements: { ...t.measurements } };
+  }
+
+  /** Order id behind a request (needed to sign marketplace actions on it). */
+  orderIdOf(requestId: string): string {
+    return this.contractForRequest(requestId).orderId;
+  }
 
   private requestBundle(requestId: string): IoTServiceRequest & { order: ServiceOrder; contract: IoTContract } {
     const request = this.request(requestId);
     const contract = this.contractForRequest(requestId);
-    return { ...request, order: this.marketplace.getOrder(contract.orderId, contract.buyerId), contract };
+    // Only reached after the buyer's reservation signature verified (idempotent replay).
+    return { ...request, order: this.orders.readOrder(contract.orderId), contract };
   }
 
   private provider(providerId: string): IoTProvider {

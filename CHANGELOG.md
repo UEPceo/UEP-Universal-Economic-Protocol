@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.4.4-public-iot-m2m — 2026-10-02
+
+Pending-queue validation, authenticated note-commitment tree, Marketplace disputes and order access, fee floor, and signed IoT telemetry. These follow the open items of v0.4.3. See [`PUBLIC-SECURITY-REMEDIATION-v0.4.4.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md) for the per-finding status and [`docs/API.md`](./docs/API.md) for the changed signatures.
+
+### Pending queue (UEP-B06, UEP-A06, UEP-D01)
+
+- **Sender spend keys** (`src/core/spend-key.ts`): a deterministic Ed25519 key per account, derived from the account credentials. Registration proves account control (`registerSpendKey`); `prepareSpend()` registers it automatically.
+- Every spend carries `senderAuth`. `submit()` requires it from the registered key (`SENDER_AUTH`), also when `requireProof` is disabled.
+- Pending entries are validated at entry:
+  - envelope, fee, commitment and replay;
+  - registered-sender signature;
+  - canonical unspent local inputs with matching openings;
+  - `checkSpendShape()` on the canonical inputs;
+  - fresh outputs;
+  - note membership.
+- The queue is bounded (`maxPendingTransactions`, default 1024, max 100,000; `PENDING_FULL`) and de-duplicated. Offline `submit()` validates before queueing.
+- `restore()` re-validates the pending queue (bound, duplicates, every entry; `INVALID_SNAPSHOT_PENDING`). Snapshots export only entries that still validate. `reconcilePending()` also flags spends sharing an input; it still never settles.
+
+### Authenticated note-commitment tree
+
+- `src/core/note-tree.ts`: an append-only depth-32 Merkle tree of note commitments with membership proofs, historical roots and the stateless `verifyNoteMembership()`.
+- Spends carry `inputMembership`. `submit()` and pending validation verify it (`MEMBERSHIP_PROOF`); outputs that already exist are refused.
+- Snapshots carry `noteRoot`, `noteCount` and the spend-key registry. Restore checks the following:
+  - it rebuilds the tree and checks the root (`INVALID_SNAPSHOT_NOTE_ROOT`);
+  - each replayed spend's proof is anchored before its outputs (`INVALID_SNAPSHOT_TX_MEMBERSHIP`);
+  - each spend has a sender signature (`INVALID_SNAPSHOT_TX_SENDER`);
+  - each spend-key registration is valid (`INVALID_SNAPSHOT_SPEND_KEY`).
+- Snapshot **format version 4**.
+
+### Marketplace disputes and order access (UEP-B07, B08, B12, A07, A09)
+
+- Every order action is an Ed25519-signed `ActorAuth` (`signAction`, domain `UEP-MARKETPLACE-ACTION-v1`).
+  - Providers must be registered and sign their listing terms.
+  - The admin is verified against `adminPublicKey` (fail-closed) and the arbiter against `settlementArbiterPublicKey`.
+  - Identity strings are refused.
+- `getOrder()` requires the buyer, the provider, the admin, or the arbiter on a disputed order. `listOrders()` / `listOrdersPage()` return only the signer's orders, and the admin sees all. Read authorizations expire (`readAuthorizationTtlMs`, default 5 min).
+- Dispute flow:
+  - `openDispute()`: buyer only, within `deliveryDisputeWindowMs`, arbiter required;
+  - `resolveDispute()`: arbiter only, `RELEASE` | `REFUND_BUYER` | `SPLIT`;
+  - `refundBuyer()`: provider concession;
+  - the buyer withdraws by settling;
+  - after `disputeResolutionWindowMs` (default 7 days), `disputeTimeoutOutcome` applies (default `REFUND_BUYER`).
+  - New statuses: `DISPUTED`, `REFUNDED`.
+- Value conservation on every outcome:
+  - the escrow is paid out exactly once;
+  - a split charges the fee only on the provider share;
+  - a refund returns gross + gas and releases the paymaster sponsorship.
+- The provider settles only after the dispute window; the admin never settles. `marketplace-system` is reserved.
+- `attachCategoryService()` gives a service layer a category-scoped read capability and settlement guard. IoT orders cannot be released without one.
+
+### Fee floor (UEP-A16)
+
+- `creatorFee()` (0.1%) and `calculateMarketplaceFee()` (3%) charge at least 1 unit on any positive amount (`MIN_PROTOCOL_FEE`, `MIN_MARKETPLACE_FEE`). The documented rates are unchanged above the floor.
+
+### IoT/M2M telemetry (UEP-B13)
+
+- The unsigned `SIMULATED` mode is removed. Machines require `publicKeyHex` and are registered with the provider's signature, and every telemetry report must be signed by the machine key.
+- Monotonic sequence and nonce anti-replay are kept. The signed payload adds `unitsDelivered`.
+- The provider delivers the telemetry to the order (`deliverTelemetry`). Verification accepts only that report.
+- The Marketplace releases the order only with verified telemetry covering the full quantity (`IOT_VERIFICATION_REQUIRED`, `IOT_USAGE_SHORTFALL`). Shortfalls go through a dispute, with `serviceStatus().verifiedUsageAmount` available to the arbiter.
+- Provider and machine deactivation require the admin signature (or the machine's provider). Reads are party-signed.
+- New `src/service/iot-testkit.ts` for signed test and simulation flows. `simulate:20k` signs every action.
+
+### Compatibility breaks
+
+- Snapshot format 4 is required; v0.4.3 snapshots must be re-taken.
+- Spends need `senderAuth` and `inputMembership` (`prepareSpend()` adds both). `queueConflict()` now returns a `SubmitResult`. New submit codes: `SENDER_AUTH`, `MEMBERSHIP_PROOF`, `PENDING_FULL`.
+- Small amounts pay a 1-unit fee instead of 0.
+- Marketplace calls take a signed `ActorAuth` instead of identity strings:
+  - `publishListing(input, auth)` and `fundOrder(orderId, amount, auth, idem?)`;
+  - `deliver(orderId, auth, bytes, idem?)` and `settle(orderId, auth)`;
+  - `cancel(orderId, auth, reason?)` and `expire(orderId, auth)`;
+  - `getOrder(orderId, auth)`, `listOrders(auth)` and `listOrdersPage(offset, limit, auth)`;
+  - `recordSellerReview(input, auth)`.
+- Admin actions need `adminPublicKey`; an arbiter id needs `settlementArbiterPublicKey`. `MARKETPLACE_VERSION` is `0.4`.
+- IoT: `registerProvider`, `registerMachine`, `deactivate*`, `hold`, `settle`, `serviceStatus`, `getRequest`, `getContract` and `getTelemetry` take signed authorizations. `simulateExecution()` requires the machine private key. Machines without a key are refused. `IOT_M2M_VERSION` is `0.3`.
+
+### Known open issues
+
+- Development MAC and configurable `requireProof` (UEP-A11, A12): unchanged, but sender signatures are now always required.
+- ZK witness range checks (UEP-A22); single-input envelope (UEP-C04, deliberate).
+- The spend-key registry reaches replicas through signed snapshots; a replica cannot re-check a registration made elsewhere.
+- No key rotation or revocation.
+- Read authorizations are reusable within their TTL.
+- The arbiter is a trusted party.
+- Self-service identity registration (not Sybil resistance); `creditAccount()` testnet stub; explicit zero reservation deposit (UEP-D02).
+- Capacity is not restored after post-delivery refunds.
+
+### Tests
+
+- New `pending-notetree.test.ts` (12): sender auth, unregistered sender, input existence/shape/spent, queue bound, offline submit, input conflicts, poisoned restore, membership proofs, restore root/proof/sender checks, `requireProof=false`, protocol fee floor.
+- New `disputes-access.test.ts` (14): every dispute outcome with conservation, withdraw/concede, timeout, dispute authorization, provider claim window, read/list/modify access, provider/admin/arbiter keys, Marketplace fee floor.
+- `iot-m2m.test.ts` rewritten for signed flows (22), including verified-telemetry settlement, delivered-report binding, shortfall split and over-quantity rejection.
+- Existing suites migrated to the signed API.
+- Totals: protocol 61/61, Marketplace/IoT 77/77, scale 3/3, IoT 22/22 on Node 22 and 24. `smoke:testnet`, `quickstart` and `simulate:20k` (20,000 settled, 0 errors, value conserved) pass.
+
 ## 0.4.3-public-iot-m2m — 2026-10-02
 
 Snapshot authority (UEP-B05) and reservation economics (UEP-A10) redesign, following the open items of v0.4.2. See [`PUBLIC-SECURITY-REMEDIATION-v0.4.3.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md) for the per-finding status and [`docs/API.md`](./docs/API.md) for the changed signatures.

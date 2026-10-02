@@ -14,3 +14,5 @@ export * from "./address.ts";
 export * from "./assets.ts";
 export * from "./security-policy.ts";
 export * from "./ed25519.ts";
+export * from "./note-tree.ts";
+export * from "./spend-key.ts";

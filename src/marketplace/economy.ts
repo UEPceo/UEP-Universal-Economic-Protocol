@@ -62,10 +62,21 @@ export type TreasuryWithdrawal = {
   authorizationRef: string;
 };
 
+/** Minimum Marketplace fee for any positive settled amount when the fee rate is non-zero (UEP-A16). */
+export const MIN_MARKETPLACE_FEE = 1n;
+
+/**
+ * Marketplace fee: 3% of the settled amount, rounded down, but never below
+ * MIN_MARKETPLACE_FEE (and never above the amount itself) when the rate is
+ * non-zero. A configured rate of 0 bps stays fee-free.
+ */
 export function calculateMarketplaceFee(grossAmount: bigint, feeBps = MARKETPLACE_FEE_BPS): bigint {
   if (grossAmount < 0n) throw new Error("NEGATIVE_AMOUNT");
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 10_000) throw new Error("INVALID_FEE_BPS");
-  return (grossAmount * BigInt(feeBps)) / BPS_DENOMINATOR;
+  if (grossAmount === 0n || feeBps === 0) return 0n;
+  const proportional = (grossAmount * BigInt(feeBps)) / BPS_DENOMINATOR;
+  const floored = proportional < MIN_MARKETPLACE_FEE ? MIN_MARKETPLACE_FEE : proportional;
+  return floored > grossAmount ? grossAmount : floored;
 }
 
 export function quoteSettlement(grossAmount: bigint, asset: string, feeBps = MARKETPLACE_FEE_BPS): FeeQuote {

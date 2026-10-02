@@ -19,9 +19,9 @@ import {
 import { MarketplacePaymaster, type GasQuote } from "./paymaster.ts";
 import type { KeyObject } from "node:crypto";
 import { publicKeyHexOf, toPublicKey, verifyEd25519, type PublicKeyLike } from "../core/ed25519.ts";
-import { DEFAULT_MARKETPLACE_ID, cancellationMessage, reservationMessage } from "./identity.ts";
+import { DEFAULT_MARKETPLACE_ID, actionMessage, disputeReasonHash, listingTerms, reservationMessage, type ActorAuth, type MarketplaceAction } from "./identity.ts";
 
-export const MARKETPLACE_VERSION = "0.3" as const;
+export const MARKETPLACE_VERSION = "0.4" as const;
 
 /** Default reservation deposit: 1.00% of the order's gross amount (same bps model as the Marketplace fee). */
 export const DEFAULT_RESERVATION_DEPOSIT_BPS = 100;
@@ -33,9 +33,25 @@ export const DEFAULT_CANCELLATION_GRACE_MS = 2 * 60 * 1000;
 export const DEFAULT_RESERVATION_TTL_MS = 10 * 60 * 1000;
 /** Default limit of concurrent open reservations per identity. */
 export const DEFAULT_MAX_ACTIVE_RESERVATIONS = 8;
+/** Default time the arbiter has to resolve an open dispute (7 days). */
+export const DEFAULT_DISPUTE_RESOLUTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** Default validity of a signed read / list authorization (5 minutes, either direction). */
+export const DEFAULT_READ_AUTHORIZATION_TTL_MS = 5 * 60 * 1000;
+/** Identity strings that can never be registered, listed or used as a buyer (UEP-A09/B12). */
+export const RESERVED_IDENTITIES = ["marketplace-admin", "marketplace-system"] as const;
+
+export type DisputeOutcome = "RELEASE" | "REFUND_BUYER" | "SPLIT";
+export type DisputeResolution = { outcome: DisputeOutcome; /** SPLIT: part of grossAmount paid to the provider (before the Marketplace fee). */ providerAmount?: bigint };
+/** Hooks a category service (e.g. IoT / M2M) attaches to the marketplace. */
+export type CategoryServiceHooks = {
+  /** Throws to block the normal settle() path (buyer release / provider claim) of an order in this category. */
+  settlementGuard?: (order: ServiceOrder) => void;
+};
+/** Capability returned to the category service: read orders of its own category only. */
+export type CategoryServiceAccess = { readOrder(orderId: string): ServiceOrder };
 
 export type ServiceCategory = "COMPUTE" | "STORAGE" | "API" | "DATA" | "IOT_M2M";
-export type OrderStatus = "ACCEPTED" | "HELD" | "DELIVERED" | "SETTLED" | "CANCELLED" | "EXPIRED";
+export type OrderStatus = "ACCEPTED" | "HELD" | "DELIVERED" | "DISPUTED" | "SETTLED" | "REFUNDED" | "CANCELLED" | "EXPIRED";
 
 export type ServiceListing = {
   listingId: string;
@@ -77,6 +93,15 @@ export type ServiceOrder = {
   gasQuoteId?: string;
   settledFee?: bigint;
   providerPayout?: bigint;
+  /** v0.4.4: amount returned to the buyer by a refund or split outcome. */
+  buyerRefund?: bigint;
+  /** v0.4.4: when the provider delivered (start of the dispute window). */
+  deliveredAt?: number;
+  /** v0.4.4: dispute state (hash of the buyer's reason; the text is not stored). */
+  disputedAt?: number;
+  disputeReasonHash?: string;
+  disputeDeadline?: number;
+  disputeOutcome?: DisputeOutcome | "WITHDRAWN" | "PROVIDER_REFUND" | "TIMEOUT_REFUND" | "TIMEOUT_RELEASE";
   createdAt: number;
   updatedAt: number;
   reservationExpiresAt?: number;
@@ -91,6 +116,10 @@ export type SettlementRecord = {
   treasuryId: string;
   settledAt: number;
   gasFee?: bigint;
+  /** v0.4.4: how the order closed (normal release, arbiter split or a refund). */
+  outcome?: DisputeOutcome;
+  /** v0.4.4: amount returned to the buyer (refund / split), including refunded gas. */
+  buyerRefund?: bigint;
 };
 
 export type MarketplaceConfig = {
@@ -104,9 +133,21 @@ export type MarketplaceConfig = {
   paymaster?: MarketplacePaymaster;
   /** Authenticated marketplace administrator identity; the legacy literal is permanently reserved. */
   adminIdentity?: string;
+  /** v0.4.4: Ed25519 public key of `adminIdentity`. Without it no admin action is possible (fail closed). */
+  adminPublicKey?: PublicKeyLike;
+  /** Optional extra gate evaluated after the admin signature verifies. */
   adminAuthorizer?: (actorId: string) => boolean;
   settlementArbiterId?: string;
+  /** v0.4.4: Ed25519 public key of the settlement arbiter (required when settlementArbiterId is set). */
+  settlementArbiterPublicKey?: PublicKeyLike;
+  /** Buyer dispute window after delivery; the provider can claim only after it (default 24 h). */
   deliveryDisputeWindowMs?: number;
+  /** v0.4.4: time the arbiter has to resolve a dispute (default 7 days). */
+  disputeResolutionWindowMs?: number;
+  /** v0.4.4: outcome applied when a dispute is not resolved in time (default REFUND_BUYER). */
+  disputeTimeoutOutcome?: "REFUND_BUYER" | "RELEASE";
+  /** v0.4.4: validity window of signed read / list authorizations (default 5 min). */
+  readAuthorizationTtlMs?: number;
   /**
    * Fixed reservation deposit per order. When omitted, the deposit is
    * max(MIN_RESERVATION_DEPOSIT, grossAmount * reservationDepositBps / 10_000).
@@ -193,8 +234,14 @@ export class DigitalServicesMarketplace {
   readonly paymaster?: MarketplacePaymaster;
   readonly adminIdentity: string;
   private readonly adminAuthorizer?: (actorId: string) => boolean;
+  private readonly adminKey?: KeyObject;
   readonly settlementArbiterId?: string;
+  private readonly arbiterKey?: KeyObject;
   readonly deliveryDisputeWindowMs: number;
+  readonly disputeResolutionWindowMs: number;
+  readonly disputeTimeoutOutcome: "REFUND_BUYER" | "RELEASE";
+  readonly readAuthorizationTtlMs: number;
+  private readonly categoryServices = new Map<ServiceCategory, CategoryServiceHooks>();
   /** Fixed per-order deposit if configured; otherwise the bps-based default applies. */
   readonly fixedReservationDeposit?: bigint;
   readonly reservationDepositBps: number;
@@ -220,9 +267,23 @@ export class DigitalServicesMarketplace {
     this.paymaster = config.paymaster;
     this.adminIdentity = config.adminIdentity ?? "uep:marketplace-admin";
     if (this.adminIdentity === "marketplace-admin") throw new Error("LEGACY_ADMIN_ID_RESERVED");
+    if ((RESERVED_IDENTITIES as readonly string[]).includes(this.adminIdentity)) throw new Error("LEGACY_ADMIN_ID_RESERVED");
     this.adminAuthorizer = config.adminAuthorizer;
+    if (config.adminPublicKey !== undefined) {
+      try { this.adminKey = toPublicKey(config.adminPublicKey); } catch { throw new Error("ADMIN_PUBLIC_KEY_INVALID"); }
+    }
     this.settlementArbiterId = config.settlementArbiterId;
+    if (this.settlementArbiterId !== undefined) {
+      if (!this.settlementArbiterId || (RESERVED_IDENTITIES as readonly string[]).includes(this.settlementArbiterId) || this.settlementArbiterId === this.adminIdentity) throw new Error("ARBITER_ID_INVALID");
+      if (config.settlementArbiterPublicKey === undefined) throw new Error("ARBITER_PUBLIC_KEY_REQUIRED");
+      try { this.arbiterKey = toPublicKey(config.settlementArbiterPublicKey); } catch { throw new Error("ARBITER_PUBLIC_KEY_INVALID"); }
+    }
     this.deliveryDisputeWindowMs = config.deliveryDisputeWindowMs ?? 24 * 60 * 60 * 1000;
+    this.disputeResolutionWindowMs = config.disputeResolutionWindowMs ?? DEFAULT_DISPUTE_RESOLUTION_WINDOW_MS;
+    this.disputeTimeoutOutcome = config.disputeTimeoutOutcome ?? "REFUND_BUYER";
+    this.readAuthorizationTtlMs = config.readAuthorizationTtlMs ?? DEFAULT_READ_AUTHORIZATION_TTL_MS;
+    if (!Number.isSafeInteger(this.deliveryDisputeWindowMs) || this.deliveryDisputeWindowMs < 0 || !Number.isSafeInteger(this.disputeResolutionWindowMs) || this.disputeResolutionWindowMs <= 0 || !Number.isSafeInteger(this.readAuthorizationTtlMs) || this.readAuthorizationTtlMs <= 0) throw new Error("INVALID_DISPUTE_CONFIG");
+    if (this.disputeTimeoutOutcome !== "REFUND_BUYER" && this.disputeTimeoutOutcome !== "RELEASE") throw new Error("INVALID_DISPUTE_CONFIG");
     this.fixedReservationDeposit = config.reservationDeposit;
     this.reservationDepositBps = config.reservationDepositBps ?? DEFAULT_RESERVATION_DEPOSIT_BPS;
     this.maxActiveReservationsPerIdentity = config.maxActiveReservationsPerIdentity ?? DEFAULT_MAX_ACTIVE_RESERVATIONS;
@@ -251,7 +312,7 @@ export class DigitalServicesMarketplace {
    */
   registerIdentity(identityId: string, publicKey: PublicKeyLike): RegisteredIdentity {
     if (!identityId || typeof identityId !== "string") throw new Error("IDENTITY_ID_REQUIRED");
-    if (identityId === "marketplace-admin" || identityId === this.adminIdentity || identityId === this.settlementArbiterId) throw new Error("RESERVED_IDENTITY");
+    if (this.isReservedIdentity(identityId)) throw new Error("RESERVED_IDENTITY");
     if (this.identities.has(identityId)) throw new Error("IDENTITY_ALREADY_REGISTERED");
     let keyObject: KeyObject;
     try { keyObject = toPublicKey(publicKey); } catch { throw new Error("IDENTITY_PUBLIC_KEY_INVALID"); }
@@ -307,9 +368,16 @@ export class DigitalServicesMarketplace {
     return { asset, credited, available, lockedDeposits, held, marketplaceFees, gasCaptured, conserved: credited === available + lockedDeposits + held + marketplaceFees + gasCaptured };
   }
 
-  publishListing(input: Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint"> & { listingId?: string; sellerBond?: bigint }): ServiceListing {
+  /**
+   * Publish a listing. v0.4.4: the provider must be a registered identity and
+   * `auth` must be its "publish" signature over the listing terms (see listingTerms()).
+   */
+  publishListing(input: Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint"> & { listingId?: string; sellerBond?: bigint }, auth?: ActorAuth): ServiceListing {
     if (!input.providerId || !input.title || !input.asset) throw new Error("LISTING_METADATA_REQUIRED");
-    if (input.providerId === "marketplace-admin" || input.providerId === this.adminIdentity) throw new Error("RESERVED_IDENTITY");
+    if (this.isReservedIdentity(input.providerId)) throw new Error("RESERVED_IDENTITY");
+    if (!this.identities.has(input.providerId)) throw new Error("IDENTITY_NOT_REGISTERED");
+    const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", listingTerms(input));
+    if (actor !== input.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (input.unitPrice <= 0n || input.capacity <= 0n) throw new Error("INVALID_LISTING_ECONOMICS");
     const now = this.now();
     const recent = (this.listingAttempts.get(input.providerId) ?? []).filter((t) => now - t < this.listingWindowMs);
@@ -430,7 +498,7 @@ export class DigitalServicesMarketplace {
   /** Throws unless `buyerId` is registered and `signature` is its valid signReservation() signature. */
   assertReservationAuthorized(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote }): void {
     if (!input.buyerId) throw new Error("BUYER_REQUIRED");
-    if (input.buyerId === "marketplace-admin" || input.buyerId === this.adminIdentity) throw new Error("RESERVED_IDENTITY");
+    if (this.isReservedIdentity(input.buyerId)) throw new Error("RESERVED_IDENTITY");
     const identity = this.identities.get(input.buyerId);
     if (!identity) throw new Error("IDENTITY_NOT_REGISTERED");
     if (!input.idempotencyKey) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
@@ -443,15 +511,18 @@ export class DigitalServicesMarketplace {
     return this.reserve(input);
   }
 
-  fundOrder(orderId: string, amount: bigint, idempotencyKey?: string): ServiceOrder {
+  /** Buyer funds the remainder of an order (v0.4.4: buyer "fund" signature over { amount }). */
+  fundOrder(orderId: string, amount: bigint, auth: ActorAuth | undefined, idempotencyKey?: string): ServiceOrder {
+    const actor = this.authenticateActor(auth, "fund", orderId, { amount });
+    const order = this.order(orderId);
+    if (actor !== order.buyerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
     if (idempotencyKey) {
       const previous = this.operationIdempotency.get(`fund:${orderId}:${idempotencyKey}`);
       if (previous) {
         if (previous !== `${orderId}:${amount.toString()}`) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
-        return { ...this.order(orderId) };
+        return { ...order };
       }
     }
-    const order = this.order(orderId);
     this.assertReservationLive(order);
     if (order.status !== "ACCEPTED") throw new Error("ORDER_NOT_FUNDABLE");
     // The locked deposit counts toward the payment: the buyer funds the remainder.
@@ -471,127 +542,170 @@ export class DigitalServicesMarketplace {
     return { ...order };
   }
 
-  deliver(orderId: string, providerId: string, bytes: Uint8Array | Buffer, idempotencyKey?: string): ServiceOrder {
+  /** Provider delivers (v0.4.4: provider "deliver" signature over { deliveryHash }). */
+  deliver(orderId: string, auth: ActorAuth | undefined, bytes: Uint8Array | Buffer, idempotencyKey?: string): ServiceOrder {
+    const hash = contentHash(bytes);
+    const actor = this.authenticateActor(auth, "deliver", orderId, { deliveryHash: hash });
+    const order = this.order(orderId);
+    if (actor !== order.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (idempotencyKey) {
       const previous = this.operationIdempotency.get(`deliver:${orderId}:${idempotencyKey}`);
       if (previous) {
         if (previous !== orderId) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
-        return { ...this.order(orderId) };
+        return { ...order };
       }
     }
-    const order = this.order(orderId);
     this.assertReservationLive(order);
     if (order.status !== "HELD") throw new Error("ORDER_NOT_DELIVERABLE");
-    if (providerId !== order.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (this.deliveryValidator) {
       const validation = this.deliveryValidator(order, bytes);
       if (!validation.ok) throw new Error(`DELIVERY_VALIDATION_FAILED:${validation.reason ?? "INVALID_DELIVERY"}`);
     }
-    const hash = contentHash(bytes);
     order.deliveryHash = hash;
     order.status = "DELIVERED";
-    order.updatedAt = this.now();
+    order.deliveredAt = this.now();
+    order.updatedAt = order.deliveredAt;
     if (idempotencyKey) this.operationIdempotency.set(`deliver:${orderId}:${idempotencyKey}`, orderId);
     return { ...order };
   }
 
-  deliverWithExpectedHash(orderId: string, providerId: string, bytes: Uint8Array | Buffer, expectedHash: string, idempotencyKey?: string): ServiceOrder {
+  deliverWithExpectedHash(orderId: string, auth: ActorAuth | undefined, bytes: Uint8Array | Buffer, expectedHash: string, idempotencyKey?: string): ServiceOrder {
     const check = verifyContentHash(bytes, expectedHash);
     if (!check.ok) throw new Error(check.reason);
-    return this.deliver(orderId, providerId, bytes, idempotencyKey);
+    return this.deliver(orderId, auth, bytes, idempotencyKey);
   }
 
-  settle(orderId: string, actorId?: string): SettlementRecord {
+  /**
+   * Release a delivered order to the provider (v0.4.4, "settle" signature).
+   *  - Buyer: any time after delivery (also withdraws an open dispute).
+   *  - Provider: only after `deliveryDisputeWindowMs` and only if no dispute is open.
+   *  - Arbiter: may release a DELIVERED order; open disputes go through resolveDispute().
+   *  - Administrator and anyone else: not authorized.
+   * A DISPUTED order past its resolution deadline closes with `disputeTimeoutOutcome`
+   * when the buyer, provider or arbiter calls settle().
+   * Category settlement guards (e.g. IoT verified telemetry) apply to the release paths.
+   */
+  settle(orderId: string, auth: ActorAuth | undefined): SettlementRecord {
+    const actor = this.authenticateActor(auth, "settle", orderId);
     const order = this.order(orderId);
-    this.assertActorAuthenticated(actorId);
-    const isAdmin = this.isAdmin(actorId!);
-    const isBuyer = actorId === order.buyerId;
-    const isArbiter = !!this.settlementArbiterId && actorId === this.settlementArbiterId;
-    const deadlinePassed = order.deliveryHash !== undefined && this.now() >= order.updatedAt + this.deliveryDisputeWindowMs;
-    if (!isBuyer && !isArbiter && !(deadlinePassed && !isAdmin)) throw new Error("SETTLEMENT_NOT_AUTHORIZED");
-    if (!isBuyer && !isArbiter && !isAdmin && !deadlinePassed) throw new Error("SETTLEMENT_DISPUTE_WINDOW_ACTIVE");
-    if (isAdmin && !this.isAdmin(actorId!)) throw new Error("ADMIN_NOT_AUTHORIZED");
-    if (order.status !== "DELIVERED") this.assertReservationLive(order);
-    if (order.status === "SETTLED") {
+    const isBuyer = actor === order.buyerId;
+    const isProvider = actor === order.providerId;
+    const isArbiter = this.isArbiter(actor);
+    if (!isBuyer && !isProvider && !isArbiter) throw new Error("SETTLEMENT_NOT_AUTHORIZED");
+    if (order.status === "SETTLED" || order.status === "REFUNDED") {
       const existing = this.settlements.get(orderId);
       if (existing) return { ...existing };
       throw new Error("SETTLEMENT_RECORD_MISSING");
     }
-    if (order.status !== "DELIVERED") throw new Error("ORDER_NOT_SETTLEABLE");
-    const required = order.grossAmount + (order.gasFee ?? 0n);
-    if (order.heldAmount !== required) throw new Error("HOLD_NOT_COMPLETE");
-    const heldKey = key(order.asset, order.buyerId);
-    const held = this.held.get(heldKey) ?? 0n;
-    if (held < order.heldAmount) throw new Error("HELD_BALANCE_INSUFFICIENT");
-
-    if (order.gasFee && order.gasFee > 0n) {
-      if (!this.paymaster || !order.gasQuoteId) throw new Error("PAYMASTER_STATE_MISSING");
-      const gasQuote = this.paymaster.sponsoredQuote(order.orderId, order.gasQuoteId);
-      if (gasQuote.asset !== order.asset || gasQuote.gasFee !== order.gasFee) throw new Error("GAS_QUOTE_MISMATCH");
-      this.paymaster.capture(order.orderId, gasQuote, this.now());
+    if (order.status === "DISPUTED") {
+      if (this.now() >= (order.disputeDeadline ?? Number.POSITIVE_INFINITY)) {
+        return this.timeoutDispute(order);
+      }
+      if (!isBuyer) throw new Error("DISPUTE_PENDING");
+      // The buyer withdraws its own dispute and releases payment.
+      this.runSettlementGuard(order);
+      return this.payout(order, order.grossAmount, "RELEASE", "WITHDRAWN");
     }
-    const quote = this.treasury.settleMarketplaceFee(order.orderId, order.grossAmount, order.asset, this.now());
-    this.held.set(heldKey, held - order.heldAmount);
-    this.add(this.accounts, key(order.asset, order.providerId), quote.providerNet);
-    this.add(this.feesCollected, order.asset, quote.marketplaceFee);
-    this.add(this.gasCollected, order.asset, order.gasFee ?? 0n);
-    order.heldAmount = 0n;
-    order.settledFee = quote.marketplaceFee;
-    order.providerPayout = quote.providerNet;
-    order.status = "SETTLED";
-    order.updatedAt = this.now();
-    this.decrementActiveReservation(order.buyerId);
-    const record: SettlementRecord = {
-      orderId: order.orderId,
-      asset: order.asset,
-      grossAmount: order.grossAmount,
-      marketplaceFee: quote.marketplaceFee,
-      providerPayout: quote.providerNet,
-      treasuryId: this.treasury.treasuryId,
-      settledAt: order.updatedAt,
-      gasFee: order.gasFee ?? 0n,
-    };
-    this.settlements.set(orderId, record);
-    return { ...record };
+    if (order.status !== "DELIVERED") {
+      this.assertReservationLive(order);
+      throw new Error("ORDER_NOT_SETTLEABLE");
+    }
+    if (isProvider && !isBuyer && !isArbiter && this.now() < (order.deliveredAt ?? order.updatedAt) + this.deliveryDisputeWindowMs) throw new Error("SETTLEMENT_DISPUTE_WINDOW_ACTIVE");
+    this.runSettlementGuard(order);
+    return this.payout(order, order.grossAmount, "RELEASE");
   }
 
   /**
-   * Cancel an open order.
-   *  - Buyer (signature required, see signCancellation): within `cancellationGraceMs`
-   *    of reserve() the deposit is refunded; afterwards it is forfeited to the provider.
-   *    Any funded remainder is refunded.
-   *  - Provider or authorized admin: the buyer is refunded in full.
+   * Buyer opens a dispute on a DELIVERED order within `deliveryDisputeWindowMs`
+   * ("dispute" signature over { reasonHash }). Requires a configured arbiter.
+   * Funds stay in escrow until the arbiter resolves, the buyer withdraws, the
+   * provider refunds, or the resolution deadline passes.
    */
-  cancel(orderId: string, actorId: string | undefined, options: string | { reason?: string; signature?: string } = "buyer_or_provider_cancelled"): ServiceOrder {
+  openDispute(orderId: string, auth: ActorAuth | undefined, reason: string): ServiceOrder {
+    if (typeof reason !== "string" || !reason) throw new Error("DISPUTE_REASON_REQUIRED");
+    const reasonHash = disputeReasonHash(reason);
+    const actor = this.authenticateActor(auth, "dispute", orderId, { reasonHash });
     const order = this.order(orderId);
-    this.assertActorAuthenticated(actorId);
-    const isAdmin = this.isAdmin(actorId!);
-    const isBuyer = actorId === order.buyerId;
-    if (!isAdmin && !isBuyer && actorId !== order.providerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
-    if (order.status === "SETTLED") throw new Error("ORDER_ALREADY_SETTLED");
-    if (order.status === "DELIVERED") throw new Error("DELIVERED_ORDER_NOT_CANCELLABLE");
-    if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
-    const forfeit = isBuyer && !isAdmin && actorId !== order.providerId;
-    if (forfeit) {
-      const signature = typeof options === "string" ? undefined : options.signature;
-      const identity = this.identities.get(order.buyerId);
-      if (!signature || !identity) throw new Error("BUYER_SIGNATURE_REQUIRED");
-      if (!verifyEd25519(cancellationMessage({ marketplaceId: this.marketplaceId, orderId: order.orderId, buyerId: order.buyerId }), signature, this.identityKeys.get(order.buyerId)!)) throw new Error("CANCELLATION_SIGNATURE_INVALID");
+    if (actor !== order.buyerId) throw new Error("DISPUTE_NOT_AUTHORIZED");
+    if (!this.settlementArbiterId || !this.arbiterKey) throw new Error("DISPUTE_ARBITER_NOT_CONFIGURED");
+    if (order.status === "DISPUTED") return { ...order };
+    if (order.status !== "DELIVERED") throw new Error("ORDER_NOT_DISPUTABLE");
+    const now = this.now();
+    if (now >= (order.deliveredAt ?? order.updatedAt) + this.deliveryDisputeWindowMs) throw new Error("DISPUTE_WINDOW_CLOSED");
+    order.status = "DISPUTED";
+    order.disputedAt = now;
+    order.disputeReasonHash = reasonHash;
+    order.disputeDeadline = now + this.disputeResolutionWindowMs;
+    order.updatedAt = now;
+    return { ...order };
+  }
+
+  /**
+   * Arbiter resolves an open dispute ("resolve" signature over { outcome, providerAmount }).
+   *  - RELEASE: normal settlement to the provider.
+   *  - REFUND_BUYER: gross amount and gas returned to the buyer; no fee.
+   *  - SPLIT: `providerAmount` (0 < x < gross) goes to the provider minus the
+   *    Marketplace fee on x; gross - x returns to the buyer; gas is captured.
+   */
+  resolveDispute(orderId: string, auth: ActorAuth | undefined, resolution: DisputeResolution): SettlementRecord {
+    if (!resolution || !["RELEASE", "REFUND_BUYER", "SPLIT"].includes(resolution.outcome)) throw new Error("DISPUTE_OUTCOME_INVALID");
+    const providerAmount = resolution.outcome === "SPLIT" ? resolution.providerAmount : undefined;
+    if (resolution.outcome === "SPLIT" && typeof providerAmount !== "bigint") throw new Error("DISPUTE_SPLIT_INVALID");
+    const actor = this.authenticateActor(auth, "resolve", orderId, { outcome: resolution.outcome, providerAmount: providerAmount ?? null });
+    const order = this.order(orderId);
+    if (!this.isArbiter(actor)) throw new Error("DISPUTE_RESOLUTION_NOT_AUTHORIZED");
+    if (order.status === "SETTLED" || order.status === "REFUNDED") {
+      const existing = this.settlements.get(orderId);
+      if (existing) return { ...existing };
     }
+    if (order.status !== "DISPUTED") throw new Error("DISPUTE_NOT_OPEN");
+    if (resolution.outcome === "RELEASE") return this.payout(order, order.grossAmount, "RELEASE");
+    if (resolution.outcome === "REFUND_BUYER") return this.payout(order, 0n, "REFUND_BUYER");
+    if (providerAmount! < 0n || providerAmount! > order.grossAmount) throw new Error("DISPUTE_SPLIT_INVALID");
+    if (providerAmount === 0n) return this.payout(order, 0n, "REFUND_BUYER");
+    if (providerAmount === order.grossAmount) return this.payout(order, order.grossAmount, "RELEASE");
+    return this.payout(order, providerAmount!, "SPLIT");
+  }
+
+  /** Provider refunds the buyer in full for a DELIVERED or DISPUTED order ("refund" signature). */
+  refundBuyer(orderId: string, auth: ActorAuth | undefined): SettlementRecord {
+    const actor = this.authenticateActor(auth, "refund", orderId);
+    const order = this.order(orderId);
+    if (actor !== order.providerId) throw new Error("REFUND_NOT_AUTHORIZED");
+    if (order.status === "REFUNDED") return { ...this.settlements.get(orderId)! };
+    if (order.status !== "DELIVERED" && order.status !== "DISPUTED") throw new Error("ORDER_NOT_REFUNDABLE");
+    return this.payout(order, 0n, "REFUND_BUYER", "PROVIDER_REFUND");
+  }
+
+  /**
+   * Cancel an open order ("cancel" signature).
+   *  - Buyer: within `cancellationGraceMs` of reserve() the deposit is refunded;
+   *    afterwards it is forfeited to the provider. Any funded remainder is refunded.
+   *  - Provider or authenticated admin: the buyer is refunded in full.
+   */
+  cancel(orderId: string, auth: ActorAuth | undefined, _reason = "buyer_or_provider_cancelled"): ServiceOrder {
+    const actor = this.authenticateActor(auth, "cancel", orderId);
+    const order = this.order(orderId);
+    const isAdmin = this.isAdmin(actor);
+    const isBuyer = actor === order.buyerId;
+    const isProvider = actor === order.providerId;
+    if (!isAdmin && !isBuyer && !isProvider) throw new Error("ORDER_ACCESS_FORBIDDEN");
+    if (order.status === "SETTLED" || order.status === "REFUNDED") throw new Error("ORDER_ALREADY_SETTLED");
+    if (order.status === "DELIVERED" || order.status === "DISPUTED") throw new Error("DELIVERED_ORDER_NOT_CANCELLABLE");
+    if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
+    const forfeit = isBuyer && !isAdmin && !isProvider;
     const withinGrace = this.now() - order.createdAt <= this.cancellationGraceMs;
     this.closeOrder(order, "CANCELLED", forfeit && !withinGrace);
     return { ...order };
   }
 
-  expire(orderId: string, actorId?: string): ServiceOrder {
+  /** Close an order whose reservation TTL has passed ("expire" signature; party or admin). */
+  expire(orderId: string, auth: ActorAuth | undefined): ServiceOrder {
+    const actor = this.authenticateActor(auth, "expire", orderId);
     const order = this.order(orderId);
-    this.assertActorAuthenticated(actorId);
-    const isAdmin = this.isAdmin(actorId!);
-    const isBuyer = actorId === order.buyerId;
-    const isProvider = actorId === order.providerId;
-    if (!isAdmin && !isBuyer && !isProvider) throw new Error("ORDER_ACTION_FORBIDDEN");
-    if (order.status === "SETTLED") throw new Error("ORDER_ALREADY_SETTLED");
-    if (order.status === "DELIVERED") throw new Error("DELIVERED_ORDER_NOT_EXPIRABLE");
+    if (!this.isAdmin(actor) && actor !== order.buyerId && actor !== order.providerId) throw new Error("ORDER_ACTION_FORBIDDEN");
+    if (order.status === "SETTLED" || order.status === "REFUNDED") throw new Error("ORDER_ALREADY_SETTLED");
+    if (order.status === "DELIVERED" || order.status === "DISPUTED") throw new Error("DELIVERED_ORDER_NOT_EXPIRABLE");
     if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
     // Expiry is a TTL outcome, never an early exit (it can forfeit the deposit).
     if (order.reservationExpiresAt === undefined || this.now() < order.reservationExpiresAt) throw new Error("RESERVATION_NOT_EXPIRED");
@@ -599,18 +713,25 @@ export class DigitalServicesMarketplace {
     return { ...order };
   }
 
-  getOrder(orderId: string, actorId?: string): ServiceOrder {
+  /**
+   * Read one order ("read" signature with `issuedAt`). Allowed for the buyer,
+   * the provider, the administrator, and the arbiter once a dispute was opened.
+   */
+  getOrder(orderId: string, auth: ActorAuth | undefined): ServiceOrder {
+    const actor = this.authenticateRead(auth, "read", orderId);
     const order = this.order(orderId);
-    this.assertActorAuthenticated(actorId);
-    if (!this.isAdmin(actorId!) && actorId !== order.buyerId && actorId !== order.providerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
+    const arbiterView = this.isArbiter(actor) && order.disputedAt !== undefined;
+    if (!this.isAdmin(actor) && !arbiterView && actor !== order.buyerId && actor !== order.providerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
     return { ...order };
   }
 
-  recordSellerReview(input: { orderId: string; buyerId: string; rating: 1 | 2 | 3 | 4 | 5 }): SellerReputation {
+  /** Buyer review of a settled order ("review" signature over { rating }). */
+  recordSellerReview(input: { orderId: string; rating: 1 | 2 | 3 | 4 | 5 }, auth: ActorAuth | undefined): SellerReputation {
+    const actor = this.authenticateActor(auth, "review", input.orderId, { rating: input.rating });
     const order = this.order(input.orderId);
+    if (actor !== order.buyerId) throw new Error("REVIEW_NOT_AUTHORIZED");
     if (order.status !== "SETTLED") throw new Error("REVIEW_REQUIRES_SETTLEMENT");
-    if (input.buyerId !== order.buyerId) throw new Error("REVIEW_NOT_AUTHORIZED");
-    this.reputation.record({ sellerId: order.providerId, buyerId: input.buyerId, orderId: order.orderId, rating: input.rating, settledAmount: order.grossAmount, sellerBond: this.listing(order.listingId).sellerBond, createdAt: order.updatedAt });
+    this.reputation.record({ sellerId: order.providerId, buyerId: order.buyerId, orderId: order.orderId, rating: input.rating, settledAmount: order.grossAmount, sellerBond: this.listing(order.listingId).sellerBond, createdAt: order.updatedAt });
     return this.reputation.score(order.providerId, this.now());
   }
 
@@ -618,15 +739,129 @@ export class DigitalServicesMarketplace {
     return this.reputation.score(providerId, this.now());
   }
 
-  listOrders(): ServiceOrder[] {
-    return [...this.orders.values()].map((o) => ({ ...o }));
+  /** Orders visible to the signer ("list" signature with `issuedAt`): own orders, or all for the admin. */
+  listOrders(auth: ActorAuth | undefined): ServiceOrder[] {
+    return this.visibleOrders(auth).map((o) => ({ ...o }));
   }
 
-  listOrdersPage(offset = 0, limit = 50, actorId?: string): ServiceOrder[] {
-    if (actorId && actorId !== "marketplace-admin") {
-      return [...this.orders.values()].filter((o) => o.buyerId === actorId || o.providerId === actorId).slice(Math.max(0, offset), Math.max(0, offset) + Math.min(200, Math.max(1, limit))).map((o) => ({ ...o }));
+  listOrdersPage(offset = 0, limit = 50, auth?: ActorAuth): ServiceOrder[] {
+    const start = Math.max(0, offset);
+    return this.visibleOrders(auth).slice(start, start + Math.min(200, Math.max(1, limit))).map((o) => ({ ...o }));
+  }
+
+  /** Public keys (SPKI DER hex) configured for the administrator and the settlement arbiter. */
+  authorityPublicKeys(): { admin?: string; arbiter?: string } {
+    return { admin: this.adminKey ? publicKeyHexOf(this.adminKey) : undefined, arbiter: this.arbiterKey ? publicKeyHexOf(this.arbiterKey) : undefined };
+  }
+
+  /** Number of orders (aggregate statistic, no order data). */
+  orderCount(): number {
+    return this.orders.size;
+  }
+
+  /** Marketplace clock (used by clients to stamp read / list authorizations). */
+  clock(): number {
+    return this.now();
+  }
+
+  /**
+   * Attach the service module of a category (once per category). The module
+   * gets a capability to read orders of that category only, and may install a
+   * settlement guard for the normal release path.
+   */
+  attachCategoryService(category: ServiceCategory, hooks: CategoryServiceHooks = {}): CategoryServiceAccess {
+    if (this.categoryServices.has(category)) throw new Error("CATEGORY_SERVICE_ALREADY_ATTACHED");
+    this.categoryServices.set(category, hooks);
+    return {
+      readOrder: (orderId: string) => {
+        const order = this.order(orderId);
+        if (this.listing(order.listingId).category !== category) throw new Error("ORDER_ACCESS_FORBIDDEN");
+        return { ...order };
+      },
+    };
+  }
+
+  private visibleOrders(auth: ActorAuth | undefined): ServiceOrder[] {
+    const actor = this.authenticateRead(auth, "list", "orders");
+    const all = [...this.orders.values()];
+    return this.isAdmin(actor) ? all : all.filter((o) => o.buyerId === actor || o.providerId === actor);
+  }
+
+  private runSettlementGuard(order: ServiceOrder): void {
+    const category = this.listing(order.listingId).category;
+    const hooks = this.categoryServices.get(category);
+    // IoT / M2M orders settle only against verified telemetry: no attached IoT service, no normal release.
+    if (category === "IOT_M2M" && !hooks?.settlementGuard) throw new Error("IOT_SETTLEMENT_GUARD_REQUIRED");
+    if (hooks?.settlementGuard) hooks.settlementGuard({ ...order });
+  }
+
+  private timeoutDispute(order: ServiceOrder): SettlementRecord {
+    return this.disputeTimeoutOutcome === "RELEASE"
+      ? this.payout(order, order.grossAmount, "RELEASE", "TIMEOUT_RELEASE")
+      : this.payout(order, 0n, "REFUND_BUYER", "TIMEOUT_REFUND");
+  }
+
+  /**
+   * Close a funded, delivered order, moving the escrowed amount exactly once:
+   *   providerAmount = gross  -> provider net + fee + gas (RELEASE)
+   *   0 < providerAmount < gross -> provider net(x) + fee(x) + gas, buyer gross - x (SPLIT)
+   *   providerAmount = 0      -> buyer gross + gas, paymaster sponsorship released (REFUND_BUYER)
+   */
+  private payout(order: ServiceOrder, providerAmount: bigint, outcome: DisputeOutcome, disputeOutcome?: ServiceOrder["disputeOutcome"]): SettlementRecord {
+    const gas = order.gasFee ?? 0n;
+    const required = order.grossAmount + gas;
+    if (order.heldAmount !== required) throw new Error("HOLD_NOT_COMPLETE");
+    const heldKey = key(order.asset, order.buyerId);
+    const held = this.held.get(heldKey) ?? 0n;
+    if (held < order.heldAmount) throw new Error("HELD_BALANCE_INSUFFICIENT");
+    if (providerAmount < 0n || providerAmount > order.grossAmount) throw new Error("PAYOUT_AMOUNT_INVALID");
+    let fee = 0n;
+    let providerNet = 0n;
+    let gasCaptured = 0n;
+    if (providerAmount > 0n) {
+      if (gas > 0n) {
+        if (!this.paymaster || !order.gasQuoteId) throw new Error("PAYMASTER_STATE_MISSING");
+        const gasQuote = this.paymaster.sponsoredQuote(order.orderId, order.gasQuoteId);
+        if (gasQuote.asset !== order.asset || gasQuote.gasFee !== gas) throw new Error("GAS_QUOTE_MISMATCH");
+        this.paymaster.capture(order.orderId, gasQuote, this.now());
+        gasCaptured = gas;
+      }
+      const quote = this.treasury.settleMarketplaceFee(order.orderId, providerAmount, order.asset, this.now());
+      fee = quote.marketplaceFee;
+      providerNet = quote.providerNet;
+    } else {
+      this.releasePaymaster(order);
     }
-    return [...this.orders.values()].slice(Math.max(0, offset), Math.max(0, offset) + Math.min(200, Math.max(1, limit))).map((o) => ({ ...o }));
+    const buyerRefund = order.heldAmount - providerNet - fee - gasCaptured;
+    if (buyerRefund < 0n || buyerRefund !== order.grossAmount - providerAmount + (gas - gasCaptured)) throw new Error("PAYOUT_NOT_CONSERVED");
+    this.held.set(heldKey, held - order.heldAmount);
+    if (held - order.heldAmount === 0n) this.held.delete(heldKey);
+    if (providerNet > 0n) this.add(this.accounts, key(order.asset, order.providerId), providerNet);
+    if (buyerRefund > 0n) this.add(this.accounts, heldKey, buyerRefund);
+    this.add(this.feesCollected, order.asset, fee);
+    this.add(this.gasCollected, order.asset, gasCaptured);
+    order.heldAmount = 0n;
+    order.settledFee = fee;
+    order.providerPayout = providerNet;
+    order.buyerRefund = buyerRefund;
+    order.status = providerAmount > 0n ? "SETTLED" : "REFUNDED";
+    if (disputeOutcome || order.disputedAt !== undefined) order.disputeOutcome = disputeOutcome ?? outcome;
+    order.updatedAt = this.now();
+    this.decrementActiveReservation(order.buyerId);
+    const record: SettlementRecord = {
+      orderId: order.orderId,
+      asset: order.asset,
+      grossAmount: order.grossAmount,
+      marketplaceFee: fee,
+      providerPayout: providerNet,
+      treasuryId: this.treasury.treasuryId,
+      settledAt: order.updatedAt,
+      gasFee: gasCaptured,
+      outcome,
+      buyerRefund,
+    };
+    this.settlements.set(order.orderId, record);
+    return { ...record };
   }
 
   reapExpiredReservations(): number {
@@ -670,13 +905,41 @@ export class DigitalServicesMarketplace {
     return this.treasury.snapshot(asset);
   }
 
-  private assertActorAuthenticated(actorId?: string): void {
-    if (!actorId) throw new Error("AUTHENTICATED_IDENTITY_REQUIRED");
-    if (actorId === "marketplace-admin") throw new Error("LEGACY_ADMIN_ID_RESERVED");
+  /**
+   * Verify `auth` for one action and return the authenticated actor id.
+   * Registered identities sign with their registered key; the administrator
+   * and the settlement arbiter sign with the keys configured on the
+   * marketplace. Signature verification only: no state is changed.
+   */
+  authenticateActor(auth: ActorAuth | undefined, action: MarketplaceAction, target: string, details: Record<string, unknown> = {}): string {
+    if (!auth || typeof auth !== "object" || typeof auth.actorId !== "string" || !auth.actorId || typeof auth.signature !== "string") throw new Error("ACTOR_SIGNATURE_REQUIRED");
+    if (auth.actorId === "marketplace-admin") throw new Error("LEGACY_ADMIN_ID_RESERVED");
+    if (auth.actorId === "marketplace-system") throw new Error("RESERVED_IDENTITY");
+    const publicKey = auth.actorId === this.adminIdentity ? this.adminKey : auth.actorId === this.settlementArbiterId ? this.arbiterKey : this.identityKeys.get(auth.actorId);
+    if (!publicKey) throw new Error(auth.actorId === this.adminIdentity ? "ADMIN_NOT_CONFIGURED" : "IDENTITY_NOT_REGISTERED");
+    if (!verifyEd25519(actionMessage({ marketplaceId: this.marketplaceId, action, actorId: auth.actorId, target, details }), auth.signature, publicKey)) throw new Error("ACTOR_SIGNATURE_INVALID");
+    if (auth.actorId === this.adminIdentity && this.adminAuthorizer && !this.adminAuthorizer(auth.actorId)) throw new Error("ADMIN_NOT_AUTHORIZED");
+    return auth.actorId;
+  }
+
+  /** Read / list authorizations carry `issuedAt` and expire after `readAuthorizationTtlMs`. */
+  private authenticateRead(auth: ActorAuth | undefined, action: "read" | "list", target: string): string {
+    const issuedAt = auth?.issuedAt;
+    if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt)) throw new Error("ACTOR_AUTH_ISSUED_AT_REQUIRED");
+    if (Math.abs(this.now() - issuedAt) > this.readAuthorizationTtlMs) throw new Error("ACTOR_AUTH_EXPIRED");
+    return this.authenticateActor(auth, action, target, { issuedAt });
   }
 
   private isAdmin(actorId: string): boolean {
-    return actorId === this.adminIdentity && (!!this.adminAuthorizer ? this.adminAuthorizer(actorId) : false);
+    return actorId === this.adminIdentity && !!this.adminKey;
+  }
+
+  private isArbiter(actorId: string): boolean {
+    return !!this.settlementArbiterId && actorId === this.settlementArbiterId && !!this.arbiterKey;
+  }
+
+  private isReservedIdentity(identityId: string): boolean {
+    return (RESERVED_IDENTITIES as readonly string[]).includes(identityId) || identityId === this.adminIdentity || identityId === this.settlementArbiterId;
   }
 
   private enqueueReservation(order: ServiceOrder): void {

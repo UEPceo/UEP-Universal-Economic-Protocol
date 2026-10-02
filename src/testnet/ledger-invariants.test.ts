@@ -16,6 +16,7 @@ import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
 import { UepLedger, signSnapshot, type UepLedgerSnapshot } from "./ledger.ts";
 import { generateEd25519KeyPair } from "../core/ed25519.ts";
+import { signSenderAuth } from "../core/spend-key.ts";
 import { TESTNET, TREASURY_ID } from "../network/profiles.ts";
 
 const SNAPSHOT_KEY = generateEd25519KeyPair();
@@ -46,10 +47,14 @@ function reauthorize(l: UepLedger, secrets: IdentitySecrets, base: UepTransactio
     senderId: base.senderId, recipientId, treasuryId: TREASURY_ID, assetId: base.assetId, nullifier,
     amount: u64ToFr(base.amount), fee: u64ToFr(base.fee), transactionCommitment,
   }, { senderSecret: secrets.secret, senderSalt: secrets.salt, nonce });
+  const txId = txIdFromCommitment(transactionCommitment, nullifier);
   return {
     ...base, recipientId, nonce, nullifier, inputCommitments, outputCommitments,
     inputNotes: inputs.map(serializeNote), outputNotes: outputs.map(serializeNote),
-    transactionCommitment, txId: txIdFromCommitment(transactionCommitment, nullifier), spendProof,
+    transactionCommitment, txId, spendProof,
+    // v0.4.4: re-sign the sender envelope and re-prove membership, so each test hits the rule it targets.
+    senderAuth: signSenderAuth({ networkId: base.networkId, domainId: base.domainId, txId, senderId: base.senderId, transactionCommitment }, secrets.secret, secrets.salt),
+    inputMembership: inputs.map((n, i) => (l.noteTree.indexOf(n.commitment) !== undefined ? l.noteTree.prove(n.commitment) : base.inputMembership![i] ?? base.inputMembership![0]!)),
   };
 }
 

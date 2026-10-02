@@ -1,5 +1,6 @@
 import { DigitalServicesMarketplace } from '../src/marketplace/marketplace.ts';
-import { createMarketplaceIdentity, signReservation } from '../src/marketplace/identity.ts';
+import { createMarketplaceIdentity, listingTerms, signAction, signReservation } from '../src/marketplace/identity.ts';
+import { contentHash } from '../src/service/content-hash.ts';
 import { performance } from 'node:perf_hooks';
 
 const regions=['EU','NA','LATAM','APAC','AFRICA','MENA'];
@@ -7,9 +8,14 @@ const m=new DigitalServicesMarketplace();
 const start=performance.now();
 const listings=[];
 let listingFailures=0;
+// v0.4.4: every action is signed by the acting identity (provider, buyer); identity strings authorize nothing.
+const sign=(who,action,target,details={})=>signAction({marketplaceId:m.marketplaceId,action,actorId:who.identityId,target,details},who.privateKey);
+const providers=new Map();
+function provider(id){ let who=providers.get(id); if(!who){ who=createMarketplaceIdentity(id); m.registerIdentity(id, who.publicKeyHex); providers.set(id,who);} return who; }
+function publish(input){ return m.publishListing(input, sign(provider(input.providerId),'publish','',listingTerms(input))); }
 // 200 providers, each 5 listings = 1000 listings
 for(let p=0;p<200;p++) for(let j=0;j<5;j++){
-  try { listings.push(m.publishListing({providerId:`prov-${p}`,title:`Compute service ${p}-${j}`,description:'GPU compute service for digital workloads',category:j%4===0?'COMPUTE':j%4===1?'STORAGE':j%4===2?'API':'DATA',asset:'EUR',unitPrice:100n+BigInt(j),capacity:100n})); } catch { listingFailures++; }
+  try { listings.push(publish({providerId:`prov-${p}`,title:`Compute service ${p}-${j}`,description:'GPU compute service for digital workloads',category:j%4===0?'COMPUTE':j%4===1?'STORAGE':j%4===2?'API':'DATA',asset:'EUR',unitPrice:100n+BigInt(j),capacity:100n})); } catch { listingFailures++; }
 }
 // v0.4.3: only registered identities with funds can reserve, and every reservation is buyer-signed.
 function enroll(id, credit){ const who=createMarketplaceIdentity(id); m.registerIdentity(id, who.publicKeyHex); m.creditAccount(id,'EUR',credit); return who; }
@@ -26,19 +32,20 @@ for(let i=0;i<20000;i++){
     const who=enroll(buyer, 1_000n);
     const o=signedReserve(who,l.listingId,1n,idem); accepted++;
     const o2=signedReserve(who,l.listingId,1n,idem); if(o2.orderId===o.orderId) idempotent++;
-    m.fundOrder(o.orderId,o.fundingDue,`fund-${i}`); fund++; // deposit locked at reserve() counts toward payment
-    m.deliver(o.orderId,l.providerId,Buffer.from(`LICENSE:${i}`),`deliver-${i}`); delivered++;
-    m.settle(o.orderId,buyer); settled++;
-    if(i%100===0) m.recordSellerReview({orderId:o.orderId,buyerId:buyer,rating:(i%5+1)});
+    m.fundOrder(o.orderId,o.fundingDue,sign(who,'fund',o.orderId,{amount:o.fundingDue}),`fund-${i}`); fund++; // deposit locked at reserve() counts toward payment
+    const license=Buffer.from(`LICENSE:${i}`);
+    m.deliver(o.orderId,sign(provider(l.providerId),'deliver',o.orderId,{deliveryHash:contentHash(license)}),license,`deliver-${i}`); delivered++;
+    m.settle(o.orderId,sign(who,'settle',o.orderId)); settled++;
+    if(i%100===0){ const rating=(i%5+1); m.recordSellerReview({orderId:o.orderId,rating},sign(who,'review',o.orderId,{rating})); }
   } catch(e){ errors++; }
 }
 const t1=performance.now();
 // high-contention single listing test (capacity 100) with 1000 buyers
-const hot=m.publishListing({providerId:'hot-provider',title:'Hot H100 Capacity',description:'concurrent GPU',category:'COMPUTE',asset:'EUR',unitPrice:50n,capacity:100n});
+const hot=publish({providerId:'hot-provider',title:'Hot H100 Capacity',description:'concurrent GPU',category:'COMPUTE',asset:'EUR',unitPrice:50n,capacity:100n});
 let hotAccepted=0, hotRejected=0;
 for(let i=0;i<1000;i++){const who=enroll(`hot-${i}`, 100n);try{signedReserve(who,hot.listingId,1n,`hot-${i}`);hotAccepted++;}catch{hotRejected++;}}
 const t2=performance.now();
 const accounting=m.valueAccounting('EUR');
 if(!accounting.conserved) errors++;
-console.log(JSON.stringify({users:20000,regions,providers:200,listings:listings.length,listingFailures,accepted,fund,delivered,settled,cancelled,errors,idempotentReplayChecks:idempotent,hotCapacity:100,hotAccepted,hotRejected,hotRemaining:m.getListing(hot.listingId).available,totalTreasuryEUR:String(m.treasury.totalOf('EUR')),valueConserved:accounting.conserved,lockedDepositsEUR:accounting.lockedDeposits,durationMs:Math.round(t2-start),mainFlowMs:Math.round(t1-t0),contentionMs:Math.round(t2-t1),orders:m.listOrders().length},(k,v)=>typeof v==='bigint'?v.toString():v,2));
+console.log(JSON.stringify({users:20000,regions,providers:200,listings:listings.length,listingFailures,accepted,fund,delivered,settled,cancelled,errors,idempotentReplayChecks:idempotent,hotCapacity:100,hotAccepted,hotRejected,hotRemaining:m.getListing(hot.listingId).available,totalTreasuryEUR:String(m.treasury.totalOf('EUR')),valueConserved:accounting.conserved,lockedDepositsEUR:accounting.lockedDeposits,durationMs:Math.round(t2-start),mainFlowMs:Math.round(t1-t0),contentionMs:Math.round(t2-t1),orders:m.orderCount()},(k,v)=>typeof v==='bigint'?v.toString():v,2));
 if(errors>0||listingFailures>0) process.exitCode=1;

@@ -1,6 +1,153 @@
-# Public API reference: changed signatures (v0.4.3)
+# Public API reference: changed signatures (v0.4.3 – v0.4.4)
 
-This page lists the public signatures that changed in `0.4.3-public-iot-m2m`. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code.
+This page lists the public signatures that changed in `0.4.4-public-iot-m2m` (first section) and `0.4.3-public-iot-m2m` (second section). Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# v0.4.4
+
+## Fees: `src/core/fee.ts`, `src/marketplace/economy.ts`
+
+```ts
+creatorFee(amount): bigint                 // 0 for 0; else max(MIN_PROTOCOL_FEE = 1, floor(amount * 0.1%))
+calculateMarketplaceFee(gross, bps = 300)  // 0 for 0 or bps = 0; else max(MIN_MARKETPLACE_FEE = 1, floor(gross * bps / 10_000)), capped at gross
+```
+
+The documented rates (0.1% protocol, 3% Marketplace) are unchanged above the floor (1,000 units and about 34 units respectively). Envelopes with `fee = 0` on a positive amount are now rejected.
+
+## Sender spend keys: `src/core/spend-key.ts` (new)
+
+```ts
+deriveSpendKey(secret, salt): { privateKey, publicKeyHex }        // deterministic Ed25519 key, never leaves the holder
+senderAuthMessage(tx): string                                      // "UEP-TX-SENDER-v1" over networkId, domainId, txId, senderId, transactionCommitment
+signSenderAuth(tx, secret, salt): { publicKey, signature }
+verifySenderAuth(tx, registeredPublicKey): boolean
+spendKeyRegistrationMessage(networkId, accountHex), verifySpendKeyRegistration(networkId, reg)
+```
+
+## Note-commitment tree: `src/core/note-tree.ts` (new)
+
+```ts
+class NoteCommitmentTree {          // depth 32, append-only, keeps every historical root
+  append(commitment): number; root(): Fr; size: number; indexOf(commitment)
+  prove(commitment): NoteMembershipProof          // { leafIndex, root, siblings[32] } (hex strings)
+  verify(commitment, proof, maxAnchorSize?): boolean   // proof root must be a root this tree has had
+  sizeAtRoot(rootHex): number | undefined
+}
+verifyNoteMembership(commitment, proof): boolean  // stateless: links commitment to proof.root
+```
+
+## Ledger: `src/testnet/ledger.ts`
+
+```ts
+new UepLedger({ ..., maxPendingTransactions?: number })   // default 1024, 1..100_000 (INVALID_MAX_PENDING_TRANSACTIONS)
+ledger.registerSpendKey(secrets): SpendKeyRegistration      // idempotent; proves account control
+ledger.spendKeyOf(account): string | undefined
+ledger.noteCommitmentRoot(): Fr
+ledger.noteByCommitment(commitment): Note | undefined
+ledger.enqueuePending(tx): SubmitResult                     // validated, bounded, de-duplicated
+ledger.queueConflict(tx): SubmitResult                      // was void; now = enqueuePending(tx)
+```
+
+- `prepareSpend()` registers the sender's spend key and attaches `tx.senderAuth` and `tx.inputMembership`.
+- `submit()` additionally requires a valid membership proof (`MEMBERSHIP_PROOF`) and a valid sender signature by the registered key (`SENDER_AUTH`), also when `requireProof` is disabled. Outputs that already exist are refused (`OUTPUT_BINDING`).
+- Offline `submit()` validates before queueing: it returns the validation error, or `NOT_CONNECTED` with a "queued" message.
+- Pending validation requires: a registered sender key and valid `senderAuth`; canonical, unspent local input notes whose transported fields match (`NOTE_NOT_MEMBER`, `DOUBLE_SPEND`, `NOTE_OPENING`); `checkSpendShape()` on the canonical inputs; a valid membership proof. Full queue: `PENDING_FULL`; duplicate: `REPLAY`.
+- `reconcilePending()` also flags spends sharing an input note as `inConflict`. It still never settles.
+- New `SubmitError` codes: `SENDER_AUTH`, `MEMBERSHIP_PROOF`, `PENDING_FULL`.
+- `UepTransaction` gains optional `senderAuth` and `inputMembership` (serialized as-is).
+
+### Snapshots (format version 4)
+
+The snapshot adds `noteRoot`, `noteCount`, `spendKeys` and `maxPendingTransactions`. Pending entries that no longer validate are not exported. `SNAPSHOT_FORMAT_VERSION = 4`; v3 snapshots are rejected (`INVALID_SNAPSHOT_VERSION`).
+
+New restore errors:
+
+- `INVALID_SNAPSHOT_NOTE_ROOT`: the rebuilt note tree does not match `noteRoot` / `noteCount`.
+- `INVALID_SNAPSHOT_TX_MEMBERSHIP`: a committed spend's proof is missing, wrong, or anchored at a root that does not predate its outputs.
+- `INVALID_SNAPSHOT_TX_SENDER`: a committed spend is not signed by the registered spend key.
+- `INVALID_SNAPSHOT_SPEND_KEY`: a malformed, duplicate or unproven key registration.
+- `INVALID_SNAPSHOT_PENDING`: an over-bound or duplicate queue, or a pending entry that fails validation (the message carries its code).
+
+## Marketplace: `src/marketplace/marketplace.ts`, `src/marketplace/identity.ts`
+
+Every call that reads or changes an order now takes an **`ActorAuth`** instead of an identity string:
+
+```ts
+type ActorAuth = { actorId: string; signature: string; issuedAt?: number };
+actionMessage({ marketplaceId, action, actorId, target, details }): string   // domain "UEP-MARKETPLACE-ACTION-v1"
+signAction({ marketplaceId, action, actorId, target, details }, privateKey): ActorAuth
+listingTerms(listingInput), disputeReasonHash(reason)
+```
+
+Registered identities sign with their registered key. `adminIdentity` signs with `adminPublicKey` and the arbiter with `settlementArbiterPublicKey`. A plain string throws `ACTOR_SIGNATURE_REQUIRED`; a wrong key throws `ACTOR_SIGNATURE_INVALID`.
+
+| Call (v0.4.4) | action / target / details | Allowed actors |
+|---|---|---|
+| `publishListing(input, auth)` | `publish` / `input.listingId ?? ""` / `listingTerms(input)` | the registered provider |
+| `fundOrder(orderId, amount, auth, idem?)` | `fund` / orderId / `{ amount }` | buyer |
+| `deliver(orderId, auth, bytes, idem?)`, `deliverWithExpectedHash(orderId, auth, bytes, hash, idem?)` | `deliver` / orderId / `{ deliveryHash }` | provider |
+| `settle(orderId, auth)` | `settle` / orderId | buyer; provider after `deliveryDisputeWindowMs` without a dispute; arbiter. Never the admin |
+| `openDispute(orderId, auth, reason)` | `dispute` / orderId / `{ reasonHash }` | buyer, within the window, arbiter configured |
+| `resolveDispute(orderId, auth, { outcome, providerAmount? })` | `resolve` / orderId / `{ outcome, providerAmount }` | arbiter |
+| `refundBuyer(orderId, auth)` | `refund` / orderId | provider |
+| `cancel(orderId, auth, reason?)` | `cancel` / orderId | buyer, provider, admin |
+| `expire(orderId, auth)` | `expire` / orderId | buyer, provider, admin |
+| `getOrder(orderId, auth)` | `read` / orderId / `{ issuedAt }` | buyer, provider, admin; arbiter once disputed |
+| `listOrders(auth)`, `listOrdersPage(offset, limit, auth)` | `list` / `"orders"` / `{ issuedAt }` | own orders; admin sees all |
+| `recordSellerReview({ orderId, rating }, auth)` | `review` / orderId / `{ rating }` | buyer |
+
+- Read and list authorizations must carry `issuedAt` within `readAuthorizationTtlMs` (default 5 min) of the marketplace clock (`ACTOR_AUTH_ISSUED_AT_REQUIRED`, `ACTOR_AUTH_EXPIRED`). `clock()` exposes that clock.
+- **Disputes.** `OrderStatus` adds `DISPUTED` and `REFUNDED`. Outcomes:
+  - `RELEASE`: normal settlement.
+  - `REFUND_BUYER`: gross + gas back to the buyer; the paymaster sponsorship is released; no fee.
+  - `SPLIT`: `0 < providerAmount < gross`. The provider gets `providerAmount − fee(providerAmount)`, the treasury `fee(providerAmount)`, gas is captured, and the buyer gets `gross − providerAmount`. `0` → refund, `gross` → release.
+  - A buyer `settle()` on a disputed order withdraws the dispute.
+  - After `disputeResolutionWindowMs` (default 7 days) any party's `settle()` applies `disputeTimeoutOutcome` (default `REFUND_BUYER`).
+  - `SettlementRecord` adds `outcome` and `buyerRefund`. `ServiceOrder` adds `deliveredAt`, `disputedAt`, `disputeReasonHash`, `disputeDeadline`, `disputeOutcome` and `buyerRefund`.
+- Errors: `DISPUTE_NOT_AUTHORIZED`, `DISPUTE_ARBITER_NOT_CONFIGURED`, `ORDER_NOT_DISPUTABLE`, `DISPUTE_WINDOW_CLOSED`, `DISPUTE_PENDING`, `DISPUTE_NOT_OPEN`, `DISPUTE_RESOLUTION_NOT_AUTHORIZED`, `DISPUTE_OUTCOME_INVALID`, `DISPUTE_SPLIT_INVALID`, `REFUND_NOT_AUTHORIZED`, `ORDER_NOT_REFUNDABLE`.
+- **Configuration:**
+  - `adminPublicKey`: without it no admin action is possible (`ADMIN_NOT_CONFIGURED`). `adminAuthorizer` is an optional extra gate.
+  - `settlementArbiterPublicKey`: required with `settlementArbiterId` (`ARBITER_PUBLIC_KEY_REQUIRED`).
+  - `disputeResolutionWindowMs`, `disputeTimeoutOutcome`, `readAuthorizationTtlMs`.
+- **Reserved identities:** `"marketplace-admin"`, `"marketplace-system"` (`RESERVED_IDENTITIES`), the admin id and the arbiter id.
+- **Other new members:**
+  - `authenticateActor(auth, action, target, details)`: verification only.
+  - `authorityPublicKeys()`, `orderCount()`.
+  - `attachCategoryService(category, { settlementGuard })`: once per category. It returns a read capability limited to that category's orders, and its guard runs on the normal release paths.
+  - `IOT_M2M` orders cannot be released normally without an attached guard (`IOT_SETTLEMENT_GUARD_REQUIRED`).
+- `cancellationMessage()` / `signCancellation()` now produce a `cancel` action signature. Pass it as `{ actorId: buyerId, signature }`.
+- `MARKETPLACE_VERSION = "0.4"`.
+
+## IoT/M2M: `src/service/iot-m2m.ts`
+
+```ts
+registerProvider({ providerId, displayName }, auth)            // registered marketplace identity; "iot-provider-register" / providerId / { displayName }
+registerMachine({ machineId, providerId, serviceType, model, endpointRef, publicKeyHex }, auth)   // publicKeyHex required; "iot-machine-register" / machineId / iotMachineTerms(input)
+deactivateProvider(providerId, adminAuth)                      // "iot-provider-deactivate"
+deactivateMachine(machineId, adminOrProviderAuth)              // "iot-machine-deactivate"
+holdAmount(requestId): bigint; hold(requestId, buyerFundAuth)
+simulateExecution(requestId, measurements, observedAt?, machinePrivateKey, unitsDelivered?)   // signer required
+deliverTelemetry(requestId, telemetry, providerDeliverAuth)    // deliveryHash = iotTelemetryDeliveryHash(telemetry)
+verifyTelemetry(requestId, telemetry): IoTVerification         // adds unitsDelivered, fullyDelivered, deliveryHash; authentication is always "ED25519"
+settle(requestId, settleAuth); serviceStatus(requestId, readAuth)
+getRequest / getContract / getTelemetry(id, readAuth); orderIdOf(requestId)
+```
+
+- The unsigned `SIMULATED` mode is removed: machines without a key cannot be registered, and unsigned or wrong-key telemetry is rejected (`IOT_TELEMETRY_SIGNATURE_INVALID`, `IOT_SIGNED_TELEMETRY_REQUIRED`).
+- Sequence and nonce replay checks are unchanged.
+- `IoTTelemetry` adds `unitsDelivered` (it is part of the signed payload). Verification only accepts the report delivered to the order (`IOT_TELEMETRY_NOT_DELIVERED`).
+- The marketplace releases an IoT order through `settle()` only with verified telemetry for that delivery reporting the full quantity: `IOT_VERIFICATION_REQUIRED`, `IOT_VERIFIED_TELEMETRY_REQUIRED`, `IOT_USAGE_SHORTFALL`. A shortfall goes to a dispute. `serviceStatus().verifiedUsageAmount` is the provider share for a SPLIT.
+- `IOT_M2M_VERSION = "0.3"`.
+
+## Test helpers
+
+- `src/marketplace/testkit.ts`: `createTestAuthority`, `act`, `readAuth`, `listAuth`, `publishAs`, `fund`, `deliver`, `deliverWithExpectedHash`, `settle`, `getOrder`, `listOrders`, `cancel`, `expire`, `review`, `disputeAs`, `resolveAs`, `refundAs`, plus the v0.4.3 helpers.
+- `src/service/iot-testkit.ts` (new): `registerProviderAs`, `registerMachineAs`, `requestAs`, `holdAs`, `simulateAs`, `deliverTelemetryAs`, `settleIoTAs`, `statusAs`.
+
+These helpers are for tests and simulations only.
+
+# v0.4.3
+
+The v0.4.3 signatures below are superseded where the v0.4.4 section above says so (for example `fundOrder`, `cancel`, `expire`, `getOrder` and the IoT calls now take an `ActorAuth`).
 
 ## Ed25519 helpers: `src/core/ed25519.ts` (new)
 

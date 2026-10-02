@@ -21,6 +21,8 @@ import { DevelopmentSpendProofProvider, verifyDevelopmentMac, type SpendPublicIn
 import type { IdentitySecrets } from "../identity/kdf.ts";
 import type { KeyObject } from "node:crypto";
 import { generateEd25519KeyPair, publicKeyHexOf, sha256Hex, signEd25519, stableStringify, toPrivateKey, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
+import { NoteCommitmentTree } from "../core/note-tree.ts";
+import { deriveSpendKey, signSenderAuth, spendKeyRegistrationMessage, verifySenderAuth, verifySpendKeyRegistration, type SpendKeyRegistration } from "../core/spend-key.ts";
 
 export type SubmitError =
   | { code: "WRONG_NETWORK"; message: string }
@@ -38,7 +40,13 @@ export type SubmitError =
   | { code: "PROOF"; message: string }
   | { code: "POLICY"; message: string }
   | { code: "NOT_CONNECTED"; message: string }
-  | { code: "OFFLINE_QUEUED"; message: string };
+  | { code: "OFFLINE_QUEUED"; message: string }
+  /** v0.4.4: missing or invalid sender signature (registered spend key). */
+  | { code: "SENDER_AUTH"; message: string }
+  /** v0.4.4: missing or invalid note-commitment tree membership proof. */
+  | { code: "MEMBERSHIP_PROOF"; message: string }
+  /** v0.4.4: the bounded pending queue is full. */
+  | { code: "PENDING_FULL"; message: string };
 
 export type SubmitResult = { tx: UepTransaction } | { error: SubmitError };
 
@@ -48,8 +56,17 @@ function ak(account: Fr, asset: Fr): AccountKey {
   return account.toHex() + "|" + asset.toHex();
 }
 
-/** Snapshot format version. v3 (0.4.3): Ed25519 authority signatures, hash chain, signed faucet mints. */
-export const SNAPSHOT_FORMAT_VERSION = 3;
+/**
+ * Snapshot format version.
+ * v3 (0.4.3): Ed25519 authority signatures, hash chain, signed faucet mints.
+ * v4 (0.4.4): adds the note-commitment tree root, the sender spend-key registry
+ * and the pending-queue bound; pending entries are validated on restore.
+ */
+export const SNAPSHOT_FORMAT_VERSION = 4;
+/** Default bound of the pending (offline / conflict) queue. */
+export const DEFAULT_MAX_PENDING_TRANSACTIONS = 1024;
+/** Upper limit accepted for `maxPendingTransactions`. */
+export const MAX_PENDING_TRANSACTIONS_LIMIT = 100_000;
 /** `prevSnapshotHash` of the first snapshot in a ledger's chain. */
 export const GENESIS_SNAPSHOT_HASH = "0".repeat(64);
 const SNAPSHOT_DOMAIN = "UEP-SNAPSHOT-v3";
@@ -237,6 +254,12 @@ export class UepLedger {
   lastReconcileAt = 0;
   /** Total minted (faucet) value per asset (asset hex -> amount), derived from `mints`. */
   supply = new Map<string, bigint>();
+  /** v0.4.4: append-only Merkle tree of every note commitment, in `notes` order. */
+  noteTree = new NoteCommitmentTree();
+  /** v0.4.4: sender spend-key registry (account hex -> registration). */
+  spendKeys = new Map<string, SpendKeyRegistration>();
+  /** v0.4.4: bound of the pending queue. */
+  readonly maxPendingTransactions: number;
 
   constructor(opts: {
     networkId: string;
@@ -253,12 +276,17 @@ export class UepLedger {
      * Default: an ephemeral key when `allowFaucet` is true. Pass `null` for no mint capability.
      */
     faucetSigningKey?: PrivateKeyLike | null;
+    /** Bound of the pending queue (default 1024, max 100000). */
+    maxPendingTransactions?: number;
   }) {
     if ((opts as { snapshotAuthoritySecret?: unknown }).snapshotAuthoritySecret !== undefined) throw new Error("SNAPSHOT_SECRET_UNSUPPORTED: v0.4.3 uses Ed25519 snapshotSigningKeys");
     this.networkId = opts.networkId;
     this.domainId = opts.domainId;
     this.connected = opts.connected;
     this.allowFaucet = opts.allowFaucet;
+    const maxPending = opts.maxPendingTransactions ?? DEFAULT_MAX_PENDING_TRANSACTIONS;
+    if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > MAX_PENDING_TRANSACTIONS_LIMIT) throw new Error("INVALID_MAX_PENDING_TRANSACTIONS");
+    this.maxPendingTransactions = maxPending;
     this.installSigningKeys(
       opts.snapshotSigningKeys ?? [generateEd25519KeyPair().privateKey],
       opts.faucetSigningKey === undefined ? (opts.allowFaucet ? generateEd25519KeyPair().privateKey : undefined) : (opts.faucetSigningKey ?? undefined),
@@ -281,6 +309,97 @@ export class UepLedger {
 
   notesOf(account: Fr, unspentOnly = true): Note[] {
     return this.notes.filter((n) => n.owner.eq(account) && (!unspentOnly || !n.spent));
+  }
+
+  /** Root of the note-commitment tree (every note ever created on this ledger). */
+  noteCommitmentRoot(): Fr {
+    return this.noteTree.root();
+  }
+
+  /** Canonical ledger note for a commitment (O(1) via the note tree index). */
+  noteByCommitment(commitment: Fr): Note | undefined {
+    const index = this.noteTree.indexOf(commitment);
+    return index === undefined ? undefined : this.notes[index];
+  }
+
+  /** The only way notes enter the ledger: the tree and `notes` stay index-aligned. */
+  private addNote(note: Note): void {
+    this.noteTree.append(note.commitment);
+    this.notes.push(note);
+  }
+
+  /**
+   * Register (idempotently) the deterministic spend key of an identity. The
+   * caller proves control of the account with its secrets; the registry is
+   * part of signed snapshots, so replicas can authenticate pending spends.
+   */
+  registerSpendKey(secrets: IdentitySecrets): SpendKeyRegistration {
+    if (!verifyOwnership(secrets.secret, secrets.salt, secrets.accountId)) throw new Error("WRONG_OWNER: identity does not control this account");
+    const key = deriveSpendKey(secrets.secret, secrets.salt);
+    const account = secrets.accountId.toHex();
+    const existing = this.spendKeys.get(account);
+    if (existing) {
+      if (existing.publicKey !== key.publicKeyHex) throw new Error("SPEND_KEY_CONFLICT");
+      return { ...existing };
+    }
+    const reg: SpendKeyRegistration = { account, publicKey: key.publicKeyHex, proof: signEd25519(spendKeyRegistrationMessage(this.networkId, account), key.privateKey) };
+    this.spendKeys.set(account, reg);
+    return { ...reg };
+  }
+
+  /** Registered spend public key of an account, if any. */
+  spendKeyOf(account: Fr): string | undefined {
+    return this.spendKeys.get(account.toHex())?.publicKey;
+  }
+
+  /**
+   * Resolve transported inputs to canonical, unspent ledger notes (UEP-B02 rule,
+   * shared by submit() and pending validation).
+   */
+  private canonicalInputs(tx: UepTransaction): { inputs: Note[] } | { error: SubmitError } {
+    const transportedInputs = tx.inputNotes?.map(deserializeNote) ?? [];
+    if (transportedInputs.length !== tx.inputCommitments.length) {
+      return { error: { code: "NOTE_OPENING", message: "Every input commitment must carry its note opening." } };
+    }
+    const inputs: Note[] = [];
+    for (let i = 0; i < tx.inputCommitments.length; i++) {
+      const transported = transportedInputs[i]!;
+      const canonical = this.noteByCommitment(tx.inputCommitments[i]!);
+      if (!canonical) return { error: { code: "NOTE_NOT_MEMBER", message: "Input note is not a member of this ledger." } };
+      if (canonical.spent) return { error: { code: "DOUBLE_SPEND", message: "Input note already spent." } };
+      if (!openNote(transported) || !transported.commitment.eq(canonical.commitment)) return { error: { code: "NOTE_OPENING", message: "Transported note does not match ledger membership." } };
+      if (transported.owner.toHex() !== canonical.owner.toHex() || transported.amount !== canonical.amount || transported.assetId.toHex() !== canonical.assetId.toHex()) return { error: { code: "NOTE_OPENING", message: "Transported note fields do not match ledger membership." } };
+      inputs.push(canonical);
+    }
+    if (inputs.length === 0) {
+      return { error: { code: "NOTE_OPENING", message: "Transaction has no input notes." } };
+    }
+    const uniqueInputs = new Set(tx.inputCommitments.map((c) => c.toHex()));
+    if (tx.inputCommitments.length !== 1 || uniqueInputs.size !== tx.inputCommitments.length || inputs.length !== tx.inputCommitments.length) {
+      return { error: { code: "AMOUNT_MISMATCH", message: "Input commitments must be unique and exactly match the referenced notes." } };
+    }
+    return { inputs };
+  }
+
+  /** Every input must carry a valid note-tree membership proof against a root this ledger has had. */
+  private checkMembership(tx: UepTransaction, inputs: Note[]): SubmitError | undefined {
+    const proofs = tx.inputMembership;
+    if (!Array.isArray(proofs) || proofs.length !== inputs.length) return { code: "MEMBERSHIP_PROOF", message: "Every input must carry a note-commitment tree membership proof." };
+    for (let i = 0; i < inputs.length; i++) {
+      const proof = proofs[i]!;
+      if (proof?.leafIndex !== String(this.noteTree.indexOf(inputs[i]!.commitment)) || !this.noteTree.verify(inputs[i]!.commitment, proof)) {
+        return { code: "MEMBERSHIP_PROOF", message: "Input membership proof does not verify against a known note-commitment root." };
+      }
+    }
+    return undefined;
+  }
+
+  /** Sender signature by the spend key registered for `senderId`. */
+  private checkSenderAuth(tx: UepTransaction): SubmitError | undefined {
+    const key = this.spendKeyOf(tx.senderId);
+    if (!key) return { code: "SENDER_AUTH", message: "Sender has no registered spend key on this ledger." };
+    if (!verifySenderAuth(tx, key)) return { code: "SENDER_AUTH", message: "Transaction is not signed by the sender's registered spend key." };
+    return undefined;
   }
 
   private leafFor(account: Fr, asset: Fr, balance: bigint): Fr {
@@ -307,9 +426,9 @@ export class UepLedger {
     if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("FAUCET_AMOUNT_INVALID");
     const blinding = hLeaf(account, new Fr(++this.noteCounter));
     const note = makeNote(account, assetId, amount, blinding);
+    this.addNote(note);
     const unsigned = { index: this.mints.length, networkId: this.networkId, domainId: this.domainId, account: account.toHex(), assetId: assetId.toHex(), amount: amount.toString(), commitment: note.commitment.toHex() };
     this.mints.push({ ...unsigned, signature: signEd25519(mintMessage(unsigned), this.faucetSigner) });
-    this.notes.push(note);
     this.setBalance(account, assetId, this.balanceOf(account, assetId) + amount);
     this.supply.set(assetId.toHex(), (this.supply.get(assetId.toHex()) ?? 0n) + amount);
     return note;
@@ -380,6 +499,7 @@ export class UepLedger {
     if (!verifyOwnership(secrets.secret, secrets.salt, senderId)) {
       return { error: { code: "WRONG_OWNER", message: "Identity does not control this account." } };
     }
+    this.registerSpendKey(secrets);
     if (recipient.eq(senderId) || recipient.eq(TREASURY_ID) || senderId.eq(TREASURY_ID)) {
       return { error: { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." } };
     }
@@ -481,6 +601,9 @@ export class UepLedger {
       inConflict: false,
       createdAt: now,
     };
+    // v0.4.4: publicly verifiable sender signature and note-tree membership proofs.
+    tx.senderAuth = signSenderAuth(tx, secrets.secret, secrets.salt);
+    tx.inputMembership = selected.map((n) => this.noteTree.prove(n.commitment));
 
     // Stash outputs on the tx object via a side table
     this.stashOutputs(tx.txId.toHex(), outputs, selected, debit, tr.ok.new);
@@ -524,11 +647,13 @@ export class UepLedger {
       };
     }
     if (!this.connected) {
-      this.pending.push(tx);
+      // v0.4.4: the offline queue only accepts authenticated, locally valid spends.
+      const queued = this.enqueuePending(tx);
+      if ("error" in queued) return queued;
       return {
         error: {
           code: "NOT_CONNECTED",
-          message: "No live network endpoint configured.",
+          message: "No live network endpoint configured; the transaction was validated and queued for reconciliation.",
         },
       };
     }
@@ -604,6 +729,7 @@ export class UepLedger {
       if (!verifyDevelopmentMac(tx.spendProof, pub, secrets.secret)) {
         return { error: { code: "PROOF", message: "Development spend MAC is invalid." } };
       }
+      this.registerSpendKey(secrets);
     } else if (this.requireProof) {
       return {
         error: {
@@ -613,30 +739,12 @@ export class UepLedger {
       };
     }
 
-    const transportedInputs = tx.inputNotes?.map(deserializeNote) ?? [];
-    if (transportedInputs.length !== tx.inputCommitments.length) {
-      return { error: { code: "NOTE_OPENING", message: "Every input commitment must carry its note opening." } };
-    }
     // Transported notes are evidence, not authority. The authoritative ledger
     // must already contain the exact unspent commitment. A sender cannot mint a
     // new balance merely by attaching a self-consistent note to a transaction.
-    const inputs: Note[] = [];
-    for (let i = 0; i < tx.inputCommitments.length; i++) {
-      const transported = transportedInputs[i]!;
-      const canonical = this.notes.find((n) => n.commitment.eq(tx.inputCommitments[i]!));
-      if (!canonical) return { error: { code: "NOTE_NOT_MEMBER", message: "Input note is not a member of this ledger." } };
-      if (canonical.spent) return { error: { code: "DOUBLE_SPEND", message: "Input note already spent." } };
-      if (!openNote(transported) || !transported.commitment.eq(canonical.commitment)) return { error: { code: "NOTE_OPENING", message: "Transported note does not match ledger membership." } };
-      if (transported.owner.toHex() !== canonical.owner.toHex() || transported.amount !== canonical.amount || transported.assetId.toHex() !== canonical.assetId.toHex()) return { error: { code: "NOTE_OPENING", message: "Transported note fields do not match ledger membership." } };
-      inputs.push(canonical);
-    }
-    if (inputs.length === 0) {
-      return { error: { code: "NOTE_OPENING", message: "Transaction has no input notes." } };
-    }
-    const uniqueInputs = new Set(tx.inputCommitments.map((c) => c.toHex()));
-    if (tx.inputCommitments.length !== 1 || uniqueInputs.size !== tx.inputCommitments.length || inputs.length !== tx.inputCommitments.length) {
-      return { error: { code: "AMOUNT_MISMATCH", message: "Input commitments must be unique and exactly match the referenced notes." } };
-    }
+    const resolved = this.canonicalInputs(tx);
+    if ("error" in resolved) return resolved;
+    const inputs = resolved.inputs;
     const outputs = tx.outputNotes?.map(deserializeNote) ?? [];
     if (outputs.length !== tx.outputCommitments.length || outputs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Output notes do not match transaction commitments." } };
@@ -645,6 +753,14 @@ export class UepLedger {
     // and the transaction nonce to the consumed note (UEP-C01).
     const shapeError = checkSpendShape(tx, inputs, outputs);
     if (shapeError) return { error: shapeError };
+    if (outputs.some((o) => this.noteTree.indexOf(o.commitment) !== undefined)) {
+      return { error: { code: "OUTPUT_BINDING", message: "Output note already exists on this ledger." } };
+    }
+    // v0.4.4: note-tree membership and a publicly verifiable sender signature.
+    const membershipError = this.checkMembership(tx, inputs);
+    if (membershipError) return { error: membershipError };
+    const senderError = this.checkSenderAuth(tx);
+    if (senderError) return { error: senderError };
     for (const n of inputs) {
       // Amount/asset bind: recomputing commitment with a mutated amount must fail.
       const mutated = noteCommitment(n.owner, n.assetId, n.amount + 1n, n.blinding);
@@ -675,9 +791,7 @@ export class UepLedger {
 
     // `inputs` are the canonical ledger notes resolved above.
     for (const n of inputs) n.spent = true;
-    for (const o of outputs) {
-      if (!this.notes.some((n) => n.commitment.eq(o.commitment))) this.notes.push(o);
-    }
+    for (const o of outputs) this.addNote(o);
 
     const accepted: UepTransaction = { ...tx, phase: "LOCAL_FINAL", inConflict: false };
     this.txs.push(accepted);
@@ -700,8 +814,24 @@ export class UepLedger {
    * Used to exercise UEP-009. reconcilePending() validates queued spends but never
    * applies or settles them; see reconcilePending().
    */
-  queueConflict(tx: UepTransaction): void {
-    this.pending.push(tx);
+  queueConflict(tx: UepTransaction): SubmitResult {
+    return this.enqueuePending(tx);
+  }
+
+  /**
+   * Add a transaction to the bounded pending queue (v0.4.4, UEP-B06/A06).
+   * The envelope must pass validatePending() (authenticated sender, canonical
+   * unspent inputs, spend shape, membership proof). Duplicates are refused
+   * and the queue never exceeds `maxPendingTransactions`.
+   */
+  enqueuePending(tx: UepTransaction): SubmitResult {
+    if (this.pending.some((p) => p.txId.eq(tx.txId))) return { error: { code: "REPLAY", message: "Transaction already queued." } };
+    if (this.pending.length >= this.maxPendingTransactions) return { error: { code: "PENDING_FULL", message: `Pending queue is full (${this.maxPendingTransactions}).` } };
+    const check = this.validatePending(tx);
+    if ("error" in check) return check;
+    const queued: UepTransaction = { ...tx, phase: "LOCAL_VALID", inConflict: false };
+    this.pending.push(queued);
+    return { tx: { ...queued } };
   }
 
   private validatePending(tx: UepTransaction): SubmitResult {
@@ -716,9 +846,18 @@ export class UepLedger {
     const outs = tx.outputNotes?.map(deserializeNote) ?? [];
     if (ins.length !== tx.inputCommitments.length || outs.length !== tx.outputCommitments.length) return { error: { code: "NOTE_OPENING", message: "Pending transaction notes are missing." } };
     if (ins.some((n, i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) return { error: { code: "NOTE_OPENING", message: "Pending note commitment mismatch." } };
-    // Same input/output binding rules as submit().
-    const shapeError = checkSpendShape(tx, ins, outs);
+    // v0.4.4: the sender must be authenticated by its registered spend key, and
+    // the inputs must be canonical, unspent ledger notes (same rules as submit()).
+    const senderError = this.checkSenderAuth(tx);
+    if (senderError) return { error: senderError };
+    const resolved = this.canonicalInputs(tx);
+    if ("error" in resolved) return resolved;
+    // Same input/output binding rules as submit(), on the canonical inputs.
+    const shapeError = checkSpendShape(tx, resolved.inputs, outs);
     if (shapeError) return { error: shapeError };
+    if (outs.some((o) => this.noteTree.indexOf(o.commitment) !== undefined)) return { error: { code: "OUTPUT_BINDING", message: "Pending output note already exists on this ledger." } };
+    const membershipError = this.checkMembership(tx, resolved.inputs);
+    if (membershipError) return { error: membershipError };
     return { tx };
   }
 
@@ -731,11 +870,12 @@ export class UepLedger {
     // LOCAL_FINAL transactions have already mutated balances and the nullifier set.
     // They are not eligible to be overturned by a later pending conflict.
     //
-    // Pending transactions cannot be applied here: the development MAC can only be
-    // verified with the sender's secret, so reconciliation has no way to authenticate
-    // a pending spend. Therefore:
-    //   - invalid envelopes (bad commitment, notes, fee, value, or an already
-    //     committed nullifier) are rejected and removed from the queue;
+    // Pending transactions are not applied here. Since v0.4.4 every queued spend is
+    // sender-signed and checked against local unspent notes and the note tree, but
+    // the development MAC can only be verified with the sender's secret, and applying
+    // a spend remains an explicit submit(). Therefore:
+    //   - entries that no longer validate (bad envelope, sender signature, inputs,
+    //     membership, or an already committed nullifier) are rejected and removed;
     //   - structurally valid ones STAY queued in phase LOCAL_VALID (never SETTLED
     //     without a state transition), flagged `inConflict` when several queued
     //     spends share a nullifier. They must be applied through submit().
@@ -751,7 +891,14 @@ export class UepLedger {
       if ("tx" in check) validCandidates.push(candidate);
       else rejected.push({ txId: candidate.txId.toHex(), code: check.error.code, message: check.error.message });
     }
-    const queued = markConflicts(validCandidates).map((t) => ({ ...t, phase: "LOCAL_VALID" as const }));
+    // Conflicts: several queued spends share a nullifier or an input note.
+    const inputUse = new Map<string, number>();
+    for (const t of validCandidates) for (const c of t.inputCommitments) inputUse.set(c.toHex(), (inputUse.get(c.toHex()) ?? 0) + 1);
+    const queued = markConflicts(validCandidates).map((t) => ({
+      ...t,
+      inConflict: t.inConflict || t.inputCommitments.some((c) => (inputUse.get(c.toHex()) ?? 0) > 1),
+      phase: "LOCAL_VALID" as const,
+    }));
     this.pending = queued;
     this.lastReconcileAt = Date.now();
     const settlements: ReturnType<typeof reconcile> = [];
@@ -775,7 +922,12 @@ export class UepLedger {
       mints: this.mints.map((m) => ({ ...m })),
       notes: this.notes.map(serializeNote),
       txs: this.txs.map(serializeTx),
-      pending: this.pending.map(serializeTx),
+      // Entries that no longer validate (e.g. input spent since queuing) are not exported.
+      pending: this.pending.filter((t) => "tx" in this.validatePending(t)).map(serializeTx),
+      maxPendingTransactions: this.maxPendingTransactions,
+      noteRoot: this.noteTree.root().toHex(),
+      noteCount: this.noteTree.size,
+      spendKeys: [...this.spendKeys.values()].map((r) => ({ ...r })),
       noteCounter: this.noteCounter.toString(),
       lastReconcileAt: this.lastReconcileAt,
     };
@@ -795,7 +947,7 @@ export class UepLedger {
 
   /**
    * Restore a snapshot against public trust anchors only.
-   *  1. Format v3 is required (older formats are rejected).
+   *  1. Format v4 is required (older formats are rejected).
    *  2. At least `threshold` distinct snapshot authorities must have signed the
    *     snapshot hash; any invalid signature by a listed authority is rejected.
    *  3. Chain continuity: optional `previousSnapshotHash` / `checkpoint` must be
@@ -803,15 +955,20 @@ export class UepLedger {
    *  4. Every faucet mint carries a valid signature by a trusted faucet key that
    *     is distinct from the snapshot authorities; every non-output note is minted.
    *  5. The full state is re-derived and every v0.4.2 invariant is checked.
+   *  6. v0.4.4: the note-commitment tree is rebuilt and must match `noteRoot`;
+   *     every committed spend carries a membership proof against an earlier
+   *     root and a sender signature by a registered spend key; every pending
+   *     entry is re-validated against the restored state and the queue bound.
    * A restored ledger can only sign snapshots or mint if `keys` are passed.
    */
   static restore(data: UepLedgerSnapshot, trust: SnapshotTrust, keys: LedgerSigningKeys = {}): UepLedger {
     const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
     if (!data || typeof data !== "object") fail("SHAPE");
     if (data.formatVersion !== SNAPSHOT_FORMAT_VERSION) {
-      fail("VERSION", `snapshot formatVersion ${String((data as { formatVersion?: unknown }).formatVersion ?? 1)} is no longer supported; v0.4.3 requires formatVersion ${SNAPSHOT_FORMAT_VERSION} (Ed25519-signed, hash-chained). Re-create the snapshot with v0.4.3.`);
+      fail("VERSION", `snapshot formatVersion ${String((data as { formatVersion?: unknown }).formatVersion ?? 1)} is no longer supported; v0.4.4 requires formatVersion ${SNAPSHOT_FORMAT_VERSION} (Ed25519-signed, hash-chained, note-commitment root). Re-create the snapshot with v0.4.4.`);
     }
     if (data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.nullifiers.seen) || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || !Array.isArray(data.mints) || !data.policy || !Array.isArray(data.signatures)) fail("SHAPE");
+    if (!Array.isArray(data.spendKeys) || typeof data.noteRoot !== "string" || !Number.isSafeInteger(data.noteCount) || !Number.isSafeInteger(data.maxPendingTransactions)) fail("SHAPE");
     if (!Number.isSafeInteger(data.sequence) || data.sequence < 1 || typeof data.prevSnapshotHash !== "string" || !/^[0-9a-f]{64}$/.test(data.prevSnapshotHash)) fail("SHAPE");
 
     // Trust anchors (public keys only).
@@ -848,14 +1005,20 @@ export class UepLedger {
       if (data.mints.length < cp.mintCount || mintChainHash(data.mints, cp.mintCount) !== cp.mintChainHash) fail("HISTORY", "mint history diverges from the trusted checkpoint");
     }
 
-    const l = new UepLedger({
-      networkId: data.networkId,
-      domainId: data.domainId,
-      connected: data.connected,
-      allowFaucet: data.allowFaucet,
-      snapshotSigningKeys: [],
-      faucetSigningKey: null,
-    });
+    let l!: UepLedger;
+    try {
+      l = new UepLedger({
+        networkId: data.networkId,
+        domainId: data.domainId,
+        connected: data.connected,
+        allowFaucet: data.allowFaucet,
+        snapshotSigningKeys: [],
+        faucetSigningKey: null,
+        maxPendingTransactions: data.maxPendingTransactions,
+      });
+    } catch (e) {
+      fail("PENDING", (e as Error).message);
+    }
     // Optional private keys for an authority node resuming its own chain.
     if (keys.snapshotSigningKeys?.some((k) => !authorities.includes(publicKeyHexOf(toPrivateKey(k))))) throw new Error("SNAPSHOT_SIGNING_KEY_NOT_TRUSTED");
     if (keys.faucetSigningKey !== undefined && !faucetKeys.includes(publicKeyHexOf(toPrivateKey(keys.faucetSigningKey)))) throw new Error("FAUCET_KEY_NOT_TRUSTED");
@@ -864,7 +1027,6 @@ export class UepLedger {
     l.balances = new Map(data.balances.map(([k, v]) => [k, BigInt(v)]));
     l.notes = data.notes.map(deserializeNote);
     l.txs = data.txs.map(deserializeTx);
-    l.pending = data.pending.map(deserializeTx);
     l.noteCounter = BigInt(data.noteCounter);
     l.lastReconcileAt = data.lastReconcileAt;
     const p = data.policy as any;
@@ -889,6 +1051,16 @@ export class UepLedger {
       if (!n.nonce.eq(noteNonce(n.commitment, n.blinding))) fail("NOTE_NONCE");
       if (noteByCommitment.has(n.commitment.toHex())) fail("NOTE_DUPLICATE");
       noteByCommitment.set(n.commitment.toHex(), n);
+    }
+    // 2b. Note-commitment tree rebuilt in creation order must match the signed root.
+    // (The root is compared after the mint and supply checks, so their errors keep precedence.)
+    for (const n of l.notes) l.noteTree.append(n.commitment);
+
+    // 2c. Spend-key registry: one self-signed registration per account.
+    for (const reg of data.spendKeys) {
+      if (!reg || typeof reg.account !== "string" || !/^[0-9a-f]{64}$/.test(reg.account) || l.spendKeys.has(reg.account)) fail("SPEND_KEY");
+      if (!verifySpendKeyRegistration(l.networkId, reg)) fail("SPEND_KEY");
+      l.spendKeys.set(reg.account, { account: reg.account, publicKey: reg.publicKey, proof: reg.proof });
     }
 
     // 3. Transactions replay in order under submit()'s rules.
@@ -943,6 +1115,15 @@ export class UepLedger {
         if (!noteByCommitment.has(o.commitment.toHex())) fail("TX_OUTPUT_MISSING");
         available.add(o.commitment.toHex());
       }
+      // v0.4.4: membership proof against a root that predates this spend's outputs,
+      // and a sender signature by the registered spend key.
+      const firstOutput = outs.length > 0 ? Math.min(...outs.map((o) => l.noteTree.indexOf(o.commitment)!)) : l.noteTree.size;
+      if (!Array.isArray(tx.inputMembership) || tx.inputMembership.length !== ins.length) fail("TX_MEMBERSHIP");
+      ins.forEach((n, i) => {
+        const proof = tx.inputMembership![i]!;
+        if (proof?.leafIndex !== String(l.noteTree.indexOf(n.commitment)) || !l.noteTree.verify(n.commitment, proof, firstOutput)) fail("TX_MEMBERSHIP");
+      });
+      if (!verifySenderAuth(tx, l.spendKeyOf(tx.senderId))) fail("TX_SENDER");
       feesByAsset.set(tx.assetId.toHex(), (feesByAsset.get(tx.assetId.toHex()) ?? 0n) + tx.fee);
     }
 
@@ -974,6 +1155,19 @@ export class UepLedger {
     for (const [k, v] of l.balances) { const assetHex = k.split("|")[1]!; totals.set(assetHex, (totals.get(assetHex) ?? 0n) + v); }
     for (const assetHex of new Set([...minted.keys(), ...totals.keys()])) {
       if ((minted.get(assetHex) ?? 0n) !== (totals.get(assetHex) ?? 0n)) fail("SUPPLY");
+    }
+
+    if (l.noteTree.size !== data.noteCount || l.noteTree.root().toHex() !== data.noteRoot) fail("NOTE_ROOT");
+
+    // 8. Pending queue: bounded, unique, and every entry valid against the restored state.
+    if (data.pending.length > l.maxPendingTransactions) fail("PENDING", "pending queue exceeds maxPendingTransactions");
+    for (const raw of data.pending) {
+      let tx: UepTransaction;
+      try { tx = deserializeTx(raw); } catch { fail("PENDING", "malformed pending transaction"); }
+      if (l.pending.some((p) => p.txId.eq(tx!.txId))) fail("PENDING", "duplicate pending transaction");
+      const check = l.validatePending(tx!);
+      if ("error" in check) fail("PENDING", `${check.error.code}: ${check.error.message}`);
+      l.pending.push({ ...tx!, phase: "LOCAL_VALID" });
     }
 
     l.snapshotSequence = data.sequence;

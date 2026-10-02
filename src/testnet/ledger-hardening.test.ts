@@ -106,22 +106,25 @@ test("reconcile keeps a valid pending transaction queued and rejects an invented
   const { a, b } = await ids();
   const source = ledger();
   source.faucet(a.accountId, "asset:test:eur", 1000n);
+  source.registerSpendKey(a); // the sender's spend key travels in the signed snapshot
   const l = UepLedger.restore(source.snapshot(), TRUST, NODE_KEYS);
   const asset = encodeStringToFr("asset:test:eur");
   const p = source.prepareSpend(a, b.accountId, "asset:test:eur", 100n);
   assert.ok("tx" in p);
   if (!("tx" in p)) return;
   const fake = { ...p.tx, amount: 999_999n };
-  l.queueConflict(p.tx);
-  l.queueConflict(fake);
+  // v0.4.4: the invented envelope is refused at enqueue time.
+  const refused = l.queueConflict(fake);
+  assert.ok("error" in refused && refused.error.code === "AMOUNT_MISMATCH"); // commitment no longer matches the mutated amount
+  assert.ok("tx" in l.queueConflict(p.tx));
+  const dup = l.queueConflict(p.tx);
+  assert.ok("error" in dup && dup.error.code === "REPLAY");
+  assert.equal(l.pending.length, 1);
   const rootBefore = l.stateRoot().toHex();
 
   const r = l.reconcilePending();
 
-  // The invented envelope is rejected and removed from the queue.
-  assert.equal(r.rejected.length, 1);
-  assert.equal(r.rejected[0]!.txId, fake.txId.toHex());
-  assert.equal(r.rejected[0]!.code, "AMOUNT_MISMATCH"); // commitment no longer matches the mutated amount
+  assert.equal(r.rejected.length, 0);
   // The valid spend stays queued (not dropped) and is not settled or applied.
   assert.equal(r.queued.length, 1);
   assert.ok(r.queued[0]!.txId.eq(p.tx.txId));
@@ -260,10 +263,11 @@ test("a valid pending transaction survives reconciliation and snapshot restore",
   const asset = encodeStringToFr("asset:test:eur");
   const source = ledger();
   source.faucet(a.accountId, "asset:test:eur", 1000n);
+  source.registerSpendKey(a);
   const l = UepLedger.restore(source.snapshot(), TRUST, NODE_KEYS);
   const p = source.prepareSpend(a, b.accountId, "asset:test:eur", 100n);
   assert.ok("tx" in p); if (!("tx" in p)) return;
-  l.queueConflict(p.tx);
+  assert.ok("tx" in l.queueConflict(p.tx));
   const r = l.reconcilePending();
   assert.equal(r.rejected.length, 0);
   assert.equal(r.settlements.length, 0);

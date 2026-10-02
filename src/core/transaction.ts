@@ -47,6 +47,10 @@ export type UepTransaction = {
   outputNotes?: ReturnType<typeof serializeNote>[];
   transactionCommitment: Fr;
   spendProof: SpendProof;
+  /** v0.4.4: Ed25519 signature by the sender's registered spend key over txId + commitment. */
+  senderAuth?: { publicKey: string; signature: string };
+  /** v0.4.4: membership proof of each input commitment in the note-commitment tree. */
+  inputMembership?: Array<{ leafIndex: string; root: string; siblings: string[] }>;
   phase: TxPhase;
   inConflict: boolean;
   createdAt: number;
@@ -127,6 +131,8 @@ export function deserializeTx(data: ReturnType<typeof serializeTx>): UepTransact
     outputNotes: data.outputNotes?.map(deserializeNote),
     transactionCommitment: new Fr(data.transactionCommitment),
     spendProof: data.spendProof,
+    ...(data.senderAuth ? { senderAuth: { publicKey: data.senderAuth.publicKey, signature: data.senderAuth.signature } } : {}),
+    ...(data.inputMembership ? { inputMembership: data.inputMembership.map((p) => ({ leafIndex: p.leafIndex, root: p.root, siblings: [...p.siblings] })) } : {}),
     phase: data.phase,
     inConflict: data.inConflict,
     createdAt: data.createdAt,

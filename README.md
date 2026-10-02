@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.4.3-public-iot-m2m`
+> **Version:** `0.4.4-public-iot-m2m`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -51,6 +51,8 @@ The public testnet implements a local reference state machine with:
 - account and note commitments;
 - nullifiers and replay protection;
 - Sparse Merkle state representation;
+- an append-only note-commitment Merkle tree with membership proofs (v0.4.4);
+- per-account Ed25519 sender signatures and a validated, bounded pending queue (v0.4.4);
 - sender / recipient / treasury balance transition;
 - deterministic transaction commitments;
 - deterministic transaction identifiers;
@@ -60,7 +62,7 @@ The public testnet implements a local reference state machine with:
 - snapshot/restore support;
 - adversarial tests for replay, double spending, ownership, transaction mutation, forged identities, proof bypass, policy bypass, input-value inflation, domain replay and snapshot/restore.
 
-The transaction path is intentionally explicit about its security boundary: **the public testnet requires sender authentication on every spend, using a deterministic development/reference MAC. This is not a zero-knowledge proof and is not a production SNARK ceremony.**
+The transaction path is intentionally explicit about its security boundary: **the public testnet requires sender authentication on every spend, using a deterministic development/reference MAC plus (since v0.4.4) an Ed25519 signature by the account's registered spend key. Neither is a zero-knowledge proof or a production SNARK ceremony.**
 
 ### Digital Marketplace
 
@@ -78,6 +80,9 @@ The public Marketplace layer implements:
 - idempotent settlement;
 - duplicate/replay protection;
 - Paymaster-style gas sponsorship accounting;
+- signed actions for every order step, with party-only order access (v0.4.4);
+- buyer disputes with arbiter resolution (release / refund / split) and a timeout outcome (v0.4.4);
+- IoT/M2M orders settled against telemetry signed by the machine's registered key (v0.4.4);
 - authorization checks for cancellation/expiration;
 - synthetic 20,000-operation load testing.
 
@@ -91,9 +96,9 @@ The Marketplace is intentionally a separate business layer in this release. **Th
 
 The public reference testnet retains the current experimental protocol fee rule:
 
-`fee = floor(amount × 10 / 10,000)`
+`fee = max(1, floor(amount × 10 / 10,000))` for any positive amount
 
-That corresponds to **0.1%**, subject to the integer floor. It is a testnet protocol rule, not a promise of future commercial pricing or income.
+That corresponds to **0.1%**. Since v0.4.4 a positive transfer always pays at least **1 unit** (the minimum fee applies below 1,000 units), so small transfers no longer travel fee-free. It is a testnet protocol rule, not a promise of future commercial pricing or income.
 
 The testnet treasury is an internal public reference account. No private key, production custody credential or personal treasury credential is included in this repository.
 
@@ -103,7 +108,7 @@ The Marketplace has its own business-layer fee:
 
 | Rule | Public preview |
 |---|---:|
-| Marketplace fee | **3.0%** of successfully settled service value |
+| Marketplace fee | **3.0%** of successfully settled service value (minimum 1 unit since v0.4.4) |
 | Fee trigger | `SETTLED` only |
 | Cancelled / expired order | No Marketplace fee |
 | Native UEP token required | **No** |
@@ -140,9 +145,9 @@ The active public hash is a **reference hardening backend**, not a claim that pr
 
 ---
 
-## 5. Security hardening in v0.4.1 – v0.4.3
+## 5. Security hardening in v0.4.1 – v0.4.4
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 and v0.4.1. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.3.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md) (previous: [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 – v0.4.2. Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.4.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md) (previous: [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
@@ -152,8 +157,11 @@ These public testnet releases harden the ledger, the IoT/M2M service layer and M
 - **v0.4.3:** snapshots are signed with **Ed25519** (`node:crypto`, no new dependencies) instead of a shared HMAC secret. `UepLedger.restore(snapshot, trust)` takes only **public keys**; verifiers never need a private key. An optional **k-of-n threshold** (for example 2-of-3) requires `k` valid signatures from distinct listed authorities; the default is 1-of-1 for the local testnet.
 - **v0.4.3:** snapshots form a **hash chain** (`sequence`, `prevSnapshotHash`). Restore can be pinned to a known previous snapshot hash or to a checkpoint (`checkpointOf()`), and `UepLedger.restoreChain()` verifies an ordered series; a reordered, rolled-back or rewritten history is rejected even when it is correctly signed.
 - **v0.4.3:** every faucet mint is signed by a **dedicated faucet (mint) key** that must differ from every snapshot key. Restore rejects unsigned mints, mints signed by any other key (including a snapshot key) and notes that are neither a signed mint nor a transaction output; supply is derived from the signed mints. The snapshot authority therefore cannot invent issuance.
-- v0.4.2 invariants still apply on restore: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags and per-account balances against unspent notes (plus treasury fee income). Snapshot **format version 3** is required; v1/v2 snapshots are rejected with `INVALID_SNAPSHOT_VERSION` and must be re-taken.
+- v0.4.2 invariants still apply on restore: state and nullifier roots, nullifier seen-set, note openings and nonces, in-order transaction replay under the same rules as `submit()`, spent flags and per-account balances against unspent notes (plus treasury fee income). Snapshot **format version 4** is required since v0.4.4; older snapshots are rejected with `INVALID_SNAPSHOT_VERSION` and must be re-taken.
 - Pending reconciliation never settles or applies a queued spend: invalid envelopes are rejected, valid ones stay queued (`LOCAL_VALID`, flagged on conflict) until applied through `submit()`.
+- **v0.4.4:** every spend carries an Ed25519 **sender signature** by the account's registered spend key (`deriveSpendKey(secret, salt)`; registration proves control of the account). `submit()` requires it even when the development ownership proof is disabled.
+- **v0.4.4:** the **pending queue is validated at entry**. A queued spend must be signed by the registered sender, consume notes that exist unspent in the local ledger (same `checkSpendShape()` rules as `submit()`) and carry a valid membership proof. The queue is bounded (`maxPendingTransactions`, default 1024) and de-duplicated, and `restore()` re-validates every pending entry.
+- **v0.4.4:** an append-only **note-commitment Merkle tree** (depth 32). Its root and size are part of state and snapshots; every spend proves membership of its input against a historical root (`tx.inputMembership`), and restore rebuilds the tree, checks the root, and re-checks each replayed spend's proof and sender signature. A replica can verify that a note exists from the root alone (`verifyNoteMembership`).
 
 **Residual trust model (testnet):** whoever holds the snapshot authority private keys controls what their node signs, and whoever holds the faucet key controls testnet issuance on that node. Signatures, the hash chain and checkpoints make tampering by anyone else detectable and keep the two roles separate; they do not make a key holder honest. This is the trust model of the local testnet, not production consensus.
 
@@ -162,7 +170,10 @@ These public testnet releases harden the ledger, the IoT/M2M service layer and M
 - **v0.4.3:** reservations cost something. Only identities with a **registered Ed25519 key** (`registerIdentity`) can reserve, and every reservation carries the buyer's signature (`signReservation`). The **deposit** (default 1% of gross, minimum 1 unit; `reservationDeposit` / `reservationDepositBps`) is **locked from the buyer's marketplace balance at `reserve()`**; without funds there is no reservation.
 - When the order is funded, the deposit **counts toward the payment** (`fundOrder(orderId, order.fundingDue)`). An unfunded reservation that **expires** forfeits the deposit to the provider. A signed **buyer cancellation** within `cancellationGraceMs` (default 2 minutes) refunds it; after the window it goes to the provider. Provider or admin cancellation, and expiry of a funded but undelivered order, refund the buyer in full.
 - Per-identity limit on concurrent open reservations (`maxActiveReservationsPerIdentity`, default 8) and a short TTL (`reservationTtlMs`, default 10 minutes); `expire()` is only possible after the TTL. `valueAccounting(asset)` checks conservation across every deposit path.
-- IoT settlement requires an authenticated buyer or the configured settlement arbiter. Machine/provider deactivation requires an admin authorization callback. IoT `requestService()` requires the buyer's reservation signature, and `hold()` funds the remainder after the locked deposit, including any sponsored gas fee.
+- IoT `requestService()` requires the buyer's reservation signature, and `hold()` funds the remainder after the locked deposit, including any sponsored gas fee.
+- **v0.4.4:** every order action is signed (`signAction`; buyer, provider, admin and arbiter alike). Providers must be registered identities; the admin and the arbiter are verified against configured public keys (`adminPublicKey`, `settlementArbiterPublicKey`). Reading or listing an order requires being one of its parties or the admin, with a short-lived signed read authorization.
+- **v0.4.4:** a **dispute flow** with defined outcomes. The buyer can open a dispute within the delivery dispute window; the arbiter resolves it as `RELEASE`, `REFUND_BUYER` or `SPLIT`; the provider can concede a refund; an unresolved dispute falls back to a configurable timeout outcome (default: refund the buyer). Every outcome moves the escrow exactly once, and `valueAccounting()` stays conserved.
+- **v0.4.4:** **IoT telemetry is always signed** by the machine's registered Ed25519 key (machines cannot be registered without one), with monotonic sequence numbers and nonce anti-replay. An IoT order is released only against verified telemetry that was delivered for that order and reports the full contracted quantity; a shortfall goes to a dispute. Simulations sign with test machine keys.
 
 These controls are testnet protections, not a claim of production consensus or production ZK security.
 
@@ -311,6 +322,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.1.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.2.md
 ├── PUBLIC-SECURITY-REMEDIATION-v0.4.3.md
+├── PUBLIC-SECURITY-REMEDIATION-v0.4.4.md
 ├── package.json
 ├── package-lock.json
 ├── tsconfig.json
@@ -334,6 +346,8 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 │   │   ├── assets.ts
 │   │   ├── security-policy.ts
 │   │   ├── ed25519.ts        # Ed25519 helpers (node:crypto) for snapshots, mints, buyer signatures
+│   │   ├── spend-key.ts      # v0.4.4: per-account spend keys and sender signatures
+│   │   ├── note-tree.ts      # v0.4.4: note-commitment Merkle tree and membership proofs
 │   │   ├── spend-proof.ts
 │   │   ├── status.ts
 │   │   ├── zk-witness-contract.ts
@@ -343,12 +357,13 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 │   ├── identity/             # Deterministic test identities
 │   ├── network/              # Public TESTNET profile only
 │   ├── testnet/              # Local UEP ledger reference implementation + tests
-│   ├── marketplace/          # Marketplace business layer + tests
+│   ├── marketplace/          # Marketplace business layer (signed actions, disputes) + tests
 │   └── service/              # Content integrity + IoT/M2M service layer
 │       ├── content-hash.ts
 │       ├── iot-m2m.ts
 │       ├── iot-m2m-codec.ts
 │       ├── iot-m2m.test.ts
+│       ├── iot-testkit.ts    # test/simulation helpers (signed IoT flows)
 │       └── index.ts
 │
 ├── examples/
@@ -359,6 +374,7 @@ This is an **in-process deterministic simulation**. It is not a claim that UEP c
 │   └── marketplace-20k-simulation.mjs
 │
 └── docs/
+    ├── API.md            # changed public signatures (v0.4.3 – v0.4.4)
     ├── ARCHITECTURE.md
     ├── THREAT-MODEL.md
     └── REPRODUCIBILITY.md
@@ -400,6 +416,8 @@ Submission checks
    ├── fee policy
    ├── asset registry
    ├── ownership / development spend proof
+   ├── sender signature (registered spend key)
+   ├── input note membership (note-commitment tree)
    └── note commitment validation
    │
    ▼
@@ -410,7 +428,7 @@ State transition
    ├── treasury fee increases
    ├── input note(s) become spent
    ├── output note(s) are added
-   └── state/nullifier roots change
+   └── state/nullifier/note-commitment roots change
 ```
 
 This is a **reference local execution model**, not a claim of globally finalized consensus.
@@ -436,21 +454,28 @@ HOLD / RESERVATION
   ├──────────────► CANCEL / EXPIRE
   │
   ▼
-DELIVERY
+DELIVERY (signed delivery hash)
   │
   ▼
 CONTENT / DELIVERY VALIDATION
   │
+  ├──────────────► DISPUTE (buyer, within the window)
+  │                  │
+  │                  ├── RELEASE ──────► SETTLEMENT
+  │                  ├── SPLIT ────────► provider share − fee, rest to buyer
+  │                  └── REFUND_BUYER ─► REFUNDED (no fee)
   ▼
-SETTLEMENT
+SETTLEMENT (buyer, or provider after the window, or arbiter)
   │
   ├── provider payout
-  └── 3% Marketplace fee → Marketplace Treasury
+  └── 3% Marketplace fee (min. 1 unit) → Marketplace Treasury
 ```
 
 The design deliberately charges the Marketplace fee only at successful settlement. Failed, cancelled or expired orders do not become Marketplace fee income.
 
 Since v0.4.3 the reservation step is signed and funded: a registered buyer signs the reservation, the reservation deposit is locked from the buyer's balance, and funding pays the remainder (`grossAmount + gasFee − deposit`). The deposit is refunded on a buyer cancellation within the grace window and on provider/admin cancellation; it goes to the provider when an unfunded reservation expires or the buyer cancels after the grace window. A funded order that expires undelivered is refunded in full.
+
+Since v0.4.4 every step is a signed action, and only the order's parties (or the admin) can read it. After delivery the buyer can open a dispute within `deliveryDisputeWindowMs`. The arbiter resolves it (release, refund or split); the provider can concede a refund; and if nobody resolves it within `disputeResolutionWindowMs`, the configured timeout outcome applies (default: refund the buyer). A split charges the Marketplace fee only on the provider's share; a refund charges none.
 
 ---
 

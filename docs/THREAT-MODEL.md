@@ -6,7 +6,9 @@
 - ownership binding;
 - nullifier uniqueness;
 - balance conservation within the reference state machine;
-- Marketplace order state;
+- note existence (note-commitment tree root) and the pending queue;
+- Marketplace order state and order confidentiality between users;
+- IoT/M2M usage evidence (machine telemetry);
 - Marketplace Treasury accounting;
 - Paymaster reserve accounting;
 - reproducibility and deterministic serialization.
@@ -31,6 +33,25 @@ delivery manipulation.
 Attempts to bypass or duplicate Marketplace fees, Paymaster reservations or
 Treasury allocation.
 
+### Queue injector
+
+Attempts to place spends in another node's pending queue that are not signed by
+the sender's registered spend key, consume notes that do not exist or are already
+spent, or flood the queue. Since v0.4.4 every entry is validated at entry and on
+restore, and the queue is bounded.
+
+### Dispute and order-access attacker
+
+Attempts to read or change another user's order, to impersonate a provider, the
+admin or the arbiter, to open or resolve a dispute on an order it is not a party
+to, or to extract more than the escrowed value through a dispute outcome.
+
+### Telemetry forger
+
+Attempts to settle an IoT/M2M order with unsigned, foreign-key, replayed or
+inflated machine telemetry, or with telemetry that was not delivered for that
+order.
+
 ### Snapshot forger
 
 Attempts to restore a snapshot that was not signed by enough snapshot authorities,
@@ -50,6 +71,12 @@ Ed25519 signatures, the k-of-n threshold, the hash chain and checkpoints make
 tampering by anyone else detectable and keep the snapshot and mint roles
 separate. They do not make a key holder honest. This is the local testnet trust
 model, not production consensus or production key custody.
+
+Since v0.4.4 the following are also trusted parties of the testnet:
+
+- **Spend-key registry.** The ledger that accepts a spend-key registration has checked that the registrant controls the account. A replica receives the registry through signed snapshots and cannot re-check that proof on its own.
+- **Settlement arbiter.** It decides disputed outcomes within the escrowed value; it cannot create value.
+- **Machine keys.** A machine key proves who signed the telemetry, not that the physical service happened. A compromised or dishonest machine can still report false usage.
 
 ## Out of scope
 
