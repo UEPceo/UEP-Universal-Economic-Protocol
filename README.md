@@ -517,4 +517,20 @@ UEP is being developed around a simple principle:
 That principle is why this public release contains a reproducible testnet and a real-service Marketplace model, while deliberately avoiding a speculative native token and avoiding claims that the current research stack is already a finished global or interplanetary financial network.
 
 
+---
+
+## 19. Supporting the project
+
+UEP is an independent research project. If you want to support its development, you can send a voluntary Bitcoin donation to:
+
+```text
+bc1qd5mffpv02peagseacxc0g8xv38j3t9xw7h9wgf
+```
+
+**Bitcoin (BTC) mainnet only.** Do not send other assets or networks to this address. Always double-check the address before sending.
+
+Donations are voluntary gifts to support research and development. They are **not** an investment, purchase, pre-sale, token allocation, equity, loan or any other financial product, and they do not grant any right to returns, profits, governance, refunds, testnet balances or future UEP assets. This address is unrelated to the testnet and Marketplace treasuries described above.
+
+For larger funding, grants or partnerships, please get in touch at the contact address below.
+
 Project contact: uep.dev@proton.me
