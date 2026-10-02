@@ -47,4 +47,4 @@ Do not include in public issues or pull requests:
 - any relevant deterministic test case.
 
 
-Security contact: security@uep-project.org
+Security contact: uep.dev@proton.me
