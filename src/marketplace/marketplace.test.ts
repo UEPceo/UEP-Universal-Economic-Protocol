@@ -81,7 +81,7 @@ test("cancellation releases the hold and capacity without fees", () => {
   const { m, listing } = setup();
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 4n });
   m.fundOrder(order.orderId, 80n);
-  m.cancel(order.orderId);
+  m.cancel(order.orderId, "buyer-1");
   assert.equal(m.getOrder(order.orderId).status, "CANCELLED");
   assert.equal(m.heldBalance("EUR", "buyer-1"), 0n);
   assert.equal(m.treasury.totalOf("EUR"), 0n);
@@ -202,7 +202,25 @@ test("cancelled paymaster reservation is released without charging the buyer", (
   const q = m.checkoutQuote(listing.listingId, 1n, 5n);
   const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "b", quantity: 1n, gasQuote: q.gasQuote });
   assert.equal(paymaster.reserveOf("EUR"), 95n);
-  m.cancel(order.orderId);
+  m.cancel(order.orderId, "b");
   assert.equal(paymaster.reserveOf("EUR"), 100n);
   assert.equal(m.treasury.totalOf("EUR"), 0n);
 });
+test("unauthorized actor cannot cancel or expire an order", () => {
+  const { m, listing } = setup();
+  const order = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n });
+  assert.throws(() => m.cancel(order.orderId, "attacker"), /ORDER_ACTION_FORBIDDEN/);
+  assert.throws(() => m.expire(order.orderId, "attacker"), /ORDER_ACTION_FORBIDDEN/);
+  assert.equal(m.getOrder(order.orderId).status, "ACCEPTED");
+});
+
+test("buyer or provider can cancel an order, admin can cancel", () => {
+  const { m, listing } = setup();
+  const a = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n });
+  m.cancel(a.orderId, "provider-gpu-1");
+  const b = m.acceptOrder({ listingId: listing.listingId, buyerId: "buyer-2", quantity: 1n });
+  m.cancel(b.orderId, "marketplace-admin");
+  assert.equal(m.getOrder(a.orderId).status, "CANCELLED");
+  assert.equal(m.getOrder(b.orderId).status, "CANCELLED");
+});
+

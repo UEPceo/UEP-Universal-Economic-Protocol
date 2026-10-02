@@ -335,8 +335,9 @@ export class DigitalServicesMarketplace {
     return { ...record };
   }
 
-  cancel(orderId: string, reason = "buyer_or_provider_cancelled"): ServiceOrder {
+  cancel(orderId: string, actorId: string, reason = "buyer_or_provider_cancelled"): ServiceOrder {
     const order = this.order(orderId);
+    if (actorId !== order.buyerId && actorId !== order.providerId && actorId !== "marketplace-admin") throw new Error("ORDER_ACTION_FORBIDDEN");
     if (order.status === "SETTLED") throw new Error("ORDER_ALREADY_SETTLED");
     if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
     if (order.status === "HELD") {
@@ -354,8 +355,9 @@ export class DigitalServicesMarketplace {
     return { ...order };
   }
 
-  expire(orderId: string): ServiceOrder {
+  expire(orderId: string, actorId?: string): ServiceOrder {
     const order = this.order(orderId);
+    if (actorId !== "marketplace-admin" && actorId !== "marketplace-system") throw new Error("ORDER_ACTION_FORBIDDEN");
     if (order.status === "SETTLED") throw new Error("ORDER_ALREADY_SETTLED");
     if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
     if (order.status === "HELD") {
@@ -463,7 +465,7 @@ export class DigitalServicesMarketplace {
 
   private assertReservationLive(order: ServiceOrder): void {
     if (order.reservationExpiresAt !== undefined && this.now() > order.reservationExpiresAt) {
-      this.expire(order.orderId);
+      this.expire(order.orderId, "marketplace-system");
       throw new Error("RESERVATION_EXPIRED");
     }
   }

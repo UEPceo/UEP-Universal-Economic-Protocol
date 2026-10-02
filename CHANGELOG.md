@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.2-public-security-fix — 2026-10-02
+
+Security release following external review UEP-RR-2026-10-02-001.
+
+- Replaced the reversible/commutative public UEP-25 algebraic hash placeholder with an ordered SHA-256-to-field reference backend.
+- Enabled sender proof/authentication by default (`requireProof=true`). The development MAC remains explicitly non-ZK.
+- Enforced security policy at transaction submission, not only wallet preparation.
+- Bound transaction commitments and TxIDs to `domainId`; added explicit input/output cardinality markers.
+- Enforced input-note value >= amount + fee and unique/exact input commitments.
+- Fixed `snapshot()` by importing `serializeTx` and added restore coverage.
+- Prevented reconciliation from overturning already-applied local transactions. Pending conflicts cannot invalidate a committed nullifier.
+- Restricted Marketplace cancellation to buyer/provider/admin and expiration to marketplace-system/admin.
+- Added adversarial regression tests for forged identities, proof bypass, policy bypass, value inflation, domain replay, snapshot/restore, hash ordering and unauthorized Marketplace actions.
+- IoT/M2M is intentionally **not included** in this public release; it remains in the laboratory/master branch pending its separate audit.
+
+
 ## 0.3.1-public-preview — October 2026
 
 - Added `npm run example` as the canonical public quickstart command.

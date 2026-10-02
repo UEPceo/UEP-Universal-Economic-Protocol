@@ -12,11 +12,11 @@ import { hAccount, hLeaf } from "../core/hash.ts";
 import { creatorFee, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier } from "../core/nullifier.ts";
 import { deserializeNote, makeNote, noteCommitment, openNote, serializeNote, type Note } from "../core/note.ts";
-import { computeTxCommitment, deserializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
+import { computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
 import { encodeStringToFr, u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
 import { TREASURY_ID } from "../network/profiles.ts";
-import { defaultSecurityPolicy, type SecurityPolicy } from "../core/security-policy.ts";
+import { SecurityPolicy, type SecurityPolicy as SecurityPolicyType } from "../core/security-policy.ts";
 import { DevelopmentSpendProofProvider, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
 
@@ -44,9 +44,10 @@ function ak(account: Fr, asset: Fr): AccountKey {
 
 export class UepLedger {
   /** Optional security policy gate (TESTNET). */
-  policy: SecurityPolicy = defaultSecurityPolicy;
+  policy: SecurityPolicyType = new SecurityPolicy();
   /** When true, submit must include secrets (MAC) or a verifiable zkProof. */
-  requireProof = false;
+  /** Public alpha requires sender authentication for every spend. */
+  requireProof = true;
   readonly networkId: string;
   readonly domainId: string;
   readonly connected: boolean;
@@ -199,6 +200,7 @@ export class UepLedger {
     const outputCommitments = outputs.map((n) => n.commitment);
     const transactionCommitment = computeTxCommitment({
       networkId: this.networkId,
+      domainId: this.domainId,
       senderId,
       recipientId: recipient,
       assetId,
@@ -283,6 +285,14 @@ export class UepLedger {
         },
       };
     }
+    if (tx.domainId !== this.domainId) {
+      return {
+        error: {
+          code: "WRONG_NETWORK",
+          message: "Transaction domain does not match this ledger.",
+        },
+      };
+    }
     if (!this.connected) {
       this.pending.push(tx);
       return {
@@ -291,6 +301,19 @@ export class UepLedger {
           message: "No live network endpoint configured.",
         },
       };
+    }
+    const policyVerdict = this.policy.check(
+      {
+        accountHex: tx.senderId.toHex(),
+        assetId: [...assetsForNetwork(this.networkId)].find((a) => encodeStringToFr(a.assetId).eq(tx.assetId))?.assetId ?? "unknown",
+        amount: tx.amount,
+        fee: tx.fee,
+        nowMs: Date.now(),
+      },
+      false,
+    );
+    if (!policyVerdict.ok) {
+      return { error: { code: "POLICY", message: `${policyVerdict.code}: ${policyVerdict.message}` } };
     }
     if (this.txs.some((t) => t.txId.eq(tx.txId))) {
       return { error: { code: "REPLAY", message: "Transaction already present (idempotent reject)." } };
@@ -301,6 +324,7 @@ export class UepLedger {
 
     const recomputed = computeTxCommitment({
       networkId: tx.networkId,
+      domainId: tx.domainId,
       senderId: tx.senderId,
       recipientId: tx.recipientId,
       assetId: tx.assetId,
@@ -364,6 +388,15 @@ export class UepLedger {
     if (inputs.length === 0) {
       return { error: { code: "NOTE_OPENING", message: "Input notes are not in this ledger." } };
     }
+    const uniqueInputs = new Set(tx.inputCommitments.map((c) => c.toHex()));
+    if (uniqueInputs.size !== tx.inputCommitments.length || inputs.length !== tx.inputCommitments.length) {
+      return { error: { code: "AMOUNT_MISMATCH", message: "Input commitments must be unique and exactly match the referenced notes." } };
+    }
+    const inputTotal = inputs.reduce((sum, n) => sum + n.amount, 0n);
+    const requiredInputValue = tx.amount + tx.fee;
+    if (inputTotal < requiredInputValue) {
+      return { error: { code: "AMOUNT_MISMATCH", message: "Transaction amount plus fee exceeds the value of the input notes." } };
+    }
     for (const n of inputs) {
       if (n.spent) return { error: { code: "DOUBLE_SPEND", message: "Input note already spent." } };
       if (!n.owner.eq(tx.senderId)) {
@@ -414,7 +447,7 @@ export class UepLedger {
     this.policy.check(
       {
         accountHex: tx.senderId.toHex(),
-        assetId: "asset:committed",
+        assetId: assetsForNetwork(this.networkId).find((a) => encodeStringToFr(a.assetId).eq(tx.assetId))?.assetId ?? "unknown",
         amount: tx.amount,
         fee: tx.fee,
         nowMs: Date.now(),
@@ -433,20 +466,20 @@ export class UepLedger {
   }
 
   reconcilePending(): { settlements: ReturnType<typeof reconcile>; root: Fr } {
-    const open = [...this.txs.filter((t) => t.phase !== "SETTLED" && t.phase !== "INVALIDATED"), ...this.pending];
-    const marked = markConflicts(open);
+    // LOCAL_FINAL transactions have already mutated balances and the nullifier set.
+    // They are not eligible to be overturned by a later pending conflict.
+    // Reconcile only pending transactions, and deterministically invalidate any
+    // pending spend whose nullifier is already committed locally.
+    const committedNullifiers = new Set(this.txs.map((t) => t.nullifier.toHex()));
+    const pendingCandidates = this.pending.filter((t) => !committedNullifiers.has(t.nullifier.toHex()));
+    const marked = markConflicts(pendingCandidates);
     const settlements = reconcile(marked);
     const applied = applySettlements(marked, settlements);
-    const byId = new Map(applied.map((t) => [t.txId.toHex(), t]));
-    this.txs = this.txs.map((t) => byId.get(t.txId.toHex()) ?? t);
     for (const t of applied) {
       if (!this.txs.some((x) => x.txId.eq(t.txId))) this.txs.push(t);
     }
     this.pending = [];
     this.lastReconcileAt = Date.now();
-    // Treasury fees of INVALIDATED txs must not remain as income. Native submit
-    // only credits on LOCAL_FINAL of a single winner; conflicts that never
-    // applied state need no revert. If a loser had been applied, revert here.
     return { settlements, root: settlementRoot(settlements) };
   }
 

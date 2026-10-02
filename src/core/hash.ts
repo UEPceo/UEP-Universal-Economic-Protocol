@@ -1,18 +1,16 @@
 /**
  * UEP domain-separated hash backends.
  *
- * LIVE BACKEND (wallet + Testnet today):
- *   UEP-25 algebraic placeholder (verbatim from uep-25-prototype/src/hash.rs):
- *     d = Fr(domain); x = a+d; y = b+d; h = (x+y)^2 + x*y + d
- *   Status: IMPLEMENTED / TESTED (vectors in uep.test.ts).
+ * PUBLIC ALPHA v0.3.2: the active Testnet/Marketplace backend is an ordered
+ * SHA-256-to-BN254-field reference hash. It replaces the old UEP-25 algebraic
+ * placeholder because that placeholder was commutative and algebraically
+ * invertible. This is a public-reference hardening step, not a claim that
+ * production UEP ZK circuits will use SHA-256.
  *
- * UEP-26 CIRCUIT DESIGN (frozen 2026-09-23, see uep-core/UEP-26-HASH-PARAMETERS-FREEZE.md):
- *   Permutation: Poseidon BN254 t=3 alpha=5 (UEP-21). NOT Poseidon2.
- *   Domain composition: H(d,a,b) = Poseidon(Poseidon(Fr(d), a), b)
- *   Live migration to Poseidon is a separate coordinated release (vectors GOLDEN in UEP-26.5; wallet still on UEP-25 placeholder).
- *
- * Poseidon2: NOT used. Backend must throw. Different permutation; future protocol version only.
+ * Production Poseidon parameters remain a separate protocol/circuit milestone.
+ * Poseidon2 is not used.
  */
+import { createHash } from "node:crypto";
 import { Fr } from "./field.ts";
 
 /** Domain separators (numeric tags). Const object keeps Node strip-types happy. */
@@ -31,16 +29,26 @@ export interface UepHashBackend {
   h(domain: Domain, a: Fr, b: Fr): Fr;
 }
 
-/** Faithful port of UEP-25 `hash::h`. */
+/** Public alpha reference backend. */
 export const Uep25PrototypeHash: UepHashBackend = {
-  name: "uep25-algebraic-placeholder",
+  name: "uep-public-sha256-field-v1",
   isPoseidon2: false,
   h(domain: Domain, a: Fr, b: Fr): Fr {
-    const d = new Fr(domain);
-    const x = a.add(d);
-    const y = b.add(d);
-    const sum = x.add(y);
-    return sum.mul(sum).add(x.mul(y)).add(d);
+    // Public testnet hardening: the previous UEP-25 algebraic placeholder was
+    // commutative and algebraically invertible. It is not suitable for an
+    // externally reachable ledger identity/commitment function. This backend
+    // is intentionally NOT the production Poseidon circuit backend; it is a
+    // collision-resistant ordered reference hash for the public alpha.
+    const prefix = new TextEncoder().encode("UEP-PUBLIC-HASH-V1");
+    const domainBytes = new Uint8Array(4);
+    new DataView(domainBytes.buffer).setUint32(0, domain, false);
+    const digest = createHash("sha256")
+      .update(prefix)
+      .update(domainBytes)
+      .update(a.toBytesBE())
+      .update(b.toBytesBE())
+      .digest();
+    return Fr.fromBytesBE254(new Uint8Array(digest));
   },
 };
 
@@ -57,7 +65,7 @@ export const Poseidon2Backend: UepHashBackend = {
   h(): Fr {
     throw new Error(
       "UEP-26: Poseidon2 is excluded (not interchangeable with frozen Poseidon BN254 t=3 α=5). " +
-        "Live wallet uses Uep25PrototypeHash; circuit design uses UEP-21 Poseidon. " +
+        "The public alpha uses the ordered SHA-256 field backend; production circuit design remains separate. " +
         "Do not invent a Poseidon2 round structure.",
     );
   },

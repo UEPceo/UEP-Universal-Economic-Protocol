@@ -19,7 +19,7 @@ export const PROTOCOL = {
   coreName: "UEP-25 prototype",
   coreMilestone: "UEP-25",
   requestedCore: "uep-crypto-core-v0.4 (archive not present)",
-  hashBackend: "UEP-25 algebraic placeholder (NOT Poseidon, NOT Poseidon2)",
+  hashBackend: "UEP public SHA-256-to-BN254-field reference backend (NOT Poseidon, NOT Poseidon2)",
   hashStatus: "IMPLEMENTED" as ImplementationStatus,
   poseidon2Status: "CONCEPTUAL" as ImplementationStatus,
   groth16Status: "TESTED" as ImplementationStatus, // Rust core; wallet provider still NOT WIRED
@@ -35,4 +35,4 @@ export const PROTOCOL = {
 } as const;
 
 export const HASH_DISCLAIMER =
-  "This wallet uses the UEP-25 domain-separated algebraic hash placeholder. It is deterministic and circuit-shaped, but it is NOT Poseidon and NOT Poseidon2. UEP-26 froze Poseidon (not Poseidon2); the live wallet still uses the UEP-25 algebraic placeholder until a coordinated migration.";
+  "This public alpha uses an ordered SHA-256-to-BN254-field reference hash. It is not the production Poseidon backend and is not Poseidon2. Production circuit migration remains a separate coordinated protocol milestone.";

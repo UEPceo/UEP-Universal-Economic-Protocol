@@ -49,6 +49,7 @@ export type UepTransaction = {
 
 export function computeTxCommitment(input: {
   networkId: string;
+  domainId: string;
   senderId: Fr;
   recipientId: Fr;
   assetId: Fr;
@@ -61,6 +62,7 @@ export function computeTxCommitment(input: {
 }): Fr {
   return canonicalTxCommitment([
     encodeStringToFr(input.networkId),
+    encodeStringToFr(input.domainId),
     input.senderId,
     input.recipientId,
     input.assetId,
@@ -68,7 +70,9 @@ export function computeTxCommitment(input: {
     u64ToFr(input.fee),
     input.nonce,
     input.nullifier,
+    new Fr(input.inputCommitments.length),
     ...input.inputCommitments,
+    new Fr(input.outputCommitments.length),
     ...input.outputCommitments,
   ]);
 }

@@ -12,7 +12,7 @@
  *   note_commitment = H_LEAF(payload, blinding)
  *   note_nonce      = H_LEAF(note_commitment, blinding)
  *
- * Live hash backend is still the UEP-25 algebraic placeholder.
+ * Live public hash backend is the ordered SHA-256-to-BN254-field reference backend.
  * UEP-26 circuit design uses Poseidon domain composition (same formulas).
  *
  * Status: IMPLEMENTED / TESTED (native openings). ZK spend: CONCEPTUAL.

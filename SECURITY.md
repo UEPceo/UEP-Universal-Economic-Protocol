@@ -13,6 +13,9 @@ This repository is an experimental public reference implementation. Security rep
 - Treasury accounting;
 - Paymaster accounting;
 - deterministic serialization;
+- transaction domain separation;
+- policy/authentication bypass;
+- Marketplace action authorization;
 - accidental secret exposure.
 
 ## Important limitation

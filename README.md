@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.3.1-public-preview`
+> **Version:** `0.3.2-public-security-fix`
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -58,9 +58,9 @@ The public testnet implements a local reference state machine with:
 - ownership checks;
 - asset/network separation;
 - snapshot/restore support;
-- adversarial tests for replay, double spending, ownership and transaction mutation.
+- adversarial tests for replay, double spending, ownership, transaction mutation, forged identities, proof bypass, policy bypass, input-value inflation, domain replay and snapshot/restore.
 
-The transaction path is intentionally explicit about its security boundary: **the public testnet uses the development/reference spend-MAC path, not a production SNARK ceremony**.
+The transaction path is intentionally explicit about its security boundary: **the public testnet requires sender authentication on every spend, using a deterministic development/reference MAC. This is not a zero-knowledge proof and is not a production SNARK ceremony.**
 
 ### Digital Marketplace
 
@@ -78,6 +78,7 @@ The public Marketplace layer implements:
 - idempotent settlement;
 - duplicate/replay protection;
 - Paymaster-style gas sponsorship accounting;
+- authorization checks for cancellation/expiration;
 - synthetic 20,000-operation load testing.
 
 The Marketplace is intentionally a separate business layer in this release. **The repository does not claim that Marketplace settlement is already an end-to-end production transaction through the UEP consensus/ZK stack.**
@@ -122,7 +123,22 @@ The Marketplace Treasury is separate from the protocol-level testnet treasury.
 
 ---
 
-## 4. Important status: what this repository is NOT
+## 4. Security hardening in v0.3.2
+
+This release follows external review `UEP-RR-2026-10-02-001`. The previous public alpha had critical weaknesses in its provisional hash and optional authentication path. They are addressed in this release. In particular:
+
+- the reversible/commutative algebraic placeholder is no longer the active public hash backend;
+- sender authentication is required by default;
+- transaction submission enforces the configured security policy rather than relying only on wallet-side checks;
+- transaction commitments/TxIDs include the domain and explicit input/output boundaries;
+- input-note value is checked against amount plus fee;
+- Marketplace cancellation/expiration is actor-authorized;
+- snapshot/restore is covered by a regression test;
+- already-applied transactions cannot be overturned by a later reconciliation conflict.
+
+The active public hash is a **reference hardening backend**, not a claim that production UEP ZK circuits will use SHA-256. Production cryptographic migration remains a separate protocol milestone.
+
+## 5. Important status: what this repository is NOT
 
 This repository is **not** a production financial network.
 
@@ -147,7 +163,7 @@ It does not provide:
 
 ---
 
-## 5. Reproducibility
+## 6. Reproducibility
 
 ### Requirements
 
@@ -156,11 +172,15 @@ It does not provide:
 
 The public reference layer intentionally avoids requiring the large private development workspace or a production proving ceremony.
 
-### Run all public tests
+### Minimal reproducible verification
 
 ```bash
+npm install
 npm test
+npm run example
 ```
+
+The security regression suite is part of `npm test`. It covers the public hardening release, including ordered commitments, sender authentication, policy enforcement, input-value binding, domain separation and snapshot/restore.
 
 ### Run only the protocol/testnet tests
 
