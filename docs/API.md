@@ -1,6 +1,43 @@
-# Public API reference: changed signatures (v0.4.3 – v0.4.7 and unreleased)
+# Public API reference: changed signatures (v0.4.3 – v0.5.0)
 
-This page lists the public signatures that changed in `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+This page lists the public signatures that changed in `0.5.0-public-iot-m2m` (unreleased), `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# v0.5.0 (unreleased)
+
+## HTTP adapter and service API: `src/service/uep-http-api.ts`, `uep-service-api.ts`, `uep-api-types.ts`
+
+- `UEP_HTTP_API_VERSION = "1.2.0"`.
+- Signed actor headers: `x-uep-actor-id`, `x-uep-signature` (hex Ed25519 signature over `actionMessage({ marketplaceId, action, actorId, target, details })`), `x-uep-issued-at` (unix ms; required for `read`). Exported as `ACTOR_ID_HEADER`, `ACTOR_SIGNATURE_HEADER`, `ACTOR_ISSUED_AT_HEADER`. `x-uep-caller-id` is ignored.
+- `ApiRequestMeta.auth?: { actorId, signature, issuedAt? }`; `callerId` is informational only.
+- Marketplace and IoT methods fail closed: no `auth` → `UNAUTHORIZED` (401); Marketplace errors map to `UNAUTHORIZED` (`ACTOR_SIGNATURE_*`, `IDENTITY_NOT_REGISTERED`, `RESERVATION_SIGNATURE_INVALID`, …), `FORBIDDEN` (`*_FORBIDDEN`, `*_NOT_AUTHORIZED`), `NOT_FOUND` or `INVALID_REQUEST`. `httpStatusOf(result, okStatus)` gives the HTTP status of a result.
+- `marketplaceFundOrder(orderId, amount, meta)`, `marketplaceDeliverOrder(orderId, body, expectedHash?, meta)` (no provider id: the provider is the signer), `marketplaceSettleOrder(orderId, meta)`, `marketplaceCancelOrder(orderId, meta)`, `marketplaceGetOrder(orderId, meta)`, `marketplacePublishListing(input, meta)` pass `meta.auth` to the Marketplace. `marketplaceAcceptOrder()` requires the reservation `signature`. `marketplaceTreasury(asset, meta)` requires an administrator `read` signature over `treasury:<asset>`. `iotHold`, `iotDeliverTelemetry`, `iotSettle` require `meta.auth`; `iotRequestService` requires `authorization`.
+- `HttpApiOptions.cors?: { allowedOrigins: string[] }` (else `UEP_HTTP_CORS_ORIGINS`); `OPTIONS` → 204. `HttpApiOptions.objectsToken` protects `/v1/objects*` (without it: loopback hosts only, else 401 `OBJECTS_AUTH_REQUIRED`).
+
+## Marketplace: `src/marketplace/marketplace.ts`, `paymaster.ts`
+
+- `treasurySnapshotAuthorized(asset, auth)`: administrator `read` signature over `treasury:<asset>` (with `issuedAt`); else `TREASURY_ACCESS_FORBIDDEN`.
+- `MarketplacePaymaster` config: `maxOutstandingPerActor` (32), `maxActorShareBps` (2500), `maxOrderShareBps` (1000), `maxGasPerOrder?`. Errors `PAYMASTER_ACTOR_LIMIT_REACHED`, `PAYMASTER_ACTOR_CAP_EXCEEDED`, `PAYMASTER_ORDER_CAP_EXCEEDED`, `INVALID_SPONSOR_HOLD`.
+- `sponsor(orderId, quote, now?, { actorId?, holdUntil? })`, `pin(orderId, quoteId)`, `sweepExpired(now?, limit?)` (returns released order ids), `isSponsored()`, `outstandingOf(asset)`, `actorOutstandingOf(actorId, asset)`, `openSponsorships()`. `release(orderId, { quoteId })` is idempotent; captured sponsorships keep only their receipt.
+- `publishListing()` uses a fingerprint index and a prefix-filter token index (same results as before).
+
+## Ledger and spends: `src/testnet/ledger.ts`, `src/core/spend-proof.ts`, `src/core/nullifier.ts`
+
+- `prepareSpend(secrets, recipient, asset, amount, now?, opts?)` and `preparePayment(…, opts?)` with `SpendBuildOptions = { authorization?: "sender-signature" | "development-mac" }`; default `"sender-signature"`.
+- `SpendProof.kind` adds `"sender-signature"`; `SENDER_SIGNATURE_PROOF` (`backend: "ed25519-key-derived-account"`, empty payload). `signedSpendNullifier(senderId, nonce)`, `SIGNED_SPEND_NULLIFIER_TAG`.
+- `submit(tx)` accepts a `sender-signature` spend without secrets (sender signature, input owner keys and sender-bound nullifier checked; `WRONG_OWNER` for another nullifier). A `development-mac` spend still needs `submit(tx, secrets)` (`PROOF` otherwise). Restore fails with `INVALID_SNAPSHOT_TX_NULLIFIER` for a signed spend with another nullifier.
+
+## Assets: `src/core/assets.ts`, `src/core/asset-registry.ts` (new)
+
+- Asset ids `<namespace>/<symbol>` (`ASSET_ID_PATTERN`, `parseAssetId`, `isCanonicalAssetId`, `assetIdToFr`); `MAX_ASSET_DECIMALS = 8`, `assertAssetDecimals`. `AssetRecord` gains `kind` and `measurement`; `issuer` is the namespace. `assetTemplatesForNetwork(networkId)`, `devAssetRegistry(networkId)` (ephemeral keys, local only).
+- Manifest types and tooling: `KeySet`, `normalizeKeySet`, `validSigners`, `meetsThreshold`, `selfCertifiedNamespace`, `assetAdmissionMessage`, `assetRegistryManifestHash`, `validateAssetRegistryManifest`, `validateAssetRegistryUpgrade`, `verifySignedAssetRegistry`, `AssetRegistry.load(chain, governance)` (`withVersion`, `find`, `findByFr`, `feeFloor`, `issuerAt`, `allIssuerKeys`), `buildSignedAssetRegistry`, `cosignAssetRegistry`.
+
+## Sparse Merkle tree: `src/core/smt.ts`
+
+- Same API and results; compressed storage. New `storedNodeCount()`. The constructor rejects depths outside 1–254 (`SMT_DEPTH_INVALID`).
+
+## Labs
+
+- `verifyZkSpendProofAgainstExpected(…, depth = 4)`, `verifyArtifactAgainstRoots(art, old, newRoot?, depth = 4)`; `src/lab/zk-vk-pins.ts` (`loadVkPins`, `pinnedVk`, `zkVerifyPinned`, codes `VK_NOT_PINNED`, `VK_PIN_MISMATCH`, `DOMAIN_MISMATCH`, `INVALID_PROOF`). `VerifyingKeyRegistry.pin()` requires a pinned key. `accountIndex(owner, depth, asset?)`, `stateKey(owner, asset)`. `zkStateIndex()` in `zk-bridge.ts`.
 
 # Unreleased: Poseidon protocol hash
 

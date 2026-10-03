@@ -1,9 +1,10 @@
 /**
  * Asset definitions per network (ADR 0001). No universal UEP coin, no native token.
  *
- * v0.4.8: these records are the *templates* of each network's asset list.
- * The authoritative list a ledger runs is the governance-signed asset registry
- * manifest (`src/core/asset-registry.ts`), whose hash every snapshot commits.
+ * v0.5.0: these records are the *templates* of each network's asset list.
+ * The target authoritative list is the governance-signed asset registry
+ * manifest (`src/core/asset-registry.ts`); wiring it into the ledger (with its
+ * hash in every snapshot) is the next milestone (ADR 0001, "Pending").
  * The templates here seed the ephemeral development registry and give the
  * Marketplace and the network profiles their asset names; they are deep-frozen
  * and cannot be modified at runtime.

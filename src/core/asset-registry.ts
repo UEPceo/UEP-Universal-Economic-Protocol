@@ -3,8 +3,9 @@
  *
  * The list of assets a network accepts is a versioned manifest signed by a
  * governance key set. Admitting, re-keying or deprecating an asset is a
- * manifest version bump plus signatures, not a code change. The ledger
- * commits the hash of the manifest it runs in every snapshot.
+ * manifest version bump plus signatures, not a code change. Target design:
+ * the ledger commits the hash of the manifest it runs in every snapshot (the
+ * ledger integration is pending, see ADR 0001; this module is standalone).
  *
  * Model: registry -> asset definition -> authorized issuer key set ->
  * controlled issuance. Issuers cannot create assets: an asset exists only if

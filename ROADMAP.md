@@ -18,17 +18,17 @@ For the layer-by-layer architecture and the current status of each layer, see [`
 
 | Item | Status |
 |---|---|
-| Current version | `0.4.7-public-iot-m2m` on `main`, plus the unreleased research-labs integration and Poseidon protocol hash (latest GitHub Release `v0.4.6-public-iot-m2m`) |
+| Current version | `0.5.0-public-iot-m2m` (unreleased), on top of the research-labs integration and Poseidon protocol hash (latest GitHub Release `v0.4.6-public-iot-m2m`) |
 | Tests | testnet: protocol 83/83, Marketplace + IoT/M2M 104/104 (includes IoT 23/23 and scale 3/3); research labs: Rust 107, labs 440 in 93 files (`npm run test:all` runs everything) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process, not a throughput claim) |
-| CI | GitHub Actions: `npm run test:all` on Node.js 22.x and 24.x (blocking); 16 lab files with known issues in a separate non-blocking job |
+| CI | GitHub Actions: `npm run test:all` on Node.js 22.x and 24.x (blocking); 14 lab files with known issues in a separate non-blocking job |
 | Network | Local, single-node, in-process testnet |
 | Research labs | Rust/ZK core in `uep-core/`, consensus, node, economic and agent experiments in `src/lab/` and `src/agent/`: experimental, not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
 
 ```text
 Phase 0  Foundation                      done
 Phase 1  Hardened public testnet         closing          ← we are here
-         Multi-asset                     hardening in v0.4.7; exit pending design decisions
+         Multi-asset                     ADR 0001 + signed registry manifest (v0.5.0); ledger wiring next
 Phase 2  Service economy                 in progress      ← and here
 Phase 3  Public developer platform       planned
 Phase 4  Multi-node testnet              planned
@@ -53,7 +53,7 @@ Phase 9  Interplanetary economic network research
 
 **Goal:** anyone can run UEP and check that the economic system works without depending on the team.
 
-**Delivered (v0.4.1 – v0.4.7):**
+**Delivered (v0.4.1 – v0.5.0):**
 
 - Ledger: 254-bit SMT keys, input notes resolved against the ledger, output and nonce binding, distinct transfer participants, restore that re-derives the full state.
 - Snapshots: Ed25519 authorities with optional k-of-n threshold, hash chain and checkpoints, a separate faucet key with signed mints, verify-only restore with public keys.
@@ -62,7 +62,8 @@ Phase 9  Interplanetary economic network research
 - Marketplace: signed actions, party-only order access, reservation deposit locked at `reserve()`, disputes with arbiter resolution and a guarded timeout, capacity returned exactly once.
 - IoT/M2M: machine keys required, signed telemetry with sequence and nonce anti-replay, settlement only against verified telemetry for the full quantity.
 - Per-asset hardening (v0.4.7): canonical asset ids, per-asset balance keying in the Marketplace, per-asset issuer keys with rotation and revocation, restore rejects unregistered assets, per-asset policy limits and fee floors, atomic multi-note payments, `requireProof` fixed at construction.
-- Independent adversarial assessments of every release line, the latest on v0.4.6. Per-finding status is in the `PUBLIC-SECURITY-REMEDIATION-v0.4.x.md` files.
+- v0.5.0: API authorization hardening (signed actor headers, fail-closed 401/403, signed treasury read, objects token, CORS off by default), ledger spends authorized by the sender signature by default, paymaster caps and expiry, a compressed sparse Merkle tree, a duplicate-listing index, circuit v4 keyed by (account, asset) with pinned development verifying keys, namespaced asset ids and the signed asset registry manifest module.
+- Independent adversarial assessments of every release line, the latest on v0.4.7. Per-finding status is in the `PUBLIC-SECURITY-REMEDIATION-v0.4.x.md` files.
 
 **Still open (documented in [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md)):**
 
@@ -82,7 +83,7 @@ Phase 9  Interplanetary economic network research
 
 The ledger already keeps balances per account and asset and commits the asset id into notes and transactions. Turning that into a guaranteed multi-asset property is a separate milestone.
 
-**Status:** in progress. An exit-criteria assessment returned **NO-GO**. v0.4.7 delivers the engineering hardening that needs no design decision (per-asset isolation, issuance scope, policy limits and fee floors, multi-asset tests); the remaining blockers need written design decisions (unit model, scope, asset registry, fees, arbitration, ZK, consensus, Sybil resistance). Multi-asset will not convert between assets and will not introduce a native token.
+**Status:** in progress. An exit-criteria assessment returned **NO-GO**. v0.4.7 delivers the engineering hardening that needs no design decision (per-asset isolation, issuance scope, policy limits and fee floors, multi-asset tests). v0.5.0 records the unit and asset model decisions (D-1, D-3) in [`docs/adr/0001-asset-model.md`](./docs/adr/0001-asset-model.md) and ships namespaced asset ids plus the governance-signed registry manifest with threshold issuer key sets. Next: wire the manifest into the ledger (snapshot format 7, threshold-signed mints, no faucet fallback). The other blockers still need written design decisions (scope, fees, arbitration, ZK, consensus, Sybil resistance). Multi-asset will not convert between assets and will not introduce a native token.
 
 ---
 
@@ -207,7 +208,7 @@ Delay-tolerant networking, asynchronous settlement, delayed consensus, local eco
 ```text
 2026
 ├── Foundation                      done
-├── Hardened testnet                v0.4.0 – v0.4.7, independent assessments, closing
+├── Hardened testnet                v0.4.0 – v0.5.0, independent assessments, closing
 ├── Service economy                 registries, lifecycle (done); events, storage, API, IoT gateway
 └── Developer platform              SDK, sandbox, simulators
 

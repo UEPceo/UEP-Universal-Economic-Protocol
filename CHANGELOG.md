@@ -1,40 +1,89 @@
 # Changelog
 
-## Unreleased — research labs integration and Poseidon protocol hash
+## 0.5.0-public-iot-m2m (unreleased) — research labs, Poseidon protocol hash, asset model and hardening
+
+Version 0.5.0 bundles the research-labs integration and the Poseidon protocol hash (first sections below, unchanged) with the v0.5.0 work: namespaced assets and an asset registry manifest, circuit v4 with (account, asset) state keys, API authorization hardening, remote-safe signed spends, paymaster reserve protection, a compressed sparse Merkle tree and fixes from two independent external assessments. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
+
+### Security hardening (v0.5.0)
+
+- **API authorization hardening.** Marketplace and IoT/M2M calls of the service API and the HTTP adapter are authorized only by the actor's Ed25519 signature over the canonical action message (`src/marketplace/identity.ts`). HTTP carries it in `x-uep-actor-id`, `x-uep-signature` and `x-uep-issued-at` (required for reads). A missing or invalid authorization is `401 UNAUTHORIZED`, a valid one for the wrong actor `403 FORBIDDEN`; `x-uep-caller-id` is ignored. Fund, deliver, settle and cancel pass the signed authorization to the Marketplace; `POST /v1/marketplace/orders` passes the buyer's reservation signature and idempotency key; the treasury snapshot (`GET /v1/marketplace/treasury/<asset>`) needs a signed administrator `read`. HTTP status codes follow the error code. HTTP adapter version 1.2.0. End-to-end HTTP tests cover anonymous, wrong-actor and correctly signed calls.
+- `/v1/objects*`: a bearer token (`objectsToken` option, constant-time comparison) when configured; without one, only loopback hosts are served.
+- **CORS:** off by default (same-origin only). `cors.allowedOrigins` or `UEP_HTTP_CORS_ORIGINS` (comma-separated) lists exact origins; `*` only if listed explicitly; credentials are never allowed. `OPTIONS` preflight answers `204`.
+- **Pin verifying key.** Lab verifiers use the development verifying key pinned by SHA-256 per depth and domain (`uep-core/vectors/UEP-ZK-DEV-VK-PINS.json`; deployments set `UEP_ZK_VK_PINS_FILE`). A key carried in a message must match the pinned key (`VK_PIN_MISMATCH`); `VerifyingKeyRegistry.pin()` only accepts pinned keys.
+- **Strict field parsing** in `uep-zk` and the canonical-state parser: values `>= p` are rejected, no truncation through `u128`. The circuit library computes the fee with 128-bit intermediates (large amounts) and `prove-spend-json` rejects amount overflow.
+- `uep-zk` is executed in place; a private temporary copy (mode 0700, removed at exit) is made only when the build output is not executable.
+- `src/service/index.ts` no longer re-exports the lab proving queue.
+- **Remote-safe spends.** `prepareSpend()` / `preparePayment()` build `sender-signature` spends by default: the client signs the transaction binding with its key-derived spend key and uses the sender-bound nullifier `H_NULLIFIER(H_NULLIFIER(tag, senderId), nonce)`; the node verifies with the public key only, `submit(tx)` without any secret. The development MAC stays as a clearly labelled local, in-process option (`{ authorization: "development-mac" }`, verified only by `submit(tx, secrets)`). Restore and the offline queue check the sender-bound nullifier.
+- **Paymaster reserve protection.** Sponsorships carry the buyer and a hold deadline (the reservation expiry) and are released automatically when it passes: lazily before every new sponsorship and through `sweepExpired()`. Per-actor caps (`maxOutstandingPerActor`, default 32 open sponsorships; `maxActorShareBps`, default 25% of the asset's sponsor capacity) and per-order caps (`maxOrderShareBps`, default 10%; optional `maxGasPerOrder`). Delivered orders keep their sponsorship until settlement; `release()` is idempotent. Tested with 1,000 fake orders.
+- **Listing checks without full scans.** Exact duplicates use a fingerprint index; near-duplicates (Jaccard >= 0.9 per provider, category and asset) use a token prefix-filter index with the same result as the exhaustive check.
+
+### Assets (v0.5.0)
+
+- **Namespaced asset ids** `<namespace>/<symbol>` (lowercase, at most 15 + 15 characters): `uep-test/teur` (2 decimals), `uep-test/tbtc` (8), `uep-test/tenergy` (resource credit, kWh), `uep-test/tdata` (resource credit, GB), `uep-global/eur` (reserved), `uep-sim/senergy`, `uep-sim/scompute`. Decimals are bounded to 8. Resource credits describe their measurement; the measured quantity is evidence, separate from the settlement asset.
+- **Asset registry manifest** (`src/core/asset-registry.ts`): namespaces with owner key sets (including self-certifying `k-…` names), assets admitted by the namespace owner, per-asset issuer key sets with real thresholds, issuer keys disjoint across assets and from owner and governance keys, governance-signed versions with immutable economics (symbol, kind, decimals, fee floor, supply cap, unit, measurement) and no removals. The ledger does not consume the manifest yet (see `docs/adr/0001-asset-model.md`).
+
+### Research spend circuit v4 (v0.5.0)
+
+- `UEP-27-SPEND-POSEIDON-D32-v4-assetkey`, 155_393 constraints at D=32 and 48_097 at D=4: every state slot is keyed by `H_ACCOUNT(account, asset)`, the circuit constrains each index to the low bits of its key and requires the sender, recipient and treasury slots to be distinct. Witness builders, the execution engine and the SMT economic state reject an index collision (`SMT_INDEX_COLLISION`).
+- New CLI commands `uep-zk dev-vk <depth>` and `uep-zk state-index <account> <asset> <depth>`; development keys come from the fixed setup seed.
+
+### Performance (v0.5.0)
+
+- **Compressed sparse Merkle tree** (`src/core/smt.ts`): only non-empty leaves and branch points are stored (2n − 1 nodes for n leaves) and empty subtrees use the precomputed default hashes; roots, paths and serialization are identical to the previous tree (root-equivalence tests against the previous implementation at depths 4, 8, 32 and 254). Memory benchmark: `npm run bench:smt` (@@BENCH@@).
+
+### Labs (v0.5.0)
+
+- The rotating-leader lab follows the single-proposer schedule (UEP-37.6) and the digest-only aggregate proposal path; two lab files leave the known-issue list (14 remain, mostly multi-process timing). The uep37.5 state-slot collision is resolved by the v4 (account, asset) keying and the collision rejection.
+
+### Documentation (v0.5.0)
+
+- `docs/adr/0001-asset-model.md`: unit of account (D-1), asset model (D-3), openability and the pending ledger integration. `docs/API.md` lists the changed signatures of v0.5.0.
+
+### Compatibility (v0.5.0)
+
+- **Behaviour change:** asset ids are renamed (see above); pre-release format-6 snapshots with the old ids do not restore. The snapshot format number stays 6; snapshots may now contain `sender-signature` spends.
+- **Behaviour change:** spends are `sender-signature` by default and their nullifiers differ from development-MAC spends. Code that relied on `submit(tx)` failing without secrets must build `{ authorization: "development-mac" }` spends.
+- **Behaviour change (HTTP/service API):** marketplace and IoT calls need signed actor authorization; `x-uep-caller-id` has no effect; `marketplaceDeliverOrder()` no longer takes a provider id.
+- **Behaviour change (labs):** proofs and keys of circuit v3 do not verify under v4; verifiers no longer take a verifying key from the message; `UEP_P4_VK_HEX` is no longer read.
+
+### Research labs integration and Poseidon protocol hash
+
+(Previously listed as "Unreleased".)
+
 
 Publishes the project's research labs next to the testnet so that everything builds and tests with one command, and moves the testnet core to the same Poseidon hash as the research spend circuit. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged. See [`docs/LABS.md`](./docs/LABS.md).
 
-### Research labs
+#### Research labs
 
 - Add `src/lab/` (execution engine, node protocol and transport, local consensus experiments, economic labs, address and payment-request labs, network adaptation simulation, ZK bridge), `src/agent/`, a service/API lab in `src/service/`, and the Rust crates and design notes in `uep-core/`. These were internal lab experiments during the project's early stage; they are now public as experimental code. Lab benchmark output goes to `artifacts/`, which is git-ignored.
 - Labs import the hardened primitives from `src/core` instead of carrying their own copies. The differences found between the labs and the core are resolved toward the safer design (hash, small-amount fee, v1 addresses, domain binding) or documented as open (circuit tree depth, in-circuit account ids); see `docs/LABS.md`.
 - `uep-zk` is built from source (`npm run build:uep-zk`); no prebuilt binary is committed. Lab code no longer falls back to a shared `/tmp/uep-zk` copy.
 - Liquidity-pool lab (simulation only): the 0.3% swap fee is split into a 0.1% protocol share, accounted per asset for the treasury, and a 0.2% liquidity-provider share that stays in the pool. Both are configurable (`feePpm`, `protocolFeePpm`) and validated.
 
-### Protocol hash (testnet core)
+#### Protocol hash (testnet core)
 
 - Note commitments, nullifiers, the sparse Merkle tree, the note tree and transaction commitments use **Poseidon over BN254** (x^5, t = 3, 8 full + 57 partial rounds, circomlib-compatible constants; `src/core/poseidon.ts`, backend `uep-poseidon-bn254-x5-3-v1`). It is checked against the uep-21 vectors in `uep-core/vectors` and matches the spend circuit's leaves. Non-canonical field inputs are rejected (`POSEIDON_INPUT_NOT_CANONICAL`). The previous SHA-256-to-field backend stays in `src/core/hash.ts` as an inactive reference (`Sha256FieldReferenceHash`).
 - **Snapshot format version 6.** Formats 3–5 are rejected with `INVALID_SNAPSHOT_VERSION`.
 
-### Research spend circuit (UEP-26)
+#### Research spend circuit (UEP-26)
 
 - Circuit v3 (`UEP-27-SPEND-POSEIDON-D32-v3-feefloor`, 153_956 constraints at D=32): the fee must be `max(1, floor(amount / 1000))`, the same rule as the core, and `amount = 0` is rejected. The UEP-25 reference state machine uses the same rule.
 - The TypeScript verification helpers require the expected `domain_id` and reject a proof for another domain.
 
-### Compatibility
+#### Compatibility
 
 - **Behaviour change:** testnet state, snapshots (format 5 or earlier) and stored commitments, nullifiers, roots or transaction ids from earlier versions are not valid any more; re-create the testnet state. Mnemonics, spend keys, account ids and `uep1…` addresses are unchanged.
 - **Behaviour change (labs):** proofs from the v2 circuit do not verify against v3 keys; `verifyZkSpendProofAgainstExpected()` takes an `expectedDomainId` argument.
 - `npm run test:protocol` has 83 tests (4 new Poseidon vector tests) and takes about a minute, since Poseidon in TypeScript is slower than SHA-256.
 
-### Documentation
+#### Documentation
 
 - README: new "Origin and motivation" section (the research question the project started from) and a status legend (implemented on testnet, experimental lab, planned, research); a "Research labs" overview; status table with the Rust and lab test counts; repository layout updated (Poseidon, composite keys, `uep-core/` structure); ZK and multi-node sections reworded now that the labs are public.
 - New `uep-core/README.md`: index of the Rust crates and lab design notes, with guidance on lab status words, historical notes and internal-workspace test commands.
 - Lab design notes: Spanish notes translated to English; stale paths (`src/core/…` → `src/lab/…`) and stale statements (testnet hash, fee floor in ECON-01/02 and UEP-25) corrected.
 - `docs/ARCHITECTURE.md`, `ROADMAP.md`, `docs/REPRODUCIBILITY.md`, `docs/THREAT-MODEL.md`, `SECURITY.md`, `CONTRIBUTING.md`, `NOTICE` and the PR template updated for the research labs (scope, counts, troubleshooting). No code, test or configuration change.
 
-### CI
+#### CI
 
 - `npm run test:all` now also runs `test:rust`, `build:uep-zk` and `test:lab`; it is the blocking CI job on Node.js 22.x and 24.x with Rust 1.85.1 and a cargo cache.
 - The lab files with known issues (`scripts/lab-known-issues.json`, mostly multi-process timing) run in a separate non-blocking job, so the CI badge reflects the core.

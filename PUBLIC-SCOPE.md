@@ -27,7 +27,7 @@ This document defines what may be published in the public repository and what re
 - Details of vulnerabilities that are not yet fixed and disclosed (report and track them privately, see `SECURITY.md`).
 - Internal agent prompts, Grok workflows and operational instructions.
 - Internal PWA/authentication/application infrastructure unrelated to the public testnet.
-- Internal consensus experiments that have not been reviewed for publication.
+- Other internal material not reviewed for publication (see the exclusion policy).
 - Prebuilt binaries (for example the `uep-zk` prover); build them from source.
 - Exploit reproductions and test suites written for findings that are not yet fixed and disclosed.
 - Internal screenshots, temporary artifacts and development-only outputs.

@@ -1,4 +1,4 @@
-> Historical: describes the 12-input circuit with 152_621 constraints. The current circuit (v3, with `domain_id` and the fee floor) measures 153_956 constraints at D=32 and 46_660 at D=4; see `uep-26-spend-circuit/README.md`.
+> Historical: describes the 12-input circuit with 152_621 constraints. The current circuit (v4, with `domain_id`, the fee floor and (account, asset) state keys) measures 155_393 constraints at D=32 and 48_097 at D=4; see `uep-26-spend-circuit/README.md`.
 
 # UEP-37.2 — Poseidon Golden Freeze (TS ↔ uep-zk)
 

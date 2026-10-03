@@ -16,7 +16,7 @@ development keys from a seeded setup.
 |---|---|---|
 | [`uep-21-poseidon/`](./uep-21-poseidon/README.md) | Poseidon over BN254 (x^5, t = 3) and its R1CS gadget; source of the vectors used by the TypeScript core | `npm run test:rust` (7 tests) |
 | `uep-25-prototype/` | UEP-25 reference state machine with adversarial tests ([spec](./uep-25-prototype/docs/UEP-25-SPEC.md)) | `npm run test:rust` (9 tests) |
-| [`uep-26-spend-circuit/`](./uep-26-spend-circuit/README.md) | UEP-26 Groth16 spend circuit (v3, `UEP-27-SPEND-POSEIDON-D32-v3-feefloor`) and the `uep-zk` CLI | `npm run test:rust` (91 tests); `npm run build:uep-zk`; `npm run smoke:zk` |
+| [`uep-26-spend-circuit/`](./uep-26-spend-circuit/README.md) | UEP-26 Groth16 spend circuit (v4, `UEP-27-SPEND-POSEIDON-D32-v4-assetkey`) and the `uep-zk` CLI | `npm run test:rust` (91 tests); `npm run build:uep-zk`; `npm run smoke:zk` |
 | [`uep-23-state-transition/`](./uep-23-state-transition/README.md), [`uep-24-atomic/`](./uep-24-atomic/README.md) | Historical scaffolds, kept for reference | Not built, not tested |
 
 Build and run instructions for `uep-zk`: [`UEP-ZK-BUILD-AND-RUN.md`](./UEP-ZK-BUILD-AND-RUN.md).

@@ -33,7 +33,19 @@ delivery manipulation.
 ### Accounting attacker
 
 Attempts to bypass or duplicate Marketplace fees, Paymaster reservations or
-Treasury allocation.
+Treasury allocation. Since v0.5.0 the Paymaster caps the open sponsorships per
+actor (count and share of the budget) and per order, and expires its own
+reservations, so one actor cannot lock the sponsorship budget.
+
+### API caller (service/API lab)
+
+Calls the HTTP/service API without a valid actor signature, or with a valid
+signature but without the right role. Since v0.5.0 the API fails closed:
+Marketplace and IoT calls need the signed actor headers (`x-uep-actor-id`,
+`x-uep-signature`, and `x-uep-issued-at` for reads) and return 401 or 403; the
+caller-id header is ignored; the treasury read needs an administrator
+signature; `/v1/objects*` needs a token outside loopback; CORS is off unless
+origins are configured.
 
 ### Queue injector
 

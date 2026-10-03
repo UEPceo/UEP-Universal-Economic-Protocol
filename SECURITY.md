@@ -20,7 +20,7 @@ This repository is an experimental public reference implementation. Security rep
 - per-asset isolation of balances, issuance, limits and fees;
 - IoT/M2M telemetry verification and settlement;
 - policy/authentication bypass;
-- Marketplace action authorization;
+- Marketplace action authorization, including the signed actor headers of the HTTP/service API;
 - accidental secret exposure.
 
 Reports about the **research labs** (`src/lab`, `src/agent`, the service/API lab in `src/service`, `uep-core/`, including the UEP-26 circuit and `uep-zk`) are also welcome. The labs are experimental and make no security claim, so a lab issue is treated as research input unless it also affects the testnet reference path. Please use the same private channel for anything that could matter for a future production design (for example a soundness problem in the circuit).

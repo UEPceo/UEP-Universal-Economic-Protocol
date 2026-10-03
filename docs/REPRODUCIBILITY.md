@@ -18,21 +18,21 @@ npm run test:all
 
 `npm run test:all` runs `npm test` (protocol, Marketplace, IoT/M2M and scale suites), the smoke test, the quickstart and the 20k simulation, then the research labs: `test:rust`, `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 5–10 minutes more, including the first Rust build. A clean run on a typical machine takes roughly 10 minutes in total. CI runs the same command on Node.js 22.x and 24.x with Rust 1.85.1 as a blocking job, plus a non-blocking job for the known-issue lab files.
 
-Expected results on `main` (`0.4.7-public-iot-m2m` plus the unreleased labs integration and Poseidon hash; Node.js 22 and 24). Last re-checked with a clean `npm ci && npm run test:all` on Node.js 24.21 and Rust 1.85.1 on 2026-10-03:
+Expected results for `0.5.0-public-iot-m2m` (unreleased; Node.js 22 and 24). Last re-checked with `npm run test:all` on Node.js 22.23 and 24.21 with Rust 1.85.1 on 2026-10-03:
 
 | Command | Expected |
 |---|---|
-| `npm run test:protocol` | 83/83 pass (about a minute: Poseidon in TypeScript) |
-| `npm run test:marketplace` | 104/104 pass (includes the 23 IoT/M2M and the 3 scale tests) |
+| `npm run test:protocol` | @@PROTO@@/@@PROTO@@ pass (about a minute: Poseidon in TypeScript) |
+| `npm run test:marketplace` | @@MKT@@/@@MKT@@ pass (includes the @@IOT@@ IoT/M2M, the 11 HTTP authorization and the 3 scale tests) |
 | `npm run test:scale` | 3/3 pass |
-| `npm run test:iot` | 23/23 pass |
+| `npm run test:iot` | @@IOT@@/@@IOT@@ pass |
 | `npm run smoke:testnet` | `SMOKE OK` |
 | `npm run quickstart` | `PASS — local reference testnet` |
 | `npm run simulate:20k` | 20,000 settled, 0 errors, `valueConserved: true` |
-| `npm run test:rust` | 107 pass: uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 91 |
+| `npm run test:rust` | @@RUST@@ |
 | `npm run build:uep-zk` | `uep-core/target/release/uep-zk` built from source |
-| `npm run test:lab` | 93 files, 440 tests pass, 0 failures, 4 individual tests skipped with a note; 16 files with known issues skipped |
-| `npm run test:lab:known` | the 16 known-issue files; failures expected (non-blocking CI job) |
+| `npm run test:lab` | @@LABLINE@@; 14 files with known issues skipped |
+| `npm run test:lab:known` | the 14 known-issue files; failures expected (non-blocking CI job) |
 
 Lab suites with known failures are listed in `scripts/lab-known-issues.json` and skipped (see [`LABS.md`](./LABS.md)). Run them with `node scripts/test-lab.mjs --include-known`. The `uep-zk` binary hash depends on the toolchain and platform, so the labs do not pin it.
 

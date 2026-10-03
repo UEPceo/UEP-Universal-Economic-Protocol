@@ -43,7 +43,7 @@
     },
     {
       "file": "src/lab/uep37.5-process-poseidon.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Depth-8 Poseidon SMT: two lab accounts map to the same leaf index (SMT_INDEX_COLLISION). Known difference 2 in docs/LABS.md."
+      "reason": "v0.5.0: the index collision is resolved ((account, asset) state keys, collisions rejected) and the test uses the aggregate proposal path; on 4 OS processes one of the two convergence cases still times out intermittently."
     },
     {
       "file": "src/lab/uep37.5-stress.test.ts",

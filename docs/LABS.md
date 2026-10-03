@@ -89,17 +89,30 @@ skipped with a note in the test.
 2. **State tree layout: open.** The public ledger keys its SMT with the full
    254-bit field value. The UEP-26 circuit and the consensus SMT labs keep a
    32-level tree keyed by the low bits of the key and reject key collisions. A
-   254-level circuit costs about 1.0M constraints (6–7× the current 154k), which
+   254-level circuit costs about 1.0M constraints (6–7× the current 155k), which
    makes proving in the lab suite impractical; it stays a lab limitation.
-3. **Fee for small amounts: resolved.** Core and circuit (v3,
-   `UEP-27-SPEND-POSEIDON-D32-v3-feefloor`) both use `fee = max(1, floor(amount/1000))`,
+   v0.5.0 (circuit v4): every slot is keyed by `H_ACCOUNT(account, asset)`
+   (the same injective (account, asset) key as the core), the circuit itself
+   constrains each index to the low bits of that key and requires the sender,
+   recipient and treasury slots to be distinct; the witness builder, the
+   execution engine and the SMT economic state reject an index collision
+   (`SMT_INDEX_COLLISION`) instead of overwriting a leaf. Small test depths (8)
+   pick lab account ids with distinct slots.
+3. **Fee for small amounts: resolved.** Core and circuit (v3 fee floor, current
+   tag `UEP-27-SPEND-POSEIDON-D32-v4-assetkey`) both use `fee = max(1, floor(amount/1000))`,
    and the circuit rejects `amount = 0`. The UEP-25 reference state machine uses
    the same rule.
 4. **Account ids: open.** Public accounts are key-derived (SHA-256 of the Ed25519
    spend key, v0.4.5). The circuit still proves the older Poseidon
    `H_ACCOUNT(secret, salt)` binding, because proving key ownership in the circuit
    needs a circuit-friendly signature (for example EdDSA over BabyJubJub). The two
-   tests that need the shared derivation stay skipped.
+   tests that need the shared derivation stay skipped. Plan for the next
+   milestone: derive the spend key on BabyJubJub, define the key-derived account
+   as a Poseidon hash of that public key, and verify an in-circuit EdDSA-Poseidon
+   signature over the transaction commitment (roughly 6–8k extra constraints for
+   the signature check, plus the key hash), with a migration path from the
+   Ed25519 key-derived accounts of the testnet. It was not implemented in v0.5.0:
+   it changes the account derivation, the wallet and the snapshot format at once.
 5. **Address v1: resolved.** Retired in the public core and in the labs; labs use v2.
 6. **Domain binding: resolved.** The ZK verification helpers require the expected
    `domain_id` and reject a proof for another domain (public input 12).

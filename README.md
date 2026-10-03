@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.4.7-public-iot-m2m`
+> **Version:** `0.5.0-public-iot-m2m` (unreleased)
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -38,13 +38,13 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | **Planned** | A roadmap milestone with deliverables and exit criteria ([`ROADMAP.md`](./ROADMAP.md)); not yet in code. |
 | **Research / future vision** | A direction of inquiry, such as delay-tolerant or interplanetary settlement. No settled design, nothing operational. |
 
-### Current status (v0.4.7)
+### Current status (v0.5.0)
 
 | Item | Status |
 |---|---|
-| Version | `0.4.7-public-iot-m2m` on `main`, plus the unreleased research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
-| Tests (testnet) | protocol **83/83**, Marketplace + IoT/M2M **104/104** (includes IoT **23/23** and scale **3/3**) |
-| Tests (research labs) | Rust **107** (uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 91); labs **440** tests in 93 files; 16 lab files with known issues run in a non-blocking job |
+| Version | `0.5.0-public-iot-m2m` (unreleased): API authorization hardening, signed spends, paymaster caps, compressed Merkle tree, circuit v4 with pinned verifying keys, namespaced asset ids and the asset registry manifest, on top of the research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
+| Tests (testnet) | protocol **@@PROTO@@/@@PROTO@@**, Marketplace + IoT/M2M + HTTP authorization **@@MKT@@/@@MKT@@** (includes IoT **@@IOT@@/@@IOT@@** and scale **3/3**) |
+| Tests (research labs) | Rust **@@RUST@@**; labs **@@LABT@@** tests in @@LABF@@ files; 14 lab files with known issues run in a non-blocking job |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 6 |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
@@ -88,7 +88,7 @@ The public testnet implements a local reference state machine with:
 - deterministic account identity derived from test credentials;
 - key-derived account ids and checksummed, versioned Bech32m v2 addresses (v0.4.5);
 - testnet faucet;
-- multi-asset testnet registry (balances per account and asset; since v0.4.7 canonical asset ids, per-asset isolation, issuer keys, policy limits and fee floors; the unit model and an open registry are pending design decisions);
+- multi-asset testnet registry (balances per account and asset; since v0.4.7 per-asset isolation, issuer keys, policy limits and fee floors; since v0.5.0 namespaced asset ids `<namespace>/<symbol>` and a governance-signed asset registry manifest module with threshold issuer key sets, see [`docs/adr/0001-asset-model.md`](./docs/adr/0001-asset-model.md); wiring the manifest into the ledger is the next milestone);
 - account and note commitments;
 - nullifiers and replay protection;
 - Sparse Merkle state representation;
@@ -202,9 +202,9 @@ The SHA-256-based backend introduced in v0.3.2 was a reference hardening backend
 
 ---
 
-## 5. Security hardening in v0.4.1 – v0.4.7
+## 5. Security hardening in v0.4.1 – v0.5.0
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the independent adversarial assessments of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the independent adversarial assessments of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening. v0.5.0 adds the API authorization hardening, signed spends, paymaster caps and the fixes from the reviews of v0.4.7; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
@@ -257,6 +257,7 @@ accountId  = 0x02 ‖ keyHash   (the ledger's note owner / sender / recipient id
 - **v0.4.4:** **IoT telemetry is always signed** by the machine's registered Ed25519 key (machines cannot be registered without one), with monotonic sequence numbers and nonce anti-replay. An IoT order is released only against verified telemetry that was delivered for that order and reports the full contracted quantity; a shortfall goes to a dispute. Simulations sign with test machine keys.
 - **v0.4.6:** a dispute timeout configured as `RELEASE` runs the same category guard. An IoT order without verified telemetry for its full quantity is **refunded to the buyer** instead of paid (`TIMEOUT_REFUND_UNVERIFIED`). The arbiter's explicit release stays final, and its record says whether the guard passed (`categoryGuard: "ARBITER_OVERRIDE"` otherwise).
 - **v0.4.7:** balances, locked deposits and held escrow are kept **per asset and identity**, and every composite key is structural. Asset and identity ids are validated. Optional: an asset-registry mode (`assetRegistryNetworkId`), per-asset minimum fees and deposits, and administrator-signed credits (`requireSignedCredits`).
+- **v0.5.0:** the HTTP/service API lab **fails closed**: Marketplace and IoT calls need a signed actor (`x-uep-actor-id`, `x-uep-signature`, `x-uep-issued-at` for reads); a missing or invalid signature returns 401 and a valid signer without the right role 403. The treasury read needs an administrator signature, `/v1/objects*` needs a token outside loopback, and CORS is off unless origins are configured (`UEP_HTTP_CORS_ORIGINS`). Ledger spends are authorized by the **sender signature** by default and can be submitted without secrets; the Marketplace paymaster has per-actor and per-order caps and expires its own reservations.
 - **v0.4.6:** **capacity is returned exactly once** when an order closes without consuming it: in full on cancel, expiry or a refund without execution evidence, and the unpaid units of a split. Units executed per verified IoT telemetry stay consumed. `available` never exceeds `capacity`, and `capacityAccounting(listingId)` checks `capacity = available + reserved + consumed`.
 
 These controls are testnet protections, not a claim of production consensus or production ZK security.
@@ -330,7 +331,7 @@ npm run test:all
 
 `npm run test:all` runs, in order and stopping at the first failure:
 
-1. `npm test`: protocol/testnet (83), Marketplace + IoT/M2M (104, including the 23 IoT and 3 scale tests);
+1. `npm test`: protocol/testnet (@@PROTO@@), Marketplace + IoT/M2M + HTTP authorization (@@MKT@@, including the @@IOT@@ IoT and 3 scale tests);
 2. `npm run smoke:testnet`: prints `SMOKE OK`;
 3. `npm run quickstart`: the first-transaction example;
 4. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`;
@@ -460,7 +461,8 @@ Repository layout:
 │   │   ├── transaction.ts
 │   │   ├── reconciliation.ts
 │   │   ├── address.ts        # v0.4.5: Bech32m v2 addresses (UEP-ADDR-002)
-│   │   ├── assets.ts         # asset registry, canonical asset ids (v0.4.7)
+│   │   ├── assets.ts         # network asset templates, namespaced asset ids (v0.5.0)
+│   │   ├── asset-registry.ts # v0.5.0: signed asset registry manifest, issuer key sets (ADR 0001)
 │   │   ├── composite-key.ts  # injective composite keys for per-asset maps (v0.4.7)
 │   │   ├── security-policy.ts
 │   │   ├── ed25519.ts        # Ed25519 helpers (node:crypto) for snapshots, mints, buyer signatures
@@ -509,7 +511,8 @@ Repository layout:
 │   └── UEP-*.md              # lab design notes by milestone
 │
 └── docs/
-    ├── API.md            # changed public signatures (v0.4.3 – v0.4.7)
+    ├── API.md            # changed public signatures (v0.4.3 – v0.5.0)
+    ├── adr/              # architecture decision records (0001: asset model)
     ├── ARCHITECTURE.md   # layers A–N, status table, diagrams
     ├── THREAT-MODEL.md
     ├── REPRODUCIBILITY.md
@@ -737,8 +740,8 @@ The full roadmap is in [`ROADMAP.md`](./ROADMAP.md). Its year buckets are goals,
 | Phase | Status |
 |---|---|
 | 0. Foundation | Done |
-| 1. Hardened public testnet | Closing (v0.4.1 – v0.4.7) |
-| Multi-asset | In progress: per-asset hardening in v0.4.7; exit-criteria assessment NO-GO until the remaining design decisions are written |
+| 1. Hardened public testnet | Closing (v0.4.1 – v0.5.0) |
+| Multi-asset | In progress: per-asset hardening in v0.4.7; unit and asset model decided (ADR 0001) and the signed asset registry manifest in v0.5.0; ledger integration next |
 | 2. Service economy | In progress: event bus, storage and evidence, API, IoT gateway, SDK, sandbox, simulators |
 | 3. Public developer platform | Planned |
 | 4. Multi-node testnet | Planned |
