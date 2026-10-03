@@ -281,6 +281,21 @@ function tokenSimilarity(a: string, b: string): number {
   return intersection / (aa.size + bb.size - intersection);
 }
 
+/** Sorted distinct normalized tokens (the global token order of the prefix filter). */
+function titleTokens(title: string): string[] {
+  return [...new Set(normalizeCatalogText(title).split(" ").filter(Boolean))].sort();
+}
+
+/**
+ * Prefix-filter length for Jaccard >= 9/10: two token sets with similarity
+ * >= 0.9 share at least one token among the first |X| - ceil(0.9 |X|) + 1
+ * tokens of each (in the same global order), so indexing only those prefix
+ * tokens finds every near-duplicate candidate.
+ */
+function similarityPrefixLength(size: number): number {
+  return size === 0 ? 0 : size - Math.floor((9 * size + 9) / 10) + 1;
+}
+
 function catalogFingerprint(input: { providerId: string; title: string; description: string; category: string; asset: string }): string {
   return createHash("sha256").update(JSON.stringify({
     providerId: input.providerId,
@@ -318,6 +333,10 @@ export class DigitalServicesMarketplace {
   private readonly orderIdempotency = new Map<string, string>();
   private readonly operationIdempotency = new Map<string, string>();
   private readonly listingIndex = new Map<string, Set<string>>();
+  /** v0.5.0 (DOS-001): exact catalog fingerprint -> listing id. */
+  private readonly fingerprintIndex = new Map<string, string>();
+  /** v0.5.0 (DOS-001): provider|category|asset -> prefix token -> listing ids (near-duplicate candidates). */
+  private readonly similarityIndex = new Map<string, Map<string, Set<string>>>();
   private readonly reservationQueue: Array<{ at: number; orderId: string }> = [];
   private readonly activeReservationsByIdentity = new Map<string, number>();
   private readonly deliveryValidator?: MarketplaceConfig["deliveryValidator"];
@@ -545,14 +564,37 @@ export class DigitalServicesMarketplace {
     const recent = (this.listingAttempts.get(input.providerId) ?? []).filter((t) => now - t < this.listingWindowMs);
     if (recent.length >= this.maxListingsPerWindow) throw new Error("LISTING_RATE_LIMITED");
     const fingerprint = catalogFingerprint(input);
-    if ([...this.listings.values()].some((l) => l.active && l.catalogFingerprint === fingerprint)) throw new Error("DUPLICATE_LISTING_FINGERPRINT");
-    if ([...this.listings.values()].some((l) => l.active && l.providerId === input.providerId && l.category === input.category && l.asset === input.asset && tokenSimilarity(l.title, input.title) >= 0.9)) throw new Error("SIMILAR_LISTING_FINGERPRINT");
+    // v0.5.0 (DOS-001): indexed checks instead of scanning every listing.
+    const sameFingerprint = this.fingerprintIndex.get(fingerprint);
+    if (sameFingerprint && this.listings.get(sameFingerprint)?.active) throw new Error("DUPLICATE_LISTING_FINGERPRINT");
+    const tokens = titleTokens(input.title);
+    const simKey = tupleKey(input.providerId, input.category, input.asset);
+    const prefixIndex = this.similarityIndex.get(simKey);
+    if (prefixIndex) {
+      const seen = new Set<string>();
+      for (const token of tokens.slice(0, similarityPrefixLength(tokens.length))) {
+        for (const id of prefixIndex.get(token) ?? []) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const l = this.listings.get(id);
+          if (l?.active && tokenSimilarity(l.title, input.title) >= 0.9) throw new Error("SIMILAR_LISTING_FINGERPRINT");
+        }
+      }
+    }
     const listingId = input.listingId ?? makeId("lst", `${input.providerId}|${input.title}|${input.asset}`, ++this.sequence);
     if (this.listings.has(listingId)) throw new Error("LISTING_ALREADY_EXISTS");
     recent.push(now);
     this.listingAttempts.set(input.providerId, recent);
     const listing: ServiceListing = { ...input, listingId, available: input.capacity, active: true, sellerBond: input.sellerBond ?? 0n, catalogFingerprint: fingerprint };
     this.listings.set(listingId, listing);
+    this.fingerprintIndex.set(fingerprint, listingId);
+    const simIndex = this.similarityIndex.get(simKey) ?? new Map<string, Set<string>>();
+    for (const token of tokens.slice(0, similarityPrefixLength(tokens.length))) {
+      const ids = simIndex.get(token) ?? new Set<string>();
+      ids.add(listingId);
+      simIndex.set(token, ids);
+    }
+    this.similarityIndex.set(simKey, simIndex);
     const indexKey = tupleKey(listing.category, listing.asset);
     const bucket = this.listingIndex.get(indexKey) ?? new Set<string>();
     bucket.add(listingId);
