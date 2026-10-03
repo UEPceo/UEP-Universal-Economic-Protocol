@@ -9,6 +9,7 @@ import { Fr } from "../core/field.ts";
 import { encodeStringToFr } from "../core/encoding.ts";
 import { hTx } from "../core/hash.ts";
 import { TESTNET_ASSETS, type AssetRecord } from "../core/assets.ts";
+import { REFERENCE_BLOCK_TIME_MS } from "../core/height.ts";
 
 export type NetworkProfile = {
   networkId: string;
@@ -18,8 +19,16 @@ export type NetworkProfile = {
   protocolVersion: string;
   rpcEndpoints: string[];
   bootstrapNodes: string[];
-  assetRegistry: AssetRecord[];
+  assetRegistry: readonly AssetRecord[];
   simulation: boolean;
+  /**
+   * v0.5.0: block time (ms) the height-based windows are computed with. The
+   * single-node height producer never seals blocks closer than this. Safe range
+   * for the published windows: blocks of at least 3.34 s keep the worst-case
+   * Earth-Mars round trip inside the MARS reservation window, at least 1.82 s
+   * the one-way telemetry age; slower blocks only lengthen the windows.
+   */
+  referenceBlockTimeMs: number;
 };
 
 function genesis(networkId: string, chainId: string): string {
@@ -36,6 +45,7 @@ export const TESTNET: NetworkProfile = {
   bootstrapNodes: ["local-test-node"],
   assetRegistry: TESTNET_ASSETS,
   simulation: false,
+  referenceBlockTimeMs: REFERENCE_BLOCK_TIME_MS,
 };
 
 /** Public testnet treasury account identifier. Not a private key or credential. */

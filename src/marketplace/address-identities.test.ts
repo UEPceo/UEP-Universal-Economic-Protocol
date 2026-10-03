@@ -22,7 +22,7 @@ function conserved(m: DigitalServicesMarketplace) {
 }
 
 test("D02: only the buyer's signature funds an order", () => {
-  const m = new DigitalServicesMarketplace();
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
   const listing = publishAs(m, { providerId: "prov", ...LISTING });
   const o = reserveAs(m, { listingId: listing.listingId, buyerId: "buyer", quantity: 1n }, { credit: 1_000n });
   enrollIdentity(m, "mallory", { asset: "EUR", amount: 1_000n });
@@ -47,22 +47,22 @@ test("D02: only the buyer's signature funds an order", () => {
 
 test("D03: the reservation deposit has a 1-unit minimum unless a test-only flag is set", () => {
   assert.equal(MIN_RESERVATION_DEPOSIT, 1n);
-  assert.throws(() => new DigitalServicesMarketplace({ reservationDeposit: 0n }), /RESERVATION_DEPOSIT_BELOW_MINIMUM/);
-  assert.throws(() => new DigitalServicesMarketplace({ reservationDeposit: 0n, testOnlyAllowZeroReservationDeposit: false }), /RESERVATION_DEPOSIT_BELOW_MINIMUM/);
-  assert.throws(() => new DigitalServicesMarketplace({ reservationDeposit: -1n, testOnlyAllowZeroReservationDeposit: true }), /INVALID_RESERVATION_LIMIT/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDeposit: 0n }), /RESERVATION_DEPOSIT_BELOW_MINIMUM/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDeposit: 0n, testOnlyAllowZeroReservationDeposit: false }), /RESERVATION_DEPOSIT_BELOW_MINIMUM/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDeposit: -1n, testOnlyAllowZeroReservationDeposit: true }), /INVALID_RESERVATION_LIMIT/);
   // Default and bps = 0 both keep the 1-unit floor.
-  assert.equal(new DigitalServicesMarketplace().reservationDepositFor(10n), 1n);
-  assert.equal(new DigitalServicesMarketplace({ reservationDepositBps: 0 }).reservationDepositFor(10_000n), 1n);
-  assert.equal(new DigitalServicesMarketplace({ reservationDeposit: 1n }).reservationDepositFor(10_000n), 1n);
+  assert.equal(new DigitalServicesMarketplace({ testOnlyLocalHeight: true }).reservationDepositFor(10n), 1n);
+  assert.equal(new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDepositBps: 0 }).reservationDepositFor(10_000n), 1n);
+  assert.equal(new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDeposit: 1n }).reservationDepositFor(10_000n), 1n);
   // A funded buyer pays the deposit at reserve(); a buyer without funds cannot reserve.
-  const m = new DigitalServicesMarketplace({ reservationDeposit: 1n });
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDeposit: 1n });
   const listing = publishAs(m, { providerId: "prov", ...LISTING });
   assert.throws(() => reserveAs(m, { listingId: listing.listingId, buyerId: "broke", quantity: 1n }, { credit: 0n }), /INSUFFICIENT_FUNDS_FOR_DEPOSIT/);
   const o = reserveAs(m, { listingId: listing.listingId, buyerId: "buyer", quantity: 1n }, { credit: 500n });
   assert.equal(o.depositLocked, 1n);
   conserved(m);
   // Explicit, clearly named test-only escape hatch.
-  const t = new DigitalServicesMarketplace({ reservationDeposit: 0n, testOnlyAllowZeroReservationDeposit: true });
+  const t = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDeposit: 0n, testOnlyAllowZeroReservationDeposit: true });
   assert.equal(t.testOnlyAllowZeroReservationDeposit, true);
   const tl = publishAs(t, { providerId: "prov", ...LISTING });
   assert.equal(reserveAs(t, { listingId: tl.listingId, buyerId: "buyer", quantity: 1n }, { credit: 0n }).depositLocked, 0n);
@@ -71,7 +71,7 @@ test("D03: the reservation deposit has a 1-unit minimum unless a test-only flag 
 
 test("identities named by a ledger address must register the key the address commits to", async () => {
   const a = await identity(); const b = await identity();
-  const m = new DigitalServicesMarketplace();
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
   const addrA = encodeAccountAddress(TESTNET.networkId, a.accountId);
   // Wrong key for the address.
   assert.throws(() => m.registerIdentity(addrA, b.spendPublicKey), /IDENTITY_ADDRESS_KEY_MISMATCH/);

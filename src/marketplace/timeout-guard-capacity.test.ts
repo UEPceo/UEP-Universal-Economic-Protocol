@@ -22,13 +22,13 @@ type Config = ConstructorParameters<typeof DigitalServicesMarketplace>[0];
 
 function base(config: Config = {}) {
   let now = 1_700_000_000_000;
-  const m = new DigitalServicesMarketplace({ now: () => now, adminIdentity: "ops-admin", adminPublicKey: ADMIN.publicKeyHex, settlementArbiterId: "arbiter-1", settlementArbiterPublicKey: ARBITER.publicKeyHex, ...config });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, adminIdentity: "ops-admin", adminPublicKey: ADMIN.publicKeyHex, settlementArbiterId: "arbiter-1", settlementArbiterPublicKey: ARBITER.publicKeyHex, ...config });
   return { m, advance(ms: number) { now += ms; }, now: () => now };
 }
 
 function iotSetup(config: Config = {}) {
   const s = base({ disputeTimeoutOutcome: "RELEASE", ...config });
-  const iot = new IoTM2MService(s.m, { now: s.now, telemetryMaxAgeMs: 60_000 });
+  const iot = new IoTM2MService(s.m, { testOnlyNowMs: s.now, telemetryMaxAgeMs: 60_000 });
   registerProviderAs(iot, { providerId: "iot-prov", displayName: "Lab" });
   registerMachineAs(iot, { machineId: "machine-01", providerId: "iot-prov", serviceType: "sampling", model: "S1", endpointRef: "sim://machine-01" });
   const listing = publishAs(s.m, { providerId: "iot-prov", title: "Sampling", description: "IoT", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 100n, capacity: 10n });
@@ -340,4 +340,14 @@ test("D05: capacity stays within [0, capacity] and conserved across every closin
   settle(s.m, last, "final");
   check();
   assert.equal(s.m.getListing(L).available, max - 1n);
+});
+
+test("category hooks can only be attached before the category has listings or orders", () => {
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
+  m.attachCategoryService("DATA", {}); // empty category: allowed
+  publishAs(m, { providerId: "p", title: "api", description: "a", category: "API", asset: "EUR", unitPrice: 10n, capacity: 3n });
+  assert.throws(() => m.attachCategoryService("API", { settlementGuard: () => undefined }), /CATEGORY_SERVICE_IN_USE/);
+  const late = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
+  publishAs(late, { providerId: "p", title: "sensor", description: "s", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 10n, capacity: 3n });
+  assert.throws(() => new IoTM2MService(late), /CATEGORY_SERVICE_IN_USE/);
 });

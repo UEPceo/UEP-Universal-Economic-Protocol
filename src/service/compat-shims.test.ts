@@ -19,7 +19,6 @@ import { MemoryStorageProvider } from "./memory-storage.ts";
 import { UepServiceApi } from "./uep-service-api.ts";
 import { IoTM2MService, IOT_M2M_CATEGORY } from "./iot-m2m.ts";
 import { holdAs, registerMachineAs, registerProviderAs, requestAs, simulateAs, deliverTelemetryAs } from "./iot-testkit.ts";
-import { startBlockProducer } from "./block-producer.ts";
 
 describe("v0.5.0 compatibility shims", () => {
   it("asset ids: pre-v0.5.0 ids resolve to namespaced ids in the ledger and the Marketplace", async () => {
@@ -41,7 +40,7 @@ describe("v0.5.0 compatibility shims", () => {
     assert.ok("tx" in ledger.submit(p.tx));
     assert.equal(ledger.balanceOfAsset(b.accountId, "asset:test:eur"), 1_000n);
     // Marketplace: the provider signed the legacy id; the listing is stored and found under the namespaced id.
-    const m = new DigitalServicesMarketplace({ assetRegistryNetworkId: TESTNET.networkId });
+    const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, assetRegistryNetworkId: TESTNET.networkId });
     const input = { providerId: "p1", title: "Energy", description: "kWh", category: "API" as const, asset: "asset:test:eur", unitPrice: 10n, capacity: 5n };
     enrollIdentity(m, "p1");
     const listing = m.publishListing(input, act(m, "p1", "publish", "", listingTerms(input)));
@@ -51,7 +50,7 @@ describe("v0.5.0 compatibility shims", () => {
   });
 
   it("*Ms options and the ms `now` counter still work and warn", () => {
-    const m = new DigitalServicesMarketplace({ reservationTtlMs: 60_000 });
+    const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationTtlMs: 60_000 });
     assert.equal(m.baseWindows.reservationTtl, 12);
     assert.equal(m.reservationTtlMs, 60_000);
     let t = 1_000;
@@ -76,7 +75,16 @@ describe("v0.5.0 compatibility shims", () => {
     assert.ok(emittedDeprecations().includes("UEP_DEP_SPEND_NOW_MS"));
   });
 
-  it("SecurityPolicy windowMs keeps its pre-v0.5.0 meaning in the probes' unit", () => {
+  it("SecurityPolicy windowMs is converted with ceil(windowMs / 5000); legacy nowMs probes keep their pre-v0.5.0 meaning", () => {
+    assert.equal(new SecurityPolicy({ windowMs: 60_000 }).config.windowHeights, 12);
+    assert.equal(new SecurityPolicy({ windowMs: 60_001 }).config.windowHeights, 13);
+    assert.equal(new SecurityPolicy({ windowMs: 1 }).config.windowHeights, 1);
+    assert.throws(() => new SecurityPolicy({ windowMs: 0 }), /POLICY_WINDOW_INVALID/);
+    const byHeight = new SecurityPolicy({ windowMs: 60_000, maxTxPerWindow: 1 });
+    const h = { accountHex: "bb", assetId: "uep-test/teur", amount: 10n, fee: 1n };
+    assert.equal(byHeight.check({ ...h, height: 100 }, true).ok, true);
+    assert.equal(byHeight.check({ ...h, height: 111 }, true).ok, false); // 11 heights = 55 s later
+    assert.equal(byHeight.check({ ...h, height: 112 }, true).ok, true); // 12 heights = 60 s later
     const p = new SecurityPolicy({ windowMs: 60_000, maxTxPerWindow: 1 });
     const probe = { accountHex: "aa", assetId: "uep-test/teur", amount: 10n, fee: 1n };
     assert.equal(p.check({ ...probe, nowMs: 1_000 }, true).ok, true);
@@ -100,7 +108,7 @@ describe("v0.5.0 compatibility shims", () => {
 
   it("x-uep-issued-at in Unix ms: the service API maps it to a height at the boundary; the Marketplace reads no clock", () => {
     const wall = 1_800_000_000_000;
-    const m = new DigitalServicesMarketplace();
+    const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
     const api = new UepServiceApi({ storageProviders: new Map([["memory", new MemoryStorageProvider()]]), marketplace: m, legacyWallClock: () => wall });
     const listing = publishAs(m, { providerId: "prov", title: "API", description: "x", category: "API", asset: "uep-test/teur", unitPrice: 10n, capacity: 5n });
     const order = reserveAs(m, { listingId: listing.listingId, buyerId: "buyer", quantity: 1n });
@@ -120,7 +128,7 @@ describe("v0.5.0 compatibility shims", () => {
   });
 
   it("IoT: a Unix-ms observedAt is refused with a clear code in height mode (signed by the machine, not convertible)", () => {
-    const m = new DigitalServicesMarketplace();
+    const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
     const iot = new IoTM2MService(m);
     registerProviderAs(iot, { providerId: "prov", displayName: "p" });
     registerMachineAs(iot, { machineId: "m1", providerId: "prov", serviceType: "power-kwh", model: "SIM", endpointRef: "sim://m1" });
@@ -131,15 +139,4 @@ describe("v0.5.0 compatibility shims", () => {
     assert.throws(() => { deliverTelemetryAs(iot, r.requestId, "prov", t); iot.verifyTelemetry(r.requestId, t); }, /IOT_TELEMETRY_OBSERVED_AT_UNIT/);
   });
 
-  it("block producer: windows can pass in real time without any clock inside a transition", async () => {
-    const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, faucetSigningKey: null });
-    const producer = startBlockProducer({ advance: () => ledger.advanceHeight(), intervalMs: 5 });
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    producer.stop();
-    assert.equal(producer.running, false);
-    const h = ledger.height;
-    assert.ok(h >= 2, `height ${h}`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(ledger.height, h);
-  });
 });

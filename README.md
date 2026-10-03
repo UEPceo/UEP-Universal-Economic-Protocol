@@ -332,7 +332,7 @@ npm run test:all
 `npm run test:all` runs, in order and stopping at the first failure:
 
 1. `npm run lint:determinism` and `npm run check:snapshot-compat`: no clock or external call in transitions (ADR 0002); no snapshot format change without a migration step and golden fixtures ([`docs/COMPATIBILITY.md`](./docs/COMPATIBILITY.md));
-2. `npm test`: protocol/testnet (126, including the golden snapshot fixtures), Marketplace + IoT/M2M + HTTP authorization + compatibility shims (145, including the 29 IoT and 3 scale tests);
+2. `npm test`: protocol/testnet (128, including the golden snapshot fixtures), Marketplace + IoT/M2M + HTTP authorization + compatibility shims + height producer (161, including the IoT and 3 scale tests); then `npm run test:poisoned-clock` (257 tests with the clock, timers, network and randomness poisoned inside transitions);
 3. `npm run smoke:testnet`: prints `SMOKE OK`;
 4. `npm run quickstart`: the first-transaction example;
 5. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`;

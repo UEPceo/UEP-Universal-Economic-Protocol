@@ -14,7 +14,7 @@ import { hAccount, hLeaf } from "../core/hash.ts";
 import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
 import { deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, type Note } from "../core/note.ts";
-import { computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
+import { canonicalSerializedTx, computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
 import { u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
 import { TREASURY_ID } from "../network/profiles.ts";
@@ -197,7 +197,8 @@ function chainHash(items: string[]): string {
 }
 
 function txChainHash(txs: UepLedgerSnapshotPayload["txs"], count: number): string {
-  return chainHash(txs.slice(0, count).map((t) => stableStringify(t)));
+  // R-3: hash the canonical note form, so the chain hash does not depend on how a restored ledger re-serialized its notes.
+  return chainHash(txs.slice(0, count).map((t) => stableStringify(canonicalSerializedTx(t as never))));
 }
 
 function mintChainHash(mints: MintRecord[], count: number): string {

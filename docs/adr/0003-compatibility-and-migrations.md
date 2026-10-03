@@ -4,7 +4,7 @@
 - Scope: ledger snapshots, the public TypeScript API, the HTTP adapter and asset ids. The policy itself is [`docs/COMPATIBILITY.md`](../COMPATIBILITY.md).
 - Code:
   - `src/testnet/snapshot-migrations.ts` (registry), `src/testnet/snapshot-json.ts` (JSON codec), `src/core/deprecation.ts`;
-  - `LEGACY_ASSET_ID_ALIASES` in `src/core/assets.ts`, `legacyMsToHeight` in `src/core/height.ts`, `src/service/block-producer.ts`;
+  - `LEGACY_ASSET_ID_ALIASES` in `src/core/assets.ts`, `legacyMsToHeight` in `src/core/height.ts`, `src/service/height-producer.ts`;
   - `scripts/check-snapshot-compat.ts`, `scripts/fixtures/generate-snapshot-fixture.ts`, fixtures in `src/testnet/fixtures/snapshots/`.
 - Tests: `src/testnet/snapshot-fixtures.test.ts`, `src/testnet/snapshot-migration-chain.test.ts`, `src/testnet/snapshot-compat-check.test.ts`, `src/service/compat-shims.test.ts`.
 
@@ -39,7 +39,7 @@ Before this ADR a restore of format 6 failed with `INVALID_SNAPSHOT_VERSION`, ol
 - Stored format 6 testnet state, including state with the pre-release asset ids, restores and keeps working: balances, chain continuity and new spends.
 - Each later format change costs one step, one fixture and a lock update. CI enforces all three.
 - Notes minted under an old asset id keep that encoding. Balances by asset id add up both encodings, and a single payment uses one encoding.
-- Code that relied on the wall clock inside a transition cannot be made compatible (ADR 0002). An operator-side block producer (`startBlockProducer`) advances the height on a timer instead.
+- Code that relied on the wall clock inside a transition cannot be made compatible (ADR 0002). The single-node height producer (`HeightProducer`) advances the height from real time instead, outside the transitions. A Marketplace without a height source fails closed (`HEIGHT_SOURCE_REQUIRED`) rather than silently freezing its windows.
 - Shims add a small amount of code at the edges. They are listed with their codes in `docs/COMPATIBILITY.md` and can be found with `node --throw-deprecation`.
 
 ## Alternatives considered

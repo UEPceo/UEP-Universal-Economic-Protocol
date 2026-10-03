@@ -43,8 +43,11 @@ test("transition clock: height mode validates the source, refuses regressions an
   assert.equal(clock.window("w", undefined, undefined, 3), 3);
   assert.throws(() => clock.window("w", 1, 1, 1), /CLOCK_CONFIG_CONFLICT/);
   assert.equal(clock.fromMs(-1), -1); // range checks stay with the caller
-  // Default: a local counter at height 0.
-  const local = TransitionClock.from({});
+  // No source: fail closed (a frozen height would stop every expiry). Tests opt in to a local counter.
+  assert.throws(() => TransitionClock.from({}), /HEIGHT_SOURCE_REQUIRED/);
+  assert.throws(() => TransitionClock.from({ height: () => 0, testOnlyLocalHeight: true }), /CLOCK_CONFIG_CONFLICT/);
+  assert.throws(() => TransitionClock.from({ testOnlyNowMs: () => 0, now: () => 0 }), /CLOCK_CONFIG_CONFLICT/);
+  const local = TransitionClock.from({ testOnlyLocalHeight: true });
   assert.equal(local.tick(), 0);
   local.counter!.advance(3);
   assert.equal(local.tick(), 3);
@@ -52,7 +55,7 @@ test("transition clock: height mode validates the source, refuses regressions an
 
 test("transition clock: the test-only legacy ms counter keeps ms windows (heights x 5000)", () => {
   let now = 1_000;
-  const clock = TransitionClock.from({ now: () => now });
+  const clock = TransitionClock.from({ testOnlyNowMs: () => now });
   assert.equal(clock.unit, "legacy-ms");
   assert.equal(clock.tick(), 1_000);
   now = 0;

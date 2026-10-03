@@ -20,7 +20,7 @@ const ASSET = "uep-test/teur";
 let now = 1_800_000_000_000;
 
 function setup() {
-  const m = new DigitalServicesMarketplace({ now: () => now, adminIdentity: "admin-http", adminPublicKey: ADMIN.publicKeyHex, adminAuthorizer: (id) => id === "admin-http" });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, adminIdentity: "admin-http", adminPublicKey: ADMIN.publicKeyHex, adminAuthorizer: (id) => id === "admin-http" });
   const provider = enrollIdentity(m, "provider-1");
   const buyer = enrollIdentity(m, "buyer-1", { asset: ASSET, amount: 1_000_000n });
   const mallory = enrollIdentity(m, "mallory", { asset: ASSET, amount: 1_000_000n });
@@ -186,7 +186,7 @@ describe("objects endpoint access", () => {
 describe("IoT service calls require signed actors", () => {
   it("hold / deliverTelemetry / settle without authorization are 401; requestService without reservation signature is 401", async () => {
     const { IoTM2MService } = await import("./iot-m2m.ts");
-    const m = new DigitalServicesMarketplace();
+    const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
     const api = new UepServiceApi({ storageProviders: new Map([["memory", new MemoryStorageProvider()]]), marketplace: m, iotM2M: new IoTM2MService(m) });
     for (const r of [api.iotHold("req-1"), api.iotSettle("req-1"), api.iotDeliverTelemetry("req-1", {} as any), api.iotRequestService({ idempotencyKey: "k", authorization: "", buyerId: "b", listingId: "l", machineId: "x", quantity: 1n })]) {
       assert.equal(r.ok, false);

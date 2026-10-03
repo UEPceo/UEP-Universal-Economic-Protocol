@@ -248,7 +248,7 @@ test("issuance: rotation and revocation of a mint key take effect from a mint in
 
 test("policy: window volume is tracked per asset and limits can be set per asset", async () => {
   const p = new SecurityPolicy({ maxTransferPerWindow: 1_000n, assetLimits: { [BTC]: { maxTransferAmount: 500n }, "uep-test/tenergy": { minTransferAmount: 10n } } });
-  const probe = (assetId: string, amount: bigint) => ({ accountHex: "ab", assetId, amount, fee: 1n, nowMs: 1_000 });
+  const probe = (assetId: string, amount: bigint) => ({ accountHex: "ab", assetId, amount, fee: 1n, height: 1_000 });
   assert.equal(p.check(probe(EUR, 900n), true).ok, true);
   assert.equal(p.check(probe(BTC, 400n), true).ok, true); // EUR volume does not count against BTC
   assert.deepEqual(p.check(probe(EUR, 200n)), { ok: false, code: "WINDOW_VOLUME", message: "Rolling window volume cap exceeded." });

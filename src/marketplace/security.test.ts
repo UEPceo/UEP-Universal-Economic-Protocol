@@ -4,7 +4,7 @@ import { DigitalServicesMarketplace } from "./marketplace.ts";
 import { createTestAuthority, deliver, fund, getOrder, publishAs, reserveAs } from "./testkit.ts";
 
 test("delivery validator can reject invalid digital licenses before settlement", () => {
-  const m = new DigitalServicesMarketplace({
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true,
     deliveryValidator: (_order, bytes) => ({ ok: bytes.toString().startsWith("LICENSE:"), reason: "LICENSE_INVALID" }),
   });
   const l = publishAs(m, { providerId: "p", title: "License API", description: "license", category: "API", asset: "EUR", unitPrice: 10n, capacity: 1n });

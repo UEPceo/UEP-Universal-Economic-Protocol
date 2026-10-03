@@ -16,21 +16,22 @@ npm ci
 npm run test:all
 ```
 
-`npm run test:all` runs `npm run lint:determinism`, `npm run check:snapshot-compat`, `npm test` (protocol, Marketplace, IoT/M2M and scale suites), the smoke test, the quickstart and the 20k simulation, then the research labs: `test:rust`, `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 5–10 minutes more, including the first Rust build. A clean run on a typical machine takes roughly 10 minutes in total. CI runs the same command on Node.js 22.x and 24.x with Rust 1.85.1 as a blocking job, plus a non-blocking job for the known-issue lab files.
+`npm run test:all` runs `npm run lint:determinism`, `npm run check:snapshot-compat`, `npm test` (protocol, Marketplace, IoT/M2M and scale suites), `npm run test:poisoned-clock`, the smoke test, the quickstart and the 20k simulation, then the research labs: `test:rust`, `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 5–10 minutes more, including the first Rust build. A clean run on a typical machine takes roughly 10 minutes in total. CI runs the same command on Node.js 22.x and 24.x with Rust 1.85.1 as a blocking job, plus a non-blocking job for the known-issue lab files.
 
-Expected results for `0.5.0-public-iot-m2m` (unreleased; Node.js 22 and 24). Last re-checked with `npm run test:all` on Node.js 22.23 and 24.21 with Rust 1.85.1 on 2026-10-03:
+Expected results for `0.5.0-public-iot-m2m` (unreleased; Node.js 22 and 24). Last re-checked with `npm run test:all` on Node.js 22.23 and 24.21 with Rust 1.85.1 on 2026-10-03 (after the height producer):
 
 | Command | Expected |
 |---|---|
-| `npm run lint:determinism` | `0 violation(s), 4 allowlisted, 0 stale allowlist entries` |
+| `npm run lint:determinism` | `76 files scanned, 0 violation(s), 8 allowlisted, 0 stale allowlist entries` |
 | `npm run check:snapshot-compat` | `format 7, 1 migration step(s) from format 6, fixtures and FORMAT.json consistent` |
-| `npm run test:protocol` | 126/126 pass, including every golden snapshot fixture (about a minute: Poseidon in TypeScript) |
-| `npm run test:marketplace` | 145/145 pass (includes the 29 IoT/M2M, the HTTP authorization, the 8 compatibility-shim and the 3 scale tests) |
+| `npm run test:protocol` | 128/128 pass, including every golden snapshot fixture (about a minute: Poseidon in TypeScript) |
+| `npm run test:marketplace` | 161/161 pass (includes the IoT/M2M, the HTTP authorization, the compatibility-shim, the 8 height-producer, the 2 poisoned-clock and the 3 scale tests) |
+| `npm run test:poisoned-clock` | 257/257 pass with 0 poisoned-clock violations (testnet, Marketplace, IoT, compatibility, HTTP and height-producer suites) |
 | `npm run test:scale` | 3/3 pass |
-| `npm run test:iot` | 29/29 pass |
-| `npm run smoke:testnet` | `SMOKE OK` |
+| `npm run test:iot` | 30/30 pass |
+| `npm run smoke:testnet` | `SMOKE OK` (with a `height:` line from the height producer) |
 | `npm run quickstart` | `PASS — local reference testnet` |
-| `npm run simulate:20k` | 20,000 settled, 0 errors, `valueConserved: true` |
+| `npm run simulate:20k` | 20,000 settled, 0 errors, `hotExpired: 100` (reservations expired by produced height), `valueConserved: true` |
 | `npm run test:rust` | 115 pass: uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99 |
 | `npm run build:uep-zk` | `uep-core/target/release/uep-zk` built from source |
 | `npm run test:lab` | 96 files, 455 tests pass, 0 failures, 4 individual tests skipped with a note; 14 files with known issues skipped |

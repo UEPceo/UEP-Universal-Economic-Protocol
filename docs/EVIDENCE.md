@@ -25,17 +25,24 @@ Since evidence can be wrong while valid, the value it can move is limited at two
 
 | Parameter | Where | Default | Checked |
 |---|---|---|---|
-| `maxValuePerContract` | `evidencePolicy` of a listing, declared at publication; part of the signed listing terms; immutable | none: required for an evidence-bound listing; must be > 0 and ≤ the set's cap for the listing asset | at `reserve()` (gross amount + gas of the order) and again at settlement |
-| `valueCaps[asset]` | `AttesterSetPolicy` in the Marketplace config (`evidence.attesterSets`) | no attester sets are configured, so no listing can be bound to evidence | at `reserve()`: open value of the set in that asset + the new order ≤ cap |
+| `maxValuePerContract` | `evidencePolicy` of a listing, declared at publication; part of the signed listing terms; immutable | none: required for an evidence-bound listing; must be > 0 and ≤ the set's cap for the listing asset | at `reserve()` (gross amount + gas of the order) and again at settlement (defence in depth: the amount cannot change after `reserve()`, so the second check is redundant while terms are frozen) |
+| `valueCaps[asset]` | `AttesterSetPolicy` in the Marketplace config (`evidence.attesterSets`) | no attester sets are configured, so no listing can be bound to evidence | at `fundOrder()`: funded open value of the set in that asset + the order ≤ cap; `reserve()` checks the same without taking anything (fail early) |
 
-An attester set is `{ attesterSetId, threshold: k, size: n, valueCaps }` with 1 ≤ k ≤ n. A set without a cap for an asset cannot back listings in that asset (`EVIDENCE_ATTESTER_SET_CAP_UNDEFINED`).
+An attester set is `{ attesterSetId, sourceId, attesterKeys, threshold: k, size: n, valueCaps }` with 1 ≤ k ≤ n, `sourceId` the public identifier of the observed source, and `attesterKeys` the n distinct Ed25519 public keys (64 hex) of its attesters. A set without a cap for an asset cannot back listings in that asset (`EVIDENCE_ATTESTER_SET_CAP_UNDEFINED`).
 
-The open value of a set is the sum of gross amount + gas of its orders that are reserved, funded or delivered and not yet closed. It goes down exactly once when the order is settled, refunded, cancelled or expires.
+`threshold`, `size` and `attesterKeys` are validated now but not used by any check until phase 2.3, when statements are verified against them.
+
+**Duplicate sets.** Two sets that observe the same `sourceId` and have any attester key in common are rejected (`EVIDENCE_ATTESTER_SET_DUPLICATE`). Otherwise the same attesters could register the same source under several set ids and multiply the cap. Until phase 2.3 this is the only cross-set rule. Phase 2.3 adds a cap per source and a per-attester aggregate cap across all sets an attester belongs to.
+
+The open value of a set is the sum of gross amount + gas of its **funded** orders: HELD, DELIVERED or DISPUTED. It is taken when the buyer funds the order and goes down exactly once when the order is settled or refunded. Unfunded reservations (ACCEPTED) take nothing, so reservations that are cancelled in the grace period or expire cannot fill a set's cap at no cost.
+
+`marketplace.evidenceCaps` is a read-only view: `openValue(attesterSetId, asset)` and `attesterSet(attesterSetId)`. Locking and releasing are internal to the Marketplace.
 
 Errors:
 
 - `EVIDENCE_CONTRACT_CAP_EXCEEDED`: one order would lock or release more than `maxValuePerContract`.
-- `EVIDENCE_ATTESTER_SET_CAP_EXCEEDED`: the set's open value would exceed its cap.
+- `EVIDENCE_ATTESTER_SET_CAP_EXCEEDED`: the set's funded open value would exceed its cap (at funding; at reservation when the set is already full).
+- `EVIDENCE_ATTESTER_SET_DUPLICATE`: another set observes the same source with a common attester.
 - `EVIDENCE_ATTESTER_SET_UNKNOWN`, `EVIDENCE_ATTESTER_SET_CAP_UNDEFINED`, `EVIDENCE_POLICY_INVALID`, `EVIDENCE_ATTESTER_SET_INVALID`: configuration errors at construction or publication.
 
 The checks run before any value moves. Listings without `evidencePolicy` are not affected and are not capped.
@@ -45,10 +52,23 @@ Example:
 ```ts
 const m = new DigitalServicesMarketplace({
   height: () => ledger.height,
-  evidence: { attesterSets: [{ attesterSetId: "swpc-3of5", threshold: 3, size: 5, valueCaps: { "uep-test/teur": 50_000n } }] },
+  evidence: {
+    attesterSets: [{
+      attesterSetId: "swpc-3of5",
+      sourceId: "https://services.swpc.noaa.gov/json/goes/primary/xrays-1-day.json",
+      attesterKeys: [k1, k2, k3, k4, k5], // Ed25519 public keys (hex) of the five attesters
+      threshold: 3,
+      size: 5,
+      valueCaps: { "uep-test/teur": 50_000n },
+    }],
+  },
 });
 m.publishListing({ ...terms, asset: "uep-test/teur", evidencePolicy: { attesterSetId: "swpc-3of5", maxValuePerContract: 5_000n } }, auth);
 ```
+
+## Fail closed: no evidence policy, no evidence
+
+Today no settlement guard consumes evidence, so a listing without `evidencePolicy` is simply not capped. Phase 2.3 must keep this fail closed: **any guard or validator that consumes evidence must require the listing's `evidencePolicy`** and refuse to settle on evidence for a listing that has none. Otherwise a listing published without caps could still be settled on evidence, outside every cap above.
 
 ## Sources
 

@@ -85,6 +85,8 @@ checkpoint, or adds issuance that the dedicated faucet key did not sign.
 
 Attempts to lock Marketplace capacity without funds, with an unregistered or
 impersonated identity, or beyond the per-identity concurrency limit.
+Since v0.5.0 unfunded reservations also cannot fill an attester set's
+evidence cap: only HELD, DELIVERED or DISPUTED orders count against it.
 
 ## Residual trust (testnet)
 
@@ -100,6 +102,11 @@ Since v0.4.4 the following are also trusted parties of the testnet:
 - **Spend-key registry (removed in v0.4.5).** v0.4.4 trusted a spend-key registry delivered in signed snapshots. Since v0.4.5 account ids commit to the spend key, and spends reveal the key and sign. Any replica can check ownership on its own, so there is no registry left to trust.
 - **Settlement arbiter.** It decides disputed outcomes within the escrowed value; it cannot create value. Since v0.4.6 its explicit release of a guarded (e.g. IoT) order is not blocked by the category guard, but the settlement record shows whether the guard passed (`categoryGuard`). Unattended timeouts never bypass the guard.
 - **Machine keys.** A machine key proves who signed the telemetry, not that the physical service happened. A compromised or dishonest machine can still report false usage.
+
+Since v0.5.0 time is block height (ADR 0002), which adds one more trusted party:
+
+- **Single-node operator as time authority.** The operator of the single-node testnet decides when the height advances. The height producer (`src/service/height-producer.ts`) seals one block per 5 s of real time and never runs ahead of the clock, but the operator controls the process and can call `advanceHeight(n)` directly. Doing so is operator abuse: a provider could settle without the buyer's 24 h dispute window, and a MARS reservation or a 7-day dispute window could expire at once. Nobody else can move the height, and the height never goes backwards. This is the same trust the operator already has to order or censor transactions. A multi-node network needs a block-validation rule with a minimum spacing between blocks before heights can be trusted across operators.
+- **Attester sets (configuration).** The operator registers attester sets. A set names its source and its attesters' keys; two sets for the same source with a common attester are refused, and only funded orders count against a set's cap. Evidence itself is phase 2.3 and certifies publication, not truth (`docs/EVIDENCE.md`).
 
 ## Out of scope
 

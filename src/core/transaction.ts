@@ -95,6 +95,49 @@ export function verifyOwnership(secret: Fr, salt: Fr, senderId: Fr): boolean {
   return accountIdFromSecrets(secret, salt).eq(senderId);
 }
 
+type SerializedNote = ReturnType<typeof serializeNote>;
+
+function frHex(v: unknown): string {
+  if (v instanceof Fr) return v.toHex();
+  if (typeof v === "string") return new Fr(v).toHex();
+  if (typeof v === "bigint") return new Fr(v).toHex();
+  // A Fr that went through a JSON codec that keeps bigints: { n: <bigint> }.
+  if (v && typeof v === "object" && typeof (v as { n?: unknown }).n === "bigint") return new Fr((v as { n: bigint }).n).toHex();
+  throw new Error("TX_NOTE_INVALID");
+}
+
+/**
+ * v0.5.0 (R-3): one canonical serialized form for the notes a transaction
+ * carries, whether they are in-memory Notes, already serialized, or Notes
+ * that went through a bigint-preserving JSON codec. Without it a snapshot
+ * taken after a restore wrote the notes in another form than before, so the
+ * payload, its hash and the transaction chain hash changed with the same state.
+ */
+export function canonicalSerializedNote(note: unknown): SerializedNote {
+  if (!note || typeof note !== "object") throw new Error("TX_NOTE_INVALID");
+  const n = note as Record<string, unknown>;
+  const amount = typeof n.amount === "bigint" ? n.amount.toString() : typeof n.amount === "string" && /^(0|[1-9][0-9]*)$/.test(n.amount) ? n.amount : undefined;
+  if (amount === undefined) throw new Error("TX_NOTE_INVALID");
+  return {
+    assetId: frHex(n.assetId),
+    amount,
+    owner: frHex(n.owner),
+    blinding: frHex(n.blinding),
+    commitment: frHex(n.commitment),
+    nonce: frHex(n.nonce),
+    spent: n.spent as boolean,
+  };
+}
+
+/** A serialized transaction with its notes in the canonical form (used for hashing the transaction history). */
+export function canonicalSerializedTx<T extends { inputNotes?: unknown[]; outputNotes?: unknown[] }>(t: T): T {
+  if (!t || typeof t !== "object") return t;
+  const out = { ...t };
+  if (Array.isArray(t.inputNotes)) out.inputNotes = t.inputNotes.map(canonicalSerializedNote);
+  if (Array.isArray(t.outputNotes)) out.outputNotes = t.outputNotes.map(canonicalSerializedNote);
+  return out;
+}
+
 export function serializeTx(tx: UepTransaction) {
   return {
     ...tx,
@@ -109,6 +152,8 @@ export function serializeTx(tx: UepTransaction) {
     inputCommitments: tx.inputCommitments.map((c) => c.toHex()),
     outputCommitments: tx.outputCommitments.map((c) => c.toHex()),
     transactionCommitment: tx.transactionCommitment.toHex(),
+    ...(tx.inputNotes ? { inputNotes: tx.inputNotes.map(canonicalSerializedNote) } : {}),
+    ...(tx.outputNotes ? { outputNotes: tx.outputNotes.map(canonicalSerializedNote) } : {}),
   };
 }
 
@@ -128,8 +173,9 @@ export function deserializeTx(data: ReturnType<typeof serializeTx>): UepTransact
     nullifier: new Fr(data.nullifier),
     inputCommitments: data.inputCommitments.map((c) => new Fr(c)),
     outputCommitments: data.outputCommitments.map((c) => new Fr(c)),
-    inputNotes: data.inputNotes?.map(deserializeNote),
-    outputNotes: data.outputNotes?.map(deserializeNote),
+    // Transactions carry their notes in the serialized form (see UepTransaction); keep it canonical.
+    inputNotes: data.inputNotes?.map(canonicalSerializedNote),
+    outputNotes: data.outputNotes?.map(canonicalSerializedNote),
     transactionCommitment: new Fr(data.transactionCommitment),
     spendProof: data.spendProof,
     ...(data.senderAuth ? { senderAuth: { publicKey: data.senderAuth.publicKey, signature: data.senderAuth.signature } } : {}),

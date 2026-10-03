@@ -22,9 +22,9 @@ const json = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === "bigint"
 
 function setup(config: Config = {}, gasAssets: string[] = []) {
   let now = T0;
-  const paymaster = new MarketplacePaymaster({ now: () => now });
+  const paymaster = new MarketplacePaymaster({ testOnlyNowMs: () => now });
   for (const a of gasAssets) paymaster.fundReserve(a, 1_000_000n);
-  const m = new DigitalServicesMarketplace({ now: () => now, paymaster, adminIdentity: "ops-admin", adminPublicKey: ADMIN.publicKeyHex, settlementArbiterId: "arbiter-1", settlementArbiterPublicKey: ARBITER.publicKeyHex, ...config });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, paymaster, adminIdentity: "ops-admin", adminPublicKey: ADMIN.publicKeyHex, settlementArbiterId: "arbiter-1", settlementArbiterPublicKey: ARBITER.publicKeyHex, ...config });
   return { m, paymaster, advance(ms: number) { now += ms; } };
 }
 
@@ -106,7 +106,7 @@ test("asset ids: with assetRegistryNetworkId only registered ledger assets are a
   assert.throws(() => publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "uep-global/eur", unitPrice: 1n, capacity: 1n }), /ASSET_NOT_REGISTERED/);
   assert.equal(m.creditAccount("buyer", "uep-test/teur", 5n), 5n);
   assert.ok(publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "uep-test/tbtc", unitPrice: 1n, capacity: 1n }));
-  assert.throws(() => new DigitalServicesMarketplace({ assetRegistryNetworkId: "" }), /ASSET_REGISTRY_NETWORK_INVALID/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, assetRegistryNetworkId: "" }), /ASSET_REGISTRY_NETWORK_INVALID/);
 });
 
 test("identity ids: control characters and over-long ids are rejected", () => {

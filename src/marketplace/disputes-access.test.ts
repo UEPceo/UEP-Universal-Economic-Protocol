@@ -19,9 +19,9 @@ const ARBITER = createTestAuthority("arbiter-1");
 
 function setup(config: ConstructorParameters<typeof DigitalServicesMarketplace>[0] = {}) {
   let now = T0;
-  const paymaster = new MarketplacePaymaster({ now: () => now });
+  const paymaster = new MarketplacePaymaster({ testOnlyNowMs: () => now });
   paymaster.fundReserve("EUR", 1_000n);
-  const m = new DigitalServicesMarketplace({ now: () => now, paymaster, adminIdentity: "ops-admin", adminPublicKey: ADMIN.publicKeyHex, settlementArbiterId: "arbiter-1", settlementArbiterPublicKey: ARBITER.publicKeyHex, ...config });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, paymaster, adminIdentity: "ops-admin", adminPublicKey: ADMIN.publicKeyHex, settlementArbiterId: "arbiter-1", settlementArbiterPublicKey: ARBITER.publicKeyHex, ...config });
   const listing = publishAs(m, { providerId: "prov", title: "GPU", description: "compute", category: "COMPUTE", asset: "EUR", unitPrice: 100n, capacity: 50n });
   return { m, paymaster, listing, advance(ms: number) { now += ms; } };
 }
@@ -147,7 +147,7 @@ test("dispute: an unresolved dispute closes with the configured timeout outcome 
   assert.equal(settle(s2.m, o2.orderId, "buyer").outcome, "RELEASE");
   assert.equal(getOrder(s2.m, o2.orderId, "buyer").disputeOutcome, "TIMEOUT_RELEASE");
   conserved(s2.m);
-  assert.throws(() => new DigitalServicesMarketplace({ disputeTimeoutOutcome: "SPLIT" as never }), /INVALID_DISPUTE_CONFIG/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, disputeTimeoutOutcome: "SPLIT" as never }), /INVALID_DISPUTE_CONFIG/);
 });
 
 test("dispute: only the buyer opens, only the arbiter resolves, only within the window", () => {
@@ -174,7 +174,7 @@ test("dispute: only the buyer opens, only the arbiter resolves, only within the 
   s.advance(DAY);
   assert.throws(() => disputeAs(s.m, "other-buyer", other.orderId, "late"), /DISPUTE_WINDOW_CLOSED/);
   // Disputes need an arbiter.
-  const noArbiter = new DigitalServicesMarketplace({ now: () => T0 });
+  const noArbiter = new DigitalServicesMarketplace({ testOnlyNowMs: () => T0 });
   const l = publishAs(noArbiter, { providerId: "p", title: "x", description: "x", category: "API", asset: "EUR", unitPrice: 10n, capacity: 1n });
   const o3 = reserveAs(noArbiter, { listingId: l.listingId, buyerId: "b", quantity: 1n });
   fund(noArbiter, o3.orderId, o3.fundingDue);
@@ -270,7 +270,7 @@ test("access: modifying an order requires the right party", () => {
 // ---------------------------------------------------------------- provider / admin / arbiter identities
 
 test("identities: providers must be registered and sign their listing terms", () => {
-  const m = new DigitalServicesMarketplace({ now: () => T0 });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => T0 });
   const input = { providerId: "p", title: "Svc", description: "d", category: "API" as const, asset: "EUR", unitPrice: 10n, capacity: 1n };
   assert.throws(() => m.publishListing(input), /IDENTITY_NOT_REGISTERED/);
   enrollIdentity(m, "p");
@@ -286,7 +286,7 @@ test("identities: providers must be registered and sign their listing terms", ()
 
 test("identities: the admin and the arbiter authenticate with configured keys (fail closed)", () => {
   // No admin key configured: no admin action is possible.
-  const noKey = new DigitalServicesMarketplace({ now: () => T0, adminIdentity: "ops" });
+  const noKey = new DigitalServicesMarketplace({ testOnlyNowMs: () => T0, adminIdentity: "ops" });
   const l = publishAs(noKey, { providerId: "p", title: "x", description: "x", category: "API", asset: "EUR", unitPrice: 10n, capacity: 2n });
   const o = reserveAs(noKey, { listingId: l.listingId, buyerId: "b", quantity: 1n });
   assert.throws(() => noKey.cancel(o.orderId, signAction({ marketplaceId: noKey.marketplaceId, action: "cancel", actorId: "ops", target: o.orderId }, createMarketplaceIdentity("ops").privateKey)), /ADMIN_NOT_CONFIGURED/);
@@ -300,10 +300,10 @@ test("identities: the admin and the arbiter authenticate with configured keys (f
   const o3 = reserveAs(s2.m, { listingId: s2.listing.listingId, buyerId: "b", quantity: 1n });
   assert.equal(cancel(s2.m, o3.orderId, "ops-admin").status, "CANCELLED");
   // Configuration errors.
-  assert.throws(() => new DigitalServicesMarketplace({ settlementArbiterId: "arb" }), /ARBITER_PUBLIC_KEY_REQUIRED/);
-  assert.throws(() => new DigitalServicesMarketplace({ settlementArbiterId: "marketplace-system", settlementArbiterPublicKey: ARBITER.publicKeyHex }), /ARBITER_ID_INVALID/);
-  assert.throws(() => new DigitalServicesMarketplace({ adminIdentity: "marketplace-system" }), /LEGACY_ADMIN_ID_RESERVED/);
-  assert.throws(() => new DigitalServicesMarketplace({ adminPublicKey: "not-a-key" }), /ADMIN_PUBLIC_KEY_INVALID/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, settlementArbiterId: "arb" }), /ARBITER_PUBLIC_KEY_REQUIRED/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, settlementArbiterId: "marketplace-system", settlementArbiterPublicKey: ARBITER.publicKeyHex }), /ARBITER_ID_INVALID/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, adminIdentity: "marketplace-system" }), /LEGACY_ADMIN_ID_RESERVED/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, adminPublicKey: "not-a-key" }), /ADMIN_PUBLIC_KEY_INVALID/);
   assert.deepEqual(s2.m.authorityPublicKeys(), { admin: ADMIN.publicKeyHex, arbiter: ARBITER.publicKeyHex });
 });
 
@@ -321,7 +321,7 @@ test("fee: the 3% Marketplace fee has a 1-unit floor on small amounts", () => {
   assert.equal(calculateMarketplaceFee(100n), 3n);
   assert.equal(calculateMarketplaceFee(1_000n), 30n);
   assert.equal(calculateMarketplaceFee(10n, 0), 0n); // an explicit 0 bps configuration stays fee-free
-  const m = new DigitalServicesMarketplace({ now: () => T0 });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => T0 });
   const l = publishAs(m, { providerId: "p", title: "Tiny API", description: "x", category: "API", asset: "EUR", unitPrice: 10n, capacity: 5n });
   assert.equal(m.checkoutQuote(l.listingId, 1n).marketplaceFee, 1n);
   const o = reserveAs(m, { listingId: l.listingId, buyerId: "b", quantity: 1n });

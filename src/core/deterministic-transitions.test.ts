@@ -15,13 +15,22 @@ test("determinism lint: transition paths have no clock reads or external calls o
   for (const f of ["src/marketplace/marketplace.ts", "src/testnet/ledger.ts", "src/core/security-policy.ts", "src/service/iot-m2m.ts", "src/marketplace/evidence.ts"]) assert.ok(files.includes(f), f);
 });
 
-test("determinism lint: every allowlist entry is justified and test-only", () => {
-  assert.ok(ALLOWLIST.length <= 3);
-  for (const a of ALLOWLIST as Array<{ file: string; rule: string; reason: string }>) {
-    assert.match(a.file, /\.test\.ts$/);
+test("determinism lint: every allowlist entry is justified; outside tests only the two key generators, line-scoped", () => {
+  assert.ok(ALLOWLIST.length <= 5);
+  const nonTest: string[] = [];
+  for (const a of ALLOWLIST as Array<{ file: string; rule: string; reason: string; match?: string[] }>) {
     assert.ok(a.reason.length > 40, a.file);
     assert.ok((RULES as Array<{ id: string }>).some((r) => r.id === a.rule));
+    if (/\.test\.ts$/.test(a.file)) continue;
+    nonTest.push(a.file);
+    assert.equal(a.rule, "randomness", a.file);
+    assert.ok(a.match && a.match.length > 0, `${a.file} must be limited to specific lines`);
+    assert.match(a.reason, /poisoned-clock\.test\.ts/);
   }
+  assert.deepEqual(nonTest.sort(), ["src/core/ed25519.ts", "src/service/iot-m2m.ts"]);
+  // A line-scoped entry does not cover another randomness call in the same file.
+  const ed = checkRepository(undefined, { "src/core/ed25519.ts": 'import { randomBytes } from "node:crypto";\nexport const r = () => randomBytes(8);\n' });
+  assert.ok(ed.violations.some((v: { file: string; rule: string }) => v.file === "src/core/ed25519.ts" && v.rule === "randomness"));
 });
 
 test("determinism lint: detects each forbidden pattern and ignores comments and strings", () => {
@@ -41,6 +50,30 @@ test("determinism lint: detects each forbidden pattern and ignores comments and 
     ['import { readFileSync } from "node:fs";', "net-import"],
     ['const m = await import("node:dgram");', "net-import"],
     ['const fs = require("fs");', "net-import"],
+    // Evasions: aliases, the global object, randomness, timers and loaders.
+    ["const D = Date; D.now();", "date-ref"],
+    ["const { now } = Date;", "date-ref"],
+    ["const f = globalThis['fetch'];", "global-object"],
+    ["globalThis.fetch('https://example.org');", "global-object"],
+    ["const g = globalThis.Date;", "global-object"],
+    ["const f = fetch;", "fetch"],
+    ["const r = Math.random();", "randomness"],
+    ["const r = Math['random']();", "randomness"],
+    ["const id = crypto.randomUUID();", "randomness"],
+    ["const b = randomBytes(32);", "randomness"],
+    ["const p = performance;", "performance-ref"],
+    ["const u = process.uptime();", "process-state"],
+    ["const e = process.env.NOW;", "process-state"],
+    ["const m = process.getBuiltinModule('node:http');", "process-state"],
+    ["queueMicrotask(() => 1);", "timer"],
+    ['import { setTimeout as sleep } from "node:timers/promises";', "net-import"],
+    ['import { createRequire } from "node:module";', "net-import"],
+    ["const req = createRequire(import.meta.url);", "external-api"],
+    ["const t = new Intl.DateTimeFormat().format();", "external-api"],
+    ["const x = eval('Date.now()');", "dynamic-code"],
+    ["const x = new Function('return Date.now()');", "dynamic-code"],
+    ["const name = 'node:' + 'http'; await import(name);", "dynamic-import"],
+    ["await import(`node:${'http'}`);", "dynamic-import"],
   ];
   for (const [src, rule] of cases) {
     const found = scanSource(src);
@@ -64,4 +97,14 @@ test("determinism lint: an injected Date.now in a transition file fails the repo
   assert.equal(result.violations.length, 1);
   assert.equal(result.violations[0].file, "src/marketplace/marketplace.ts");
   assert.equal(result.violations[0].rule, "date-now");
+});
+
+test("determinism lint: transition code cannot import a helper outside the scanned paths", () => {
+  const injected = 'import { clockHelper } from "../agent/clock-helper.ts";\nexport const x = clockHelper;\n';
+  const result = checkRepository(undefined, { "src/marketplace/evidence.ts": injected });
+  assert.ok(result.violations.some((v: { file: string; rule: string }) => v.file === "src/marketplace/evidence.ts" && v.rule === "import-closure"), JSON.stringify(result.violations));
+  const reExport = checkRepository(undefined, { "src/marketplace/evidence.ts": 'export { now } from "../agent/clock-helper.ts";\nexport * from "./clock-helper.ts";\n' });
+  assert.equal(reExport.violations.filter((v: { file: string; rule: string }) => v.file === "src/marketplace/evidence.ts" && v.rule === "import-closure").length, 2);
+  const typeOnly = checkRepository(undefined, { "src/marketplace/evidence.ts": 'import type { X } from "../agent/clock-helper.ts";\nexport type Y = X;\n' });
+  assert.ok(!typeOnly.violations.some((v: { rule: string }) => v.rule === "import-closure"));
 });

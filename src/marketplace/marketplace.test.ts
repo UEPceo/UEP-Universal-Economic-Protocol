@@ -9,7 +9,7 @@ const fixedNow = () => 1_700_000_000_000;
 const ADMIN = createTestAuthority("admin-1");
 
 function setup() {
-  const m = new DigitalServicesMarketplace({ now: fixedNow, adminIdentity: "admin-1", adminPublicKey: ADMIN.publicKeyHex, adminAuthorizer: (id) => id === "admin-1" });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: fixedNow, adminIdentity: "admin-1", adminPublicKey: ADMIN.publicKeyHex, adminAuthorizer: (id) => id === "admin-1" });
   const listing = publishAs(m, {
     providerId: "provider-gpu-1",
     title: "H100 compute",
@@ -117,7 +117,7 @@ test("concurrent checkout attempts cannot oversell in the in-process atomic stat
 
 test("reservation expires and releases capacity before funding/delivery/settlement", () => {
   let now = 1_700_000_000_000;
-  const m = new DigitalServicesMarketplace({ now: () => now, reservationTtlMs: 1_000 });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, reservationTtlMs: 1_000 });
   const listing = publishAs(m, { providerId: "p", title: "API", description: "api", category: "API", asset: "EUR", unitPrice: 10n, capacity: 2n });
   const order = reserveAs(m, { listingId: listing.listingId, buyerId: "b", quantity: 1n });
   now += 1_001;
@@ -135,7 +135,7 @@ test("order access control blocks IDOR when an actor is supplied", () => {
 });
 
 test("listing creation is rate limited and exact catalog duplicates are blocked", () => {
-  const m = new DigitalServicesMarketplace({ now: fixedNow, maxListingsPerWindow: 2 });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: fixedNow, maxListingsPerWindow: 2 });
   const base = { providerId: "p", title: "Service A", description: "Compute", category: "COMPUTE" as const, asset: "EUR", unitPrice: 1n, capacity: 1n };
   publishAs(m, base);
   assert.throws(() => publishAs(m, base), /DUPLICATE_LISTING_FINGERPRINT/);
@@ -168,10 +168,10 @@ test("checkout quote exposes the marketplace fee before payment", () => {
 });
 
 test("paymaster quotes gas in the purchase asset and buyer sees the total before funding", () => {
-  const paymaster = new MarketplacePaymaster({ now: fixedNow });
+  const paymaster = new MarketplacePaymaster({ testOnlyNowMs: fixedNow });
   paymaster.fundReserve("EUR", 1_000n);
   const { m, listing } = (() => {
-    const mm = new DigitalServicesMarketplace({ now: fixedNow, paymaster });
+    const mm = new DigitalServicesMarketplace({ testOnlyNowMs: fixedNow, paymaster });
     const ll = publishAs(mm, { providerId: "p", title: "Gas-aware API", description: "api", category: "API", asset: "EUR", unitPrice: 100n, capacity: 10n });
     return { m: mm, listing: ll };
   })();
@@ -185,9 +185,9 @@ test("paymaster quotes gas in the purchase asset and buyer sees the total before
 });
 
 test("paymaster gas is captured from buyer escrow at settlement and is replay-safe", () => {
-  const paymaster = new MarketplacePaymaster({ now: fixedNow });
+  const paymaster = new MarketplacePaymaster({ testOnlyNowMs: fixedNow });
   paymaster.fundReserve("EUR", 1_000n);
-  const m = new DigitalServicesMarketplace({ now: fixedNow, paymaster });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: fixedNow, paymaster });
   const listing = publishAs(m, { providerId: "p", title: "Gas API", description: "api", category: "API", asset: "EUR", unitPrice: 100n, capacity: 10n });
   const q = m.checkoutQuote(listing.listingId, 1n, 5n);
   const order = reserveAs(m, { listingId: listing.listingId, buyerId: "b", quantity: 1n, gasQuote: q.gasQuote });
@@ -203,9 +203,9 @@ test("paymaster gas is captured from buyer escrow at settlement and is replay-sa
 });
 
 test("cancelled paymaster reservation is released without charging the buyer", () => {
-  const paymaster = new MarketplacePaymaster({ now: fixedNow });
+  const paymaster = new MarketplacePaymaster({ testOnlyNowMs: fixedNow });
   paymaster.fundReserve("EUR", 100n);
-  const m = new DigitalServicesMarketplace({ now: fixedNow, paymaster });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: fixedNow, paymaster });
   const listing = publishAs(m, { providerId: "p", title: "Gas API cancel", description: "api", category: "API", asset: "EUR", unitPrice: 100n, capacity: 1n });
   const q = m.checkoutQuote(listing.listingId, 1n, 5n);
   const order = reserveAs(m, { listingId: listing.listingId, buyerId: "b", quantity: 1n, gasQuote: q.gasQuote });
@@ -248,10 +248,10 @@ test("reservations are not free by default (UEP-A10)", () => {
   assert.equal(s.marketplaceFee, 30n);
   assert.equal(m.heldBalance("EUR", "buyer-2"), 0n);
   // Deposits are configurable: fixed amount, or bps.
-  const fixed = new DigitalServicesMarketplace({ now: fixedNow, reservationDeposit: 25n });
-  const bps = new DigitalServicesMarketplace({ now: fixedNow, reservationDepositBps: 500 });
+  const fixed = new DigitalServicesMarketplace({ testOnlyNowMs: fixedNow, reservationDeposit: 25n });
+  const bps = new DigitalServicesMarketplace({ testOnlyNowMs: fixedNow, reservationDepositBps: 500 });
   assert.equal(fixed.reservationDepositFor(1_000n), 25n);
   assert.equal(bps.reservationDepositFor(1_000n), 50n);
-  assert.throws(() => new DigitalServicesMarketplace({ reservationDepositBps: 10_001 }), /INVALID_RESERVATION_LIMIT/);
-  assert.throws(() => new DigitalServicesMarketplace({ reservationDeposit: -1n }), /INVALID_RESERVATION_LIMIT/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDepositBps: 10_001 }), /INVALID_RESERVATION_LIMIT/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationDeposit: -1n }), /INVALID_RESERVATION_LIMIT/);
 });

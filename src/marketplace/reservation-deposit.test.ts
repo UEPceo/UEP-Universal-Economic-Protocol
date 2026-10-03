@@ -14,7 +14,7 @@ const T0 = 1_700_000_000_000;
 
 function setup(config: ConstructorParameters<typeof DigitalServicesMarketplace>[0] = {}) {
   let now = T0;
-  const m = new DigitalServicesMarketplace({ now: () => now, reservationTtlMs: 10 * 60_000, cancellationGraceMs: 2 * 60_000, ...config });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, reservationTtlMs: 10 * 60_000, cancellationGraceMs: 2 * 60_000, ...config });
   const listing = publishAs(m, { providerId: "prov", title: "Compute", description: "gpu", category: "COMPUTE", asset: "EUR", unitPrice: 500n, capacity: 100n });
   enrollIdentity(m, "buyer", { asset: "EUR", amount: 10_000n });
   return { m, listing, advance(ms: number) { now += ms; } };
@@ -175,12 +175,12 @@ test("A10: per-identity limit on concurrent open reservations", () => {
   cancelAsBuyer(m, orders[0]!.orderId, "buyer");
   assert.ok(reserveAs(m, { listingId: listing.listingId, buyerId: "buyer", quantity: 1n }, { credit: 0n }));
   // Defaults: 8 concurrent, 10-minute TTL, 2-minute grace; invalid values are refused.
-  const d = new DigitalServicesMarketplace();
+  const d = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
   assert.equal(d.maxActiveReservationsPerIdentity, 8);
   assert.equal(d.reservationTtlMs, 600_000);
   assert.equal(d.cancellationGraceMs, 120_000);
-  assert.throws(() => new DigitalServicesMarketplace({ reservationTtlMs: 0 }), /INVALID_RESERVATION_LIMIT/);
-  assert.throws(() => new DigitalServicesMarketplace({ cancellationGraceMs: -1 }), /INVALID_RESERVATION_LIMIT/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, reservationTtlMs: 0 }), /INVALID_RESERVATION_LIMIT/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, cancellationGraceMs: -1 }), /INVALID_RESERVATION_LIMIT/);
   assertConserved(m);
 });
 
@@ -195,7 +195,7 @@ test("A10: a replayed signed reservation locks the deposit only once", () => {
 });
 
 test("A10: value is conserved across every deposit path, including paymaster gas", () => {
-  const paymaster = new MarketplacePaymaster({ now: () => T0 });
+  const paymaster = new MarketplacePaymaster({ testOnlyNowMs: () => T0 });
   paymaster.fundReserve("EUR", 1_000n);
   const { m, listing, advance } = setup({ paymaster });
   for (const id of ["b1", "b2", "b3", "b4", "b5"]) enrollIdentity(m, id, { asset: "EUR", amount: 5_000n });

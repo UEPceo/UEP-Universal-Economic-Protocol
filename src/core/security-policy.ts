@@ -17,6 +17,7 @@
  * height of the ledger (`height`). The policy never reads a clock.
  */
 import { DEPRECATIONS, deprecate } from "./deprecation.ts";
+import { REFERENCE_BLOCK_TIME_MS } from "./height.ts";
 
 export type RiskTier = "experimental" | "registered" | "restricted" | "halted";
 
@@ -72,13 +73,18 @@ export type SpendProbe = {
   fee: bigint;
   /** v0.5.0: ledger height of the check. */
   height?: number;
-  /** @deprecated legacy name of `height` (same unit as the window; used when `height` is absent). */
+  /** @deprecated legacy Unix-ms (or any ms) time of the check; used when `height` is absent, as floor(nowMs / 5000). Removed in 0.6.0. */
   nowMs?: number;
 };
 
-/** Tick of a probe: `height`, else the legacy `nowMs`, else 0. */
+/** Tick of a probe: `height`, else floor(legacy `nowMs` / REFERENCE_BLOCK_TIME_MS), else 0. */
 function probeTick(p: SpendProbe): number {
-  return p.height ?? p.nowMs ?? 0;
+  if (p.height !== undefined) return p.height;
+  if (p.nowMs !== undefined) {
+    deprecate(DEPRECATIONS.POLICY_WINDOW_MS, "SecurityPolicy: probe.nowMs is deprecated since v0.5.0 and removed in 0.6.0; it is read as floor(nowMs / 5000) heights (pass probe.height)");
+    return Math.floor(p.nowMs / REFERENCE_BLOCK_TIME_MS);
+  }
+  return 0;
 }
 
 type WindowBucket = {
@@ -135,17 +141,19 @@ export class SecurityPolicy {
   private windows = new Map<string, WindowBucket>();
 
   /**
-   * `windowMs` is the pre-v0.5.0 name of `windowHeights`; it is taken as the
-   * window length in the probes' own unit (legacy probes pass `nowMs`).
+   * `windowMs` is the pre-v0.5.0 window in milliseconds; it is converted to
+   * `windowHeights = ceil(windowMs / REFERENCE_BLOCK_TIME_MS)` (60,000 ms -> 12),
+   * the same rounding as every other `*Ms` option and the snapshot migration.
    */
   constructor(config: Partial<SecurityPolicyConfig> & { windowMs?: number } = {}) {
     const { windowMs, ...rest } = config;
     if (windowMs !== undefined && rest.windowHeights !== undefined) throw new Error("CLOCK_CONFIG_CONFLICT: windowMs and windowHeights");
-    if (windowMs !== undefined) deprecate(DEPRECATIONS.POLICY_WINDOW_MS, "SecurityPolicy: windowMs is deprecated since v0.5.0; it is read as windowHeights in the probes' own unit (pass windowHeights and probe.height)");
+    if (windowMs !== undefined && (!Number.isFinite(windowMs) || windowMs <= 0)) throw new Error("POLICY_WINDOW_INVALID: windowMs must be a positive number");
+    if (windowMs !== undefined) deprecate(DEPRECATIONS.POLICY_WINDOW_MS, "SecurityPolicy: windowMs is deprecated since v0.5.0 and removed in 0.6.0; it is converted to windowHeights = ceil(windowMs / 5000) (pass windowHeights and probe.height)");
     this.config = {
       ...DEFAULT_CONFIG,
       ...rest,
-      windowHeights: rest.windowHeights ?? windowMs ?? DEFAULT_CONFIG.windowHeights,
+      windowHeights: rest.windowHeights ?? (windowMs !== undefined ? Math.ceil(windowMs / REFERENCE_BLOCK_TIME_MS) : DEFAULT_CONFIG.windowHeights),
       assetTier: { ...DEFAULT_CONFIG.assetTier, ...(config.assetTier ?? {}) },
       blockedAccounts: new Set(config.blockedAccounts ?? DEFAULT_CONFIG.blockedAccounts),
       assetLimits: normalizeAssetLimits(config.assetLimits),

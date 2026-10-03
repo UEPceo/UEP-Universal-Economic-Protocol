@@ -7,7 +7,7 @@ import { cancelAsBuyer, deliver, fund, publishAs, reserveAs, settle } from "./te
 
 test("1,000 fake orders: lapsed sponsorships are released and the reserve is whole again", () => {
   let now = 1_000_000;
-  const paymaster = new MarketplacePaymaster({ now: () => now, maxActorShareBps: 10_000, maxOrderShareBps: 10_000, maxOutstandingPerActor: 1_000 });
+  const paymaster = new MarketplacePaymaster({ testOnlyNowMs: () => now, maxActorShareBps: 10_000, maxOrderShareBps: 10_000, maxOutstandingPerActor: 1_000 });
   paymaster.fundReserve("EUR", 10_000n);
   for (let i = 0; i < 1_000; i++) {
     const q = paymaster.quote("EUR", 10n, now);
@@ -34,7 +34,7 @@ test("1,000 fake orders: lapsed sponsorships are released and the reserve is who
 
 test("per-actor count, per-actor share and per-order caps", () => {
   const now = 5_000;
-  const p = new MarketplacePaymaster({ now: () => now, maxOutstandingPerActor: 3 });
+  const p = new MarketplacePaymaster({ testOnlyNowMs: () => now, maxOutstandingPerActor: 3 });
   p.fundReserve("EUR", 1_000n);
   for (let i = 0; i < 3; i++) p.sponsor(`o${i}`, p.quote("EUR", 10n, now), now, { actorId: "a" });
   assert.throws(() => p.sponsor("o3", p.quote("EUR", 10n, now), now, { actorId: "a" }), /PAYMASTER_ACTOR_LIMIT_REACHED/);
@@ -45,14 +45,14 @@ test("per-actor count, per-actor share and per-order caps", () => {
   p.sponsor("b2", p.quote("EUR", 100n, now), now, { actorId: "b" });
   assert.throws(() => p.sponsor("b3", p.quote("EUR", 51n, now), now, { actorId: "b" }), /PAYMASTER_ACTOR_CAP_EXCEEDED/);
   p.sponsor("b3", p.quote("EUR", 50n, now), now, { actorId: "b" });
-  const abs = new MarketplacePaymaster({ now: () => now, maxGasPerOrder: 5n });
+  const abs = new MarketplacePaymaster({ testOnlyNowMs: () => now, maxGasPerOrder: 5n });
   abs.fundReserve("EUR", 1_000n);
   assert.throws(() => abs.sponsor("x", abs.quote("EUR", 6n, now), now), /PAYMASTER_ORDER_CAP_EXCEEDED/);
 });
 
 test("release is idempotent, a swept sponsorship cannot be captured, a pinned one survives the sweep", () => {
   let now = 0;
-  const p = new MarketplacePaymaster({ now: () => now });
+  const p = new MarketplacePaymaster({ testOnlyNowMs: () => now });
   p.fundReserve("EUR", 1_000n);
   const q1 = p.quote("EUR", 10n, now);
   p.sponsor("a", q1, now, { actorId: "x", holdUntil: 100 });
@@ -71,9 +71,9 @@ test("release is idempotent, a swept sponsorship cannot be captured, a pinned on
 
 test("marketplace: a lapsed reservation releases its gas automatically; delivered orders keep it until settlement", () => {
   let now = 10_000;
-  const paymaster = new MarketplacePaymaster({ now: () => now });
+  const paymaster = new MarketplacePaymaster({ testOnlyNowMs: () => now });
   paymaster.fundReserve("EUR", 1_000n);
-  const m = new DigitalServicesMarketplace({ now: () => now, paymaster, reservationTtlMs: 1_000 });
+  const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, paymaster, reservationTtlMs: 1_000 });
   const listing = publishAs(m, { providerId: "p", title: "Gas API sweep", description: "api", category: "API", asset: "EUR", unitPrice: 100n, capacity: 10n });
   const lapsed = reserveAs(m, { listingId: listing.listingId, buyerId: "idle", quantity: 1n, gasQuote: m.checkoutQuote(listing.listingId, 1n, 5n).gasQuote });
   const kept = reserveAs(m, { listingId: listing.listingId, buyerId: "b", quantity: 1n, gasQuote: m.checkoutQuote(listing.listingId, 1n, 5n).gasQuote });

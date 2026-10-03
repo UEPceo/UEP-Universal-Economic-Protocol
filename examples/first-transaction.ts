@@ -4,6 +4,7 @@ import { generateMnemonic, identityFromMnemonic } from "../src/identity/index.ts
 import { TESTNET } from "../src/network/profiles.ts";
 import { UepLedger } from "../src/testnet/ledger.ts";
 import { encodeAccountAddress } from "../src/core/address.ts";
+import { HeightProducer } from "../src/service/height-producer.ts";
 
 const sender = await identityFromMnemonic(await generateMnemonic(128));
 const recipient = await identityFromMnemonic(await generateMnemonic(128));
@@ -13,6 +14,8 @@ const ledger = new UepLedger({
   connected: true,
   allowFaucet: true,
 });
+// v0.5.0: the node's height advances with real time (one block per 5 s), outside the state transitions.
+const producer = new HeightProducer({ ledger }).start();
 
 const asset = "uep-test/teur";
 const amount = 10_000n;
@@ -41,7 +44,9 @@ console.log(JSON.stringify({
   nullifier: tx.nullifier.toHex(),
   oldStateRoot,
   newStateRoot: ledger.stateRoot().toHex(),
+  height: ledger.height,
   verification: "PASS — local reference testnet",
   asset,
   recipientBalance: ledger.balanceOf(recipient.accountId, encodeStringToFr(asset)).toString(),
 }, null, 2));
+producer.stop();

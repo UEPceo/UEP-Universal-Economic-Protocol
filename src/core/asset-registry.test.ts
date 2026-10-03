@@ -33,7 +33,7 @@ function manifest(over: Partial<{ decimals: number; issuerBKey: string; previous
 
 test("asset id grammar: <namespace>/<symbol>, bounded, lowercase", () => {
   assert.deepEqual(parseAssetId("uep-test/teur"), { namespace: "uep-test", symbol: "teur" });
-  for (const bad of ["EUR", "uep-test/TEUR", "a/b/c", "/x", "x/", "-a/b", "averyveryverylongnamespace/x", "a/averyveryverylongsymbol"]) assert.throws(() => parseAssetId(bad), undefined, bad);
+  for (const bad of ["EUR", "uep-test/TEUR", "a/b/c", "/x", "x/", "-a/b", "averyveryverylongnamespace/x", "a/averyveryverylongsymbol"]) assert.throws(() => parseAssetId(bad), Error, bad);
   assert.match(selfCertifiedNamespace({ keys: [owner.publicKeyHex] }), /^k-[a-z2-7]+$/);
 });
 

@@ -17,7 +17,8 @@ const ARBITER = createTestAuthority("dw-arbiter");
 const base = { providerId: "prov", description: "gpu", category: "COMPUTE" as const, asset: "EUR", unitPrice: 100n, capacity: 100n };
 
 function setup(config: ConstructorParameters<typeof DigitalServicesMarketplace>[0] = {}) {
-  const m = new DigitalServicesMarketplace({ settlementArbiterId: "dw-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, ...config });
+  const clock = config.height || config.now || config.testOnlyNowMs ? {} : { testOnlyLocalHeight: true };
+  const m = new DigitalServicesMarketplace({ settlementArbiterId: "dw-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, ...clock, ...config });
   return m;
 }
 
@@ -37,7 +38,7 @@ test("windows: the default Marketplace counts heights; base windows are the prev
   assert.throws(() => setup({ reservationTtlHeights: 7, reservationTtlMs: 1 }), /CLOCK_CONFIG_CONFLICT/);
   assert.throws(() => setup({ reservationTtlHeights: 0 }), /INVALID_RESERVATION_LIMIT/);
   assert.throws(() => setup({ height: () => 0, now: () => 0 }), /CLOCK_CONFIG_CONFLICT/);
-  assert.throws(() => setup({ paymaster: new MarketplacePaymaster({ now: () => 0 }) }), /CLOCK_CONFIG_CONFLICT/);
+  assert.throws(() => setup({ paymaster: new MarketplacePaymaster({ testOnlyNowMs: () => 0 }) }), /CLOCK_CONFIG_CONFLICT/);
   assert.equal(m.advanceHeight(3), 3);
   assert.equal(m.clock(), 3);
 });
@@ -48,11 +49,11 @@ test("windows: EARTH / MOON / MARS listings fix base + 0 / 1 / 602 heights at pu
   const moon = publishAs(m, { ...base, title: "Moon relay", domainProfile: "MOON" });
   const mars = publishAs(m, { ...base, title: "Mars lab", domainProfile: "MARS" });
   assert.equal(earth.domainProfile, "EARTH");
-  assert.deepEqual(earth.windows, { domainDelay: 0, reservationTtl: 120, cancellationGrace: 24, deliveryDisputeWindow: 17_280, disputeResolutionWindow: 120_960 });
+  assert.deepEqual(earth.windows, { referenceBlockTimeMs: 5_000, domainDelay: 0, reservationTtl: 120, cancellationGrace: 24, deliveryDisputeWindow: 17_280, disputeResolutionWindow: 120_960 });
   assert.equal(moon.delayHeights, 1);
   assert.equal(moon.windows.reservationTtl, 121);
   assert.equal(mars.delayHeights, DOMAIN_PROFILES.MARS.delayHeights);
-  assert.deepEqual(mars.windows, { domainDelay: 602, reservationTtl: 722, cancellationGrace: 626, deliveryDisputeWindow: 17_882, disputeResolutionWindow: 121_562 });
+  assert.deepEqual(mars.windows, { referenceBlockTimeMs: 5_000, domainDelay: 602, reservationTtl: 722, cancellationGrace: 626, deliveryDisputeWindow: 17_882, disputeResolutionWindow: 121_562 });
   // Immutable: callers get copies.
   const copy = m.getListing(mars.listingId);
   copy.windows.reservationTtl = 1;
@@ -139,7 +140,7 @@ test("windows: the Marketplace can take its height from the testnet ledger", () 
 
 test("windows: the test-only legacy ms clock gives MARS (base + 602 heights) x 5000 ms", () => {
   let now = 1_000_000;
-  const m = setup({ now: () => now });
+  const m = setup({ testOnlyNowMs: () => now });
   assert.equal(m.timeUnit, "legacy-ms");
   assert.throws(() => m.advanceHeight(), /HEIGHT_SOURCE_EXTERNAL/);
   const mars = publishAs(m, { ...base, title: "Mars lab", domainProfile: "MARS" });
@@ -147,4 +148,12 @@ test("windows: the test-only legacy ms clock gives MARS (base + 602 heights) x 5
   const o = reserveAs(m, { listingId: mars.listingId, buyerId: "buyer", quantity: 1n });
   now += 1_203_600 * 2;
   assert.equal(fund(m, o.orderId, o.fundingDue).status, "HELD");
+});
+
+test("the reference block time is part of the network profile and of the published windows", async () => {
+  const { TESTNET } = await import("../network/profiles.ts");
+  const { REFERENCE_BLOCK_TIME_MS } = await import("../core/height.ts");
+  assert.equal(TESTNET.referenceBlockTimeMs, REFERENCE_BLOCK_TIME_MS);
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
+  assert.equal(m.contractWindowsFor("MARS").referenceBlockTimeMs, 5_000);
 });

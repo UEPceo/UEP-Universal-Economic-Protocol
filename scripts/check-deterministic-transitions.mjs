@@ -2,11 +2,20 @@
 /**
  * Determinism lint for state transitions (docs/adr/0002-deterministic-transitions.md).
  *
- * Fails if code on the transition paths reads the wall clock or can reach an
- * external system: fetch(, Date.now, new Date(, Date() as a call,
- * performance.now, process.hrtime, timers, or imports of network / file /
- * process modules (http, https, http2, net, tls, dgram, dns, fs, child_process,
- * worker_threads, perf_hooks). Comments and string literals are ignored.
+ * Fails if code on the transition paths reads the wall clock, uses
+ * randomness or can reach an external system: fetch (also aliased or through
+ * globalThis / self), Date (Date.now, new Date, Date(), any alias), performance,
+ * process.hrtime / uptime / env / getBuiltinModule / process[...], timers and
+ * queueMicrotask, Math.random and crypto random / key generation,
+ * XMLHttpRequest / WebSocket / EventSource / createRequire / Intl, eval and
+ * new Function, import() / require() with a computed specifier, and imports
+ * of network / file / process / timer / loader modules (http, https, http2,
+ * net, tls, dgram, dns, fs, child_process, worker_threads, perf_hooks,
+ * readline, inspector, timers, os, module, vm, cluster, repl, undici).
+ * Transition code may only import files on the scanned paths (import
+ * closure). Comments and string literals are ignored. Regular expressions
+ * catch accidents, not adversaries: src/service/poisoned-clock.test.ts runs the
+ * transitions with a poisoned clock, network and randomness.
  *
  * Scanned paths: src/core, src/testnet, src/marketplace (including tests and
  * testkits), src/network and the IoT / M2M service files. Exceptions are the
@@ -26,23 +35,45 @@ export const SCANNED_DIRS = ["src/core", "src/testnet", "src/marketplace", "src/
 /** Single files scanned (IoT / M2M category service and the helpers deliver() uses). */
 export const SCANNED_FILES = ["src/service/iot-m2m.ts", "src/service/iot-m2m-codec.ts", "src/service/iot-testkit.ts", "src/service/content-hash.ts"];
 
-const FORBIDDEN_MODULES = ["http", "https", "http2", "net", "tls", "dgram", "dns", "dns/promises", "fs", "fs/promises", "child_process", "worker_threads", "perf_hooks", "readline", "inspector"];
+const FORBIDDEN_MODULES = [
+  "http", "https", "http2", "net", "tls", "dgram", "dns", "dns/promises", "fs", "fs/promises", "child_process", "worker_threads", "perf_hooks", "readline", "inspector",
+  // v0.5.0 hardening (review of the first version): timers, OS state, module loaders and network clients.
+  "timers", "timers/promises", "os", "module", "vm", "cluster", "repl", "undici",
+];
 const moduleAlternation = FORBIDDEN_MODULES.map((m) => m.replace("/", "\\/")).join("|");
+const RANDOM_APIS = ["randomBytes", "randomUUID", "randomInt", "randomFill", "randomFillSync", "getRandomValues", "generateKeyPair", "generateKeyPairSync", "generateKey", "generateKeySync", "generatePrime", "generatePrimeSync"];
+const GLOBAL_MEMBERS = ["fetch", "Date", "performance", "setTimeout", "setInterval", "setImmediate", "queueMicrotask", "crypto", "process", "Math", "XMLHttpRequest", "WebSocket", "EventSource", "require", "eval", "Function", "Intl", "Reflect"];
 
-/** Rules: id, pattern (applied to code with comments and strings blanked), message. */
+/**
+ * Rules: id, pattern (applied to code with comments and strings blanked), message.
+ * Regular expressions catch accidents, not adversaries: the runtime
+ * poisoned-clock test (src/service/poisoned-clock.test.ts) checks the same
+ * properties by executing the transitions.
+ */
 export const RULES = [
-  { id: "fetch", re: /(?<![\w$.])fetch\s*\(/g, message: "external call (fetch)" },
+  // Any bare reference to fetch (a call, or an alias such as `const f = fetch`); `obj.fetch(` is a method call.
+  { id: "fetch", re: /(?<![\w$.])fetch\b(?!\s*:)/g, message: "external call (fetch)" },
   { id: "date-now", re: /\bDate\s*\.\s*now\b/g, message: "wall clock (Date.now)" },
   { id: "new-date", re: /\bnew\s+Date\b/g, message: "wall clock (new Date)" },
   { id: "date-call", re: /(?<![\w$.])Date\s*\(\s*\)/g, message: "wall clock (Date())" },
+  // Any other reference to Date: aliases (`const d = Date`), `Date['now']`, `{ now } = Date`, `Reflect.construct(Date, [])`.
+  { id: "date-ref", re: /(?<![\w$.])(?<!\bnew\s+)Date\b(?!\s*\.\s*now\b)(?!\s*\(\s*\))/g, message: "wall clock (reference to Date)" },
   { id: "performance-now", re: /\bperformance\s*\.\s*now\b/g, message: "wall clock (performance.now)" },
+  { id: "performance-ref", re: /(?<![\w$.])performance\b(?!\s*\.\s*now\b)/g, message: "wall clock (reference to performance)" },
   { id: "hrtime", re: /\bprocess\s*\.\s*hrtime\b/g, message: "wall clock (process.hrtime)" },
-  { id: "timer", re: /(?<![\w$.])(setTimeout|setInterval|setImmediate)\s*\(/g, message: "timer (setTimeout / setInterval / setImmediate)" },
-  { id: "net-import", re: new RegExp(`\\b(?:from|import|require)\\s*\\(?\\s*["'\`](?:node:)?(?:${moduleAlternation})["'\`]`, "g"), message: "network / file / process module import" },
+  { id: "process-state", re: /\bprocess\s*(?:\[|\.\s*(?:uptime|getBuiltinModule|binding|_linkedBinding|dlopen|env|cpuUsage|resourceUsage)\b)/g, message: "process clock, environment or module loader (process.uptime / env / getBuiltinModule / process[...])" },
+  { id: "timer", re: /(?<![\w$.])(setTimeout|setInterval|setImmediate|queueMicrotask)\b/g, message: "timer (setTimeout / setInterval / setImmediate / queueMicrotask)" },
+  { id: "randomness", re: new RegExp(`\\bMath\\s*(?:\\.\\s*random\\b|\\[)|(?<![\\w$])(?:${RANDOM_APIS.join("|")})\\b`, "g"), message: "randomness (Math.random, crypto random / key generation)" },
+  { id: "global-object", re: new RegExp(`\\b(?:globalThis|self|window|global)\\s*(?:\\[|\\.\\s*(?:${GLOBAL_MEMBERS.join("|")})\\b)`, "g"), message: "clock, network or randomness through the global object" },
+  { id: "external-api", re: /(?<![\w$.])(XMLHttpRequest|WebSocket|EventSource|createRequire|Intl)\b/g, message: "external API or locale clock (XMLHttpRequest / WebSocket / EventSource / createRequire / Intl)" },
+  { id: "dynamic-code", re: /(?<![\w$.])eval\s*\(|\bnew\s+Function\b|(?<![\w$.])Function\s*\(/g, message: "dynamic code (eval / new Function)" },
+  { id: "dynamic-import", re: /\b(?:import|require)\s*\(\s*(?:(?!["'`])|`[^`]*\$\{)/g, message: "import() or require() with a computed specifier" },
+  { id: "net-import", re: new RegExp(`\\b(?:from|import|require)\\s*\\(?\\s*["'\`](?:node:)?(?:${moduleAlternation})["'\`/]`, "g"), message: "network / file / process / timer module import" },
 ];
 
 /**
- * Allowed exceptions. `file` is relative to the repo root, `rule` is a rule id.
+ * Allowed exceptions. `file` is relative to the repo root, `rule` is a rule id,
+ * `match` (optional) limits the entry to lines containing one of the strings.
  * Keep this list short; every entry needs a reason.
  */
 export const ALLOWLIST = [
@@ -55,6 +86,18 @@ export const ALLOWLIST = [
     file: "src/core/poseidon.test.ts",
     rule: "net-import",
     reason: "Test-only node:fs read of the committed, hash-pinned Poseidon vectors (uep-core/vectors); static repository data, not live data.",
+  },
+  {
+    file: "src/core/ed25519.ts",
+    rule: "randomness",
+    match: ['import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync,', 'generateKeyPairSync("ed25519")'],
+    reason: "generateEd25519KeyPair() creates a key for an identity, a node or a test; it is called by key owners and tooling, never by a transition (checked at run time by src/service/poisoned-clock.test.ts).",
+  },
+  {
+    file: "src/service/iot-m2m.ts",
+    rule: "randomness",
+    match: ['import { createHash, createPublicKey, generateKeyPairSync,', 'generateKeyPairSync("ed25519")'],
+    reason: "createIoTMachineIdentity() creates a machine key on the machine side; no IoT transition calls it (checked at run time by src/service/poisoned-clock.test.ts).",
   },
   {
     file: "src/testnet/snapshot-fixtures.test.ts",
@@ -147,12 +190,30 @@ export function checkRepository(root = ROOT, overrides = {}) {
   for (const file of files) {
     const src = overrides[file] ?? readFileSync(join(root, file), "utf8");
     for (const v of scanSource(src)) {
-      const entry = ALLOWLIST.findIndex((a) => a.file === file && a.rule === v.rule);
+      const entry = ALLOWLIST.findIndex((a) => a.file === file && a.rule === v.rule && (a.match === undefined || a.match.some((m) => v.text.includes(m))));
       if (entry >= 0) {
         used.add(entry);
         allowed.push({ file, ...v });
       } else {
         violations.push({ file, ...v });
+      }
+    }
+  }
+  // Import closure: transition code (non-test files) may only import scanned files, so a
+  // clock read cannot hide in a helper outside the scanned paths.
+  const scanned = new Set(files);
+  for (const file of files) {
+    if (/\.test\.[cm]?[jt]s$/.test(file)) continue;
+    const src = overrides[file] ?? readFileSync(join(root, file), "utf8");
+    const re = /\b(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const target = relative(root, join(root, dirname(file), m[1])).split(sep).join("/");
+      const line = src.slice(0, m.index).split("\n").length;
+      const text = (src.split("\n")[line - 1] ?? "").trim();
+      if (/^(?:import|export)\s+type\b/.test(text)) continue; // erased at run time
+      if (!scanned.has(target)) {
+        violations.push({ file, rule: "import-closure", line, text, message: `imports ${target}, which is outside the scanned paths` });
       }
     }
   }

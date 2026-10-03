@@ -47,7 +47,7 @@ function walk(dir) {
 
 // src/service: only the service/API layer lab. iot-m2m.test.ts, iot-mars-delay.test.ts, compat-shims.test.ts and
 // uep-http-authz.test.ts already run in `npm test`.
-const serviceLab = (f) => !f.endsWith("/iot-m2m.test.ts") && !f.endsWith("/iot-mars-delay.test.ts") && !f.endsWith("/compat-shims.test.ts") && !f.endsWith("/uep-http-authz.test.ts");
+const serviceLab = (f) => !f.endsWith("/iot-m2m.test.ts") && !f.endsWith("/iot-mars-delay.test.ts") && !f.endsWith("/compat-shims.test.ts") && !f.endsWith("/uep-http-authz.test.ts") && !f.endsWith("/height-producer.test.ts") && !f.endsWith("/poisoned-clock.test.ts");
 let files = [...walk("src/lab"), ...walk("src/agent"), ...walk("src/service").filter(serviceLab)].sort();
 if (only.length) files = files.filter((f) => only.some((o) => f.includes(o)));
 if (onlyKnown) files = files.filter((f) => knownMap.has(f));

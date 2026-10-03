@@ -108,3 +108,32 @@ jobs:
 
       - name: Known-issue lab files (npm run test:lab:known)
         run: npm run test:lab:known
+
+  # Non-blocking: TypeScript type check (tsc --noEmit with tsconfig.json). The
+  # suites run TypeScript through Node's type stripping, which does not check
+  # types; this job reports the remaining type errors without failing CI.
+  # The tools are installed for this job only (not package dependencies).
+  typecheck:
+    name: Type check (tsc --noEmit, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies and the type checker
+        run: |
+          npm ci
+          npm install --no-save --no-package-lock typescript@5.9.3 @types/node@22
+
+      - name: tsc --noEmit
+        run: npx tsc --noEmit -p .

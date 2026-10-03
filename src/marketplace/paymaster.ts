@@ -48,9 +48,13 @@ export type PaymasterConfig = {
    * quote is an input to reserve(). The oracle must not be called from a transition.
    */
   oracle?: GasPriceOracle;
-  /** Block height source (ADR 0002). Default: a local height counter at 0; the Marketplace passes its own height to every call. */
+  /** Block height source (ADR 0002), e.g. `() => ledger.height`. Required (or a test-only option); the Marketplace also passes its own height to every call. */
   height?: HeightSource;
-  /** @deprecated TEST-ONLY injected millisecond counter (never a real clock). Cannot be combined with `height`. */
+  /** TEST-ONLY: a local height counter at 0. */
+  testOnlyLocalHeight?: boolean;
+  /** TEST-ONLY injected millisecond counter (never a real clock; removed in 0.6.0). */
+  testOnlyNowMs?: () => number;
+  /** @deprecated alias of `testOnlyNowMs`. */
   now?: () => number;
   /**
    * v0.5.0 reserve protection. An actor may hold at most

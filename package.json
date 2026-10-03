@@ -9,9 +9,10 @@
   },
   "scripts": {
     "test": "npm run test:protocol && npm run test:marketplace",
-    "test:all": "npm run lint:determinism && npm run check:snapshot-compat && npm test && npm run smoke:testnet && npm run quickstart && npm run simulate:20k && npm run test:rust && npm run build:uep-zk && npm run test:lab",
+    "test:all": "npm run lint:determinism && npm run check:snapshot-compat && npm test && npm run test:poisoned-clock && npm run smoke:testnet && npm run quickstart && npm run simulate:20k && npm run test:rust && npm run build:uep-zk && npm run test:lab",
     "test:protocol": "node --experimental-strip-types --test src/testnet/*.test.ts src/identity/*.test.ts src/core/uep-smt-key-hardening.test.ts src/core/poseidon.test.ts src/core/smt-compressed.test.ts src/core/asset-registry.test.ts src/core/height.test.ts src/core/deterministic-transitions.test.ts",
-    "test:marketplace": "node --experimental-strip-types --test src/marketplace/*.test.ts src/service/iot-m2m.test.ts src/service/iot-mars-delay.test.ts src/service/compat-shims.test.ts src/service/uep-http-authz.test.ts",
+    "test:marketplace": "node --experimental-strip-types --test src/marketplace/*.test.ts src/service/iot-m2m.test.ts src/service/iot-mars-delay.test.ts src/service/compat-shims.test.ts src/service/uep-http-authz.test.ts src/service/height-producer.test.ts src/service/poisoned-clock.test.ts",
+    "test:poisoned-clock": "node --experimental-strip-types --no-warnings --import ./scripts/poisoned-clock-preload.mjs --test src/testnet/*.test.ts src/marketplace/*.test.ts src/service/iot-m2m.test.ts src/service/iot-mars-delay.test.ts src/service/compat-shims.test.ts src/service/uep-http-authz.test.ts src/service/height-producer.test.ts",
     "smoke:testnet": "node --experimental-strip-types scripts/testnet-smoke.ts",
     "quickstart": "node --experimental-strip-types examples/first-transaction.ts",
     "simulate:20k": "node --experimental-strip-types scripts/marketplace-20k-simulation.mjs",

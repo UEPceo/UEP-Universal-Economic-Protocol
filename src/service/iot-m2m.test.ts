@@ -12,8 +12,8 @@ const ADMIN = createTestAuthority("iot-admin");
 
 function setup(config: ConstructorParameters<typeof DigitalServicesMarketplace>[0] = {}) {
   let now = 1_000_000;
-  const marketplace = new DigitalServicesMarketplace({ now: () => now, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex, ...config });
-  const iot = new IoTM2MService(marketplace, { now: () => now, telemetryMaxAgeMs: 60_000 });
+  const marketplace = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex, ...config });
+  const iot = new IoTM2MService(marketplace, { testOnlyNowMs: () => now, telemetryMaxAgeMs: 60_000 });
   registerProviderAs(iot, { providerId: "iot-provider-1", displayName: "UEP IoT Lab" });
   registerMachineAs(iot, { machineId: "machine-01", providerId: "iot-provider-1", serviceType: "temperature-sampling", model: "LAB-SENSOR-1", endpointRef: "sim://machine-01" });
   const listing = publishAs(marketplace, { providerId: "iot-provider-1", title: "Temperature sampling", description: "Simulated machine telemetry", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 100n, capacity: 10n });
@@ -197,7 +197,7 @@ describe("IoT settlement is based on verified telemetry", () => {
     marketplace.deliver(direct.orderId, act(marketplace, "iot-provider-1", "deliver", direct.orderId, { deliveryHash: contentHash(bytes) }), bytes);
     assert.throws(() => settle(marketplace, direct.orderId, "direct"), /IOT_VERIFIED_TELEMETRY_REQUIRED/);
     // An IoT listing on a marketplace without an attached IoT service never releases normally.
-    const bare = new DigitalServicesMarketplace();
+    const bare = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
     const l2 = publishAs(bare, { providerId: "p", title: "iot", description: "iot", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 10n, capacity: 1n });
     const o2 = reserveAs(bare, { listingId: l2.listingId, buyerId: "b", quantity: 1n });
     bare.fundOrder(o2.orderId, o2.fundingDue, act(bare, "b", "fund", o2.orderId, { amount: o2.fundingDue }));
@@ -259,7 +259,7 @@ describe("IoT authorization hardening", () => {
   });
 
   it("providers and machines are registered with the provider's signature", () => {
-    const m = new DigitalServicesMarketplace();
+    const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
     const iot = new IoTM2MService(m);
     assert.throws(() => iot.registerProvider({ providerId: "p", displayName: "P" }), /IDENTITY_NOT_REGISTERED/);
     enrollIdentity(m, "p");
@@ -274,7 +274,7 @@ describe("IoT authorization hardening", () => {
   });
 
   it("requires the admin signature to deactivate a provider; the provider may deactivate its machine", () => {
-    const unconfigured = new IoTM2MService(new DigitalServicesMarketplace());
+    const unconfigured = new IoTM2MService(new DigitalServicesMarketplace({ testOnlyLocalHeight: true }));
     registerProviderAs(unconfigured, { providerId: "p", displayName: "P" });
     registerMachineAs(unconfigured, { machineId: "m", providerId: "p", serviceType: "x", model: "m1", endpointRef: "sim://m" });
     assert.throws(() => unconfigured.deactivateMachine("m", act(unconfigured.marketplace, "attacker", "iot-machine-deactivate", "m")), /IOT_ADMIN_AUTH_REQUIRED/);
@@ -325,8 +325,8 @@ describe("IoT identities named by ledger addresses (v0.4.5)", () => {
     const provider = await identityFromMnemonic(await generateMnemonic(128));
     const buyer = await identityFromMnemonic(await generateMnemonic(128));
     let now = 1_000_000;
-    const marketplace = new DigitalServicesMarketplace({ now: () => now, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex });
-    const iot = new IoTM2MService(marketplace, { now: () => now, telemetryMaxAgeMs: 60_000 });
+    const marketplace = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex });
+    const iot = new IoTM2MService(marketplace, { testOnlyNowMs: () => now, telemetryMaxAgeMs: 60_000 });
     // Nobody can claim the provider's address with another key.
     const providerAddr = enrollAccountIdentity(marketplace, provider).identityId;
     assert.equal(marketplace.ledgerAccountOf("iot-admin"), undefined);

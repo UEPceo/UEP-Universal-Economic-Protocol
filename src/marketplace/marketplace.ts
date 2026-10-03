@@ -26,9 +26,9 @@ import { TESTNET } from "../network/profiles.ts";
 import { DEFAULT_MARKETPLACE_ID, actionMessage, disputeReasonHash, listingTerms, reservationMessage, type ActorAuth, type MarketplaceAction } from "./identity.ts";
 import { NestedAmountMap, tupleKey } from "../core/composite-key.ts";
 import { findAsset, resolveAssetIdAlias } from "../core/assets.ts";
-import { HEIGHTS_PER_DAY, TransitionClock, type HeightSource, type TimeUnit } from "../core/height.ts";
+import { HEIGHTS_PER_DAY, REFERENCE_BLOCK_TIME_MS, TransitionClock, type HeightSource, type TimeUnit } from "../core/height.ts";
 import { domainProfile, isDomainProfileId, DEFAULT_DOMAIN_PROFILE, type DomainProfileId } from "../core/domain-profiles.ts";
-import { EvidenceCaps, type EvidenceCapsConfig, type ListingEvidencePolicy } from "./evidence.ts";
+import { EvidenceCaps, evidenceCapsView, type EvidenceCapsConfig, type EvidenceCapsView, type ListingEvidencePolicy } from "./evidence.ts";
 import { looksLikeLegacyMs } from "../core/deprecation.ts";
 
 export const MARKETPLACE_VERSION = "0.4" as const;
@@ -102,6 +102,8 @@ export type OrderStatus = "ACCEPTED" | "HELD" | "DELIVERED" | "DISPUTED" | "SETT
  * is the Marketplace base window plus the fixed delay of the domain profile.
  */
 export type ContractWindows = {
+  /** v0.5.0: block time (ms) the windows were computed with (REFERENCE_BLOCK_TIME_MS); informative, part of the published terms. */
+  referenceBlockTimeMs: number;
   /** Fixed domain-profile delay included in the windows below. */
   domainDelay: number;
   reservationTtl: number;
@@ -192,7 +194,7 @@ export type ServiceOrder = {
   /** v0.5.0: domain profile and windows of the listing at reserve() time (ticks). */
   domainProfile: DomainProfileId;
   windows: ContractWindows;
-  /** v0.5.0: value counted against the listing's evidence caps while the order is open (0n once closed). */
+  /** v0.5.0: funded value counted against the attester set cap (set when the order is funded; 0n before and once closed). */
   evidenceLocked?: bigint;
 };
 
@@ -239,15 +241,21 @@ export type MarketplaceConfig = {
   reputation?: MarketplaceReputation;
   /**
    * v0.5.0 (ADR 0002): block height source of the ledger the Marketplace
-   * settles against (e.g. `() => ledger.height`). Default: a local height
-   * counter at 0, advanced only by advanceHeight(). Every window is in heights.
+   * settles against (e.g. `() => ledger.height`, with a HeightProducer
+   * advancing the ledger). Every window is in heights. Required: without it
+   * (or one of the test-only options below) the constructor throws
+   * HEIGHT_SOURCE_REQUIRED instead of running on a frozen height.
    */
   height?: HeightSource;
+  /** TEST-ONLY: a local height counter at 0, advanced only by advanceHeight() (tests, offline simulations). */
+  testOnlyLocalHeight?: boolean;
   /**
-   * @deprecated TEST-ONLY: injected millisecond counter for tests and
-   * experiments written before v0.5.0 (never a real clock). Windows are then
-   * in ms (heights x 5000). Cannot be combined with `height`.
+   * TEST-ONLY: injected millisecond counter for tests and experiments written
+   * before v0.5.0 (never a real clock). Windows are then in ms (heights x
+   * 5000). The millisecond mode is removed in 0.6.0.
    */
+  testOnlyNowMs?: () => number;
+  /** @deprecated alias of `testOnlyNowMs` (warning UEP_DEP_NOW_OPTION; removed in 0.6.0). */
   now?: () => number;
   /** Reservation TTL in heights (default 120 = 10 min). `reservationTtlMs` is the legacy form (converted, ceil). */
   reservationTtlHeights?: number;
@@ -418,9 +426,10 @@ export class DigitalServicesMarketplace {
   readonly reservationTtlMs: number;
   private readonly maxListingsPerWindow: number;
   /** v0.5.0: base windows in ticks (EARTH; other profiles add their fixed delay). */
-  readonly baseWindows: Readonly<Omit<ContractWindows, "domainDelay">> & { readonly readAuthorizationTtl: number; readonly listingWindow: number };
-  /** v0.5.0: evidence attester sets and open-value caps. */
-  readonly evidenceCaps: EvidenceCaps;
+  readonly baseWindows: Readonly<Omit<ContractWindows, "domainDelay" | "referenceBlockTimeMs">> & { readonly readAuthorizationTtl: number; readonly listingWindow: number };
+  /** v0.5.0: read-only view of the evidence attester sets and their funded open value. */
+  readonly evidenceCaps: EvidenceCapsView;
+  private readonly evidence: EvidenceCaps;
   private readonly listingAttempts = new Map<string, number[]>();
   private readonly orderIdempotency = new Map<string, string>();
   private readonly operationIdempotency = new Map<string, string>();
@@ -529,7 +538,8 @@ export class DigitalServicesMarketplace {
       this.minReservationDepositByAsset.set(asset, min);
     }
     this.requireSignedCredits = config.requireSignedCredits === true;
-    this.evidenceCaps = new EvidenceCaps(config.evidence);
+    this.evidence = new EvidenceCaps(config.evidence);
+    this.evidenceCaps = evidenceCapsView(this.evidence);
   }
 
   /** v0.5.0: "height" (default) or the test-only "legacy-ms" clock. */
@@ -553,6 +563,7 @@ export class DigitalServicesMarketplace {
     const delay = this.transitionClock.fromHeights(domainProfile(profile).delayHeights);
     const b = this.baseWindows;
     return {
+      referenceBlockTimeMs: REFERENCE_BLOCK_TIME_MS,
       domainDelay: delay,
       reservationTtl: b.reservationTtl + delay,
       cancellationGrace: b.cancellationGrace + delay,
@@ -698,7 +709,7 @@ export class DigitalServicesMarketplace {
     // v0.5.0 (ADR 0002): the domain profile and the evidence terms are fixed here.
     if (input.domainProfile !== undefined && !isDomainProfileId(input.domainProfile)) throw new Error("DOMAIN_PROFILE_INVALID");
     const profile: DomainProfileId = input.domainProfile ?? DEFAULT_DOMAIN_PROFILE;
-    const evidencePolicy = input.evidencePolicy !== undefined ? this.evidenceCaps.assertListingPolicy(input.evidencePolicy, input.asset) : undefined;
+    const evidencePolicy = input.evidencePolicy !== undefined ? this.evidence.assertListingPolicy(input.evidencePolicy, input.asset) : undefined;
     if (this.isReservedIdentity(input.providerId)) throw new Error("RESERVED_IDENTITY");
     if (!this.identities.has(input.providerId)) throw new Error("IDENTITY_NOT_REGISTERED");
     const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", signedTerms);
@@ -732,6 +743,11 @@ export class DigitalServicesMarketplace {
     const { domainProfile: _profile, evidencePolicy: _evidence, ...terms } = input;
     const listing: ServiceListing = { ...terms, listingId, available: input.capacity, active: true, sellerBond: input.sellerBond ?? 0n, catalogFingerprint: fingerprint, domainProfile: profile, delayHeights: domainProfile(profile).delayHeights, windows: Object.freeze(this.contractWindowsFor(profile)) };
     if (evidencePolicy) listing.evidencePolicy = Object.freeze(evidencePolicy);
+    // v0.5.0: the signed terms, the domain profile and the windows cannot change after publication,
+    // also not through an in-process reference; only `available` and `active` stay writable.
+    for (const key of Object.keys(listing) as Array<keyof ServiceListing>) {
+      if (key !== "available" && key !== "active") Object.defineProperty(listing, key, { writable: false, configurable: false });
+    }
     this.listings.set(listingId, listing);
     this.fingerprintIndex.set(fingerprint, listingId);
     const simIndex = this.similarityIndex.get(simKey) ?? new Map<string, Set<string>>();
@@ -800,9 +816,11 @@ export class DigitalServicesMarketplace {
     const deposit = this.reservationDepositFor(grossAmount, gasFee, listing.asset);
     // No reservation without funds.
     if (this.availableBalance(listing.asset, input.buyerId) < deposit) throw new Error("INSUFFICIENT_FUNDS_FOR_DEPOSIT");
-    // v0.5.0 (ADR 0002 rule 6): an evidence-bound order may not lock more than its caps allow.
+    // v0.5.0 (ADR 0002 rule 6): an evidence-bound order may not exceed its caps. The set cap is
+    // only checked here (fail early) and taken when the order is funded, so unfunded
+    // reservations cannot fill it.
     const evidenceValue = grossAmount + gasFee;
-    if (listing.evidencePolicy) this.evidenceCaps.checkLock(listing.evidencePolicy, listing.asset, evidenceValue);
+    if (listing.evidencePolicy) this.evidence.checkLock(listing.evidencePolicy, listing.asset, evidenceValue);
     listing.available -= input.quantity;
     this.accounts.add(listing.asset, input.buyerId, -deposit);
     this.locked.add(listing.asset, input.buyerId, deposit);
@@ -830,10 +848,6 @@ export class DigitalServicesMarketplace {
       domainProfile: listing.domainProfile,
       windows: { ...listing.windows },
     };
-    if (listing.evidencePolicy) {
-      this.evidenceCaps.lock(listing.evidencePolicy, listing.asset, evidenceValue);
-      order.evidenceLocked = evidenceValue;
-    }
     this.orders.set(orderId, order);
     this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
     this.enqueueReservation(order);
@@ -889,6 +903,11 @@ export class DigitalServicesMarketplace {
     // The locked deposit counts toward the payment: the buyer funds the remainder.
     if (amount !== order.fundingDue) throw new Error("HOLD_AMOUNT_MISMATCH");
     if (this.availableBalance(order.asset, order.buyerId) < amount) throw new Error("INSUFFICIENT_FUNDS");
+    // v0.5.0 (ADR 0002 rule 6): funded value is what counts against the attester set cap.
+    const evidencePolicy = this.listing(order.listingId).evidencePolicy;
+    const evidenceValue = order.grossAmount + (order.gasFee ?? 0n);
+    if (evidencePolicy) this.evidence.lock(evidencePolicy, order.asset, evidenceValue);
+    if (evidencePolicy) order.evidenceLocked = evidenceValue;
     this.accounts.add(order.asset, order.buyerId, -amount);
     this.locked.add(order.asset, order.buyerId, -order.depositLocked);
     this.held.add(order.asset, order.buyerId, amount + order.depositLocked);
@@ -1138,6 +1157,10 @@ export class DigitalServicesMarketplace {
    */
   attachCategoryService(category: ServiceCategory, hooks: CategoryServiceHooks = {}): CategoryServiceAccess {
     if (this.categoryServices.has(category)) throw new Error("CATEGORY_SERVICE_ALREADY_ATTACHED");
+    // Hooks change how orders of the category settle, so they must be in place before the
+    // first listing: attaching later would change the terms of existing listings and orders.
+    for (const listing of this.listings.values()) if (listing.category === category) throw new Error("CATEGORY_SERVICE_IN_USE");
+    for (const order of this.orders.values()) if (this.listings.get(order.listingId)?.category === category) throw new Error("CATEGORY_SERVICE_IN_USE");
     this.categoryServices.set(category, hooks);
     return {
       readOrder: (orderId: string) => {
@@ -1157,7 +1180,7 @@ export class DigitalServicesMarketplace {
   private runSettlementGuard(order: ServiceOrder): void {
     // v0.5.0 (ADR 0002 rule 6): an evidence-gated release never moves more than the per-contract cap.
     const policy = this.listing(order.listingId).evidencePolicy;
-    if (policy) this.evidenceCaps.checkSettlement(policy, order.grossAmount + (order.gasFee ?? 0n));
+    if (policy) this.evidence.checkSettlement(policy, order.grossAmount + (order.gasFee ?? 0n));
     const category = this.listing(order.listingId).category;
     const hooks = this.categoryServices.get(category);
     // IoT / M2M orders settle only against verified telemetry: no attached IoT service, no normal release.
@@ -1477,7 +1500,7 @@ export class DigitalServicesMarketplace {
   private releaseEvidence(order: ServiceOrder): void {
     if (!order.evidenceLocked) return;
     const policy = this.listing(order.listingId).evidencePolicy;
-    if (policy) this.evidenceCaps.release(policy.attesterSetId, order.asset, order.evidenceLocked);
+    if (policy) this.evidence.release(policy.attesterSetId, order.asset, order.evidenceLocked);
     order.evidenceLocked = 0n;
   }
 

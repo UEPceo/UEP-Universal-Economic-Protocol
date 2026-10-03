@@ -2,9 +2,16 @@ import { DigitalServicesMarketplace } from '../src/marketplace/marketplace.ts';
 import { createMarketplaceIdentity, listingTerms, signAction, signReservation } from '../src/marketplace/identity.ts';
 import { contentHash } from '../src/service/content-hash.ts';
 import { performance } from 'node:perf_hooks';
+import { HeightProducer, ProducedHeight } from '../src/service/height-producer.ts';
 
 const regions=['EU','NA','LATAM','APAC','AFRICA','MENA'];
-const m=new DigitalServicesMarketplace();
+// v0.5.0 (ADR 0002): the Marketplace reads the height of a chain advanced by the height producer.
+// The simulation drives the producer with a simulated wall clock (50 ms per checkout), so it is deterministic.
+const chain=new ProducedHeight();
+const sim={t:0};
+const producer=new HeightProducer({ledger:chain,clock:()=>sim.t});
+const step=(ms)=>{sim.t+=ms; producer.tick();};
+const m=new DigitalServicesMarketplace({height:()=>chain.height});
 const start=performance.now();
 const listings=[];
 let listingFailures=0;
@@ -27,6 +34,7 @@ const countries=Array.from({length:20000},(_,i)=>regions[i%regions.length]);
 let accepted=0, fund=0, delivered=0, settled=0, cancelled=0, errors=0, idempotent=0;
 const t0=performance.now();
 for(let i=0;i<20000;i++){
+  step(50);
   const l=listings[i%listings.length]; const buyer=`buyer-${i}`; const idem=`checkout-${i}`;
   try{
     const who=enroll(buyer, 1_000n);
@@ -45,7 +53,12 @@ const hot=publish({providerId:'hot-provider',title:'Hot H100 Capacity',descripti
 let hotAccepted=0, hotRejected=0;
 for(let i=0;i<1000;i++){const who=enroll(`hot-${i}`, 100n);try{signedReserve(who,hot.listingId,1n,`hot-${i}`);hotAccepted++;}catch{hotRejected++;}}
 const t2=performance.now();
+// The hot reservations were never funded: once their TTL has passed in (simulated) real time they expire
+// and the deposits are forfeited, so nothing stays locked.
+const heightBeforeExpiry=chain.height;
+step(m.reservationTtlMs+5_000);
+const hotExpired=m.reapExpiredReservations();
 const accounting=m.valueAccounting('EUR');
 if(!accounting.conserved) errors++;
-console.log(JSON.stringify({users:20000,regions,providers:200,listings:listings.length,listingFailures,accepted,fund,delivered,settled,cancelled,errors,idempotentReplayChecks:idempotent,hotCapacity:100,hotAccepted,hotRejected,hotRemaining:m.getListing(hot.listingId).available,totalTreasuryEUR:String(m.treasury.totalOf('EUR')),valueConserved:accounting.conserved,lockedDepositsEUR:accounting.lockedDeposits,durationMs:Math.round(t2-start),mainFlowMs:Math.round(t1-t0),contentionMs:Math.round(t2-t1),orders:m.orderCount()},(k,v)=>typeof v==='bigint'?v.toString():v,2));
+console.log(JSON.stringify({users:20000,regions,providers:200,listings:listings.length,listingFailures,accepted,fund,delivered,settled,cancelled,errors,idempotentReplayChecks:idempotent,hotCapacity:100,hotAccepted,hotRejected,hotRemaining:m.getListing(hot.listingId).available,heightBeforeExpiry,height:chain.height,hotExpired,totalTreasuryEUR:String(m.treasury.totalOf('EUR')),valueConserved:accounting.conserved,lockedDepositsEUR:accounting.lockedDeposits,durationMs:Math.round(t2-start),mainFlowMs:Math.round(t1-t0),contentionMs:Math.round(t2-t1),orders:m.orderCount()},(k,v)=>typeof v==='bigint'?v.toString():v,2));
 if(errors>0||listingFailures>0) process.exitCode=1;

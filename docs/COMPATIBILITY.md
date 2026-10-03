@@ -100,10 +100,11 @@ For each fixture, `snapshot-fixtures.test.ts` checks:
 | Item | Why | What to do |
 |---|---|---|
 | Snapshot formats 1–5 | They use the SHA-256 field reference hash. Format 6 moved to Poseidon over BN254, which changes note commitments, nullifiers, transaction ids and every root. Spend signatures and mint signatures bind those values, and checkpoints hash them. A conversion would have to re-sign every spend and mint, which needs every owner's key and the mint keys. That is not a deterministic migration a verifier can check, so the restore refuses these formats and gives the reason. | Re-create the testnet state. Mnemonics, keys, account ids and `uep1…` addresses are unchanged. |
-| Code that relied on the default wall clock: Marketplace windows that expired by themselves, `prepareSpend()` stamping `Date.now()` | Transitions are clock-free by design (ADR 0002). Nothing can expire on wall-clock time without a clock inside the state machine. | Advance the height. For a single-node setup that wants the old behaviour, `startBlockProducer({ advance: () => ledger.advanceHeight(), intervalMs: 5000 })` (`src/service/block-producer.ts`) is the operator-side replacement. It is outside the transitions. |
+| Code that relied on the default wall clock: Marketplace windows that expired by themselves, `prepareSpend()` stamping `Date.now()` | Transitions are clock-free by design (ADR 0002). Nothing can expire on wall-clock time without a clock inside the state machine. | Run the height producer: `new HeightProducer({ ledger }).start()` (`src/service/height-producer.ts`). It seals one block per 5 s of real time, outside the transitions, and windows then expire in real time as before. The smoke test, the quickstart, the 20k simulation and `listenUepHttpApi({ heightProducer })` use it. |
+| A Marketplace or paymaster built without a height source (`new DigitalServicesMarketplace()`) | Deliberate break. Before v0.5.0 such an instance read the wall clock; with heights it would keep a counter that never moves, so reservations, cancellations and disputes would silently never expire. It now fails closed with `HEIGHT_SOURCE_REQUIRED`. | Pass `height: () => ledger.height` (with a height producer running). Tests that drive the height by hand pass `testOnlyLocalHeight: true` and call `advanceHeight()`. |
 | IoT telemetry signed with a Unix-ms `observedAt`, given to a height-based Marketplace | The machine signs `observedAt`. Rewriting it would break the signature, and converting it inside `deliverTelemetry()` would need a clock. The call fails with `IOT_TELEMETRY_OBSERVED_AT_UNIT`, not with a misleading `IOT_TELEMETRY_STALE`. | Machines sign the Marketplace height (`GET /v1/marketplace/height`). |
 | A Unix-ms `issuedAt` passed **in process** to `Marketplace` methods | The Marketplace has no clock to map it. The call fails with `ACTOR_AUTH_ISSUED_AT_UNIT`. | Use the service API or the HTTP adapter, which map it (section 6), or set `auth.issuedAtHeight`. |
-| A height source and the legacy `now` together, or a `*Heights` option together with its `*Ms` form | The configuration is ambiguous. `CLOCK_CONFIG_CONFLICT` stays. | Pass one of them. |
+| A height source, `testOnlyLocalHeight` and the legacy `testOnlyNowMs` / `now` together (any two), or a `*Heights` option together with its `*Ms` form | The configuration is ambiguous. `CLOCK_CONFIG_CONFLICT` stays. | Pass one of them. |
 | Notes minted under an old asset id | A note commitment binds the asset's field encoding. Such notes stay valid and spendable, and their change outputs keep the old encoding. | Nothing to do. `balanceOfAsset(account, id)` counts both encodings for either id. `balanceOf(account, assetFr)` stays per encoding. |
 | One payment that would need notes of both encodings of one asset | One transaction carries a single asset encoding. | `preparePayment()` uses notes of one encoding (namespaced first). Make two payments, or consolidate. |
 | Lab proofs and keys of circuit v3 | Circuit v4 changes the statement. | Labs only, outside this policy. |
@@ -154,10 +155,10 @@ Each shim converts deterministically and warns once per process with a stable co
 |---|---|---|
 | `UEP_DEP_ASSET_ALIAS` | old asset id | Section 5 |
 | `UEP_DEP_MS_OPTION` | `*Ms` window options (Marketplace, paymaster, IoT) | `ceil(ms / 5000)` heights. In the test-only ms mode they stay in ms. |
-| `UEP_DEP_NOW_OPTION` | Marketplace or paymaster `now: () => number` | Test-only ms counter (ADR 0002). It is never a real clock. |
-| `UEP_DEP_IOT_NOW` | `IoTM2MService` `now` with a height-based Marketplace | Ignored: the service uses the Marketplace height. Before, this threw `CLOCK_CONFIG_CONFLICT`. |
+| `UEP_DEP_NOW_OPTION` | Marketplace or paymaster `now: () => number` | Renamed `testOnlyNowMs`; `now` is a deprecated alias of it (both → `CLOCK_CONFIG_CONFLICT`). A test-only ms counter (ADR 0002), never a real clock. Removed in 0.6.0. |
+| `UEP_DEP_IOT_NOW` | `IoTM2MService` `testOnlyNowMs` / `now` with a height-based Marketplace | Ignored: the service uses the Marketplace height. Before, this threw `CLOCK_CONFIG_CONFLICT`. |
 | `UEP_DEP_SPEND_NOW_MS` | `prepareSpend()` / `preparePayment()` with a Unix-ms `now` (≥ 10^11) | Replaced by the ledger height |
-| `UEP_DEP_POLICY_WINDOW_MS` | `SecurityPolicy({ windowMs })` | Read as `windowHeights` in the probes' unit. In snapshots: `ceil(windowMs / 5000)`. |
+| `UEP_DEP_POLICY_WINDOW_MS` | `SecurityPolicy({ windowMs })`, probe `nowMs` | `windowHeights = ceil(windowMs / 5000)` (60,000 ms → 12), the same rounding as in snapshots; a probe `nowMs` counts as `floor(nowMs / 5000)` heights, so a pre-v0.5.0 window keeps its length. |
 | `UEP_DEP_ISSUED_AT_MS` | `x-uep-issued-at` or `auth.issuedAt` in Unix ms, through the service API or HTTP | At the boundary, `issuedAtHeight = height − ceil((wallNow − issuedAt) / 5000)` (`legacyMsToHeight`, with the adapter's own clock, `legacyWallClock`). The signature still covers the original `issuedAt`, and freshness is checked on the derived height. |
 | `UEP_DEP_SNAPSHOT_FORMAT` | snapshot of an older migratable format | Section 2 |
 
@@ -169,7 +170,7 @@ Defaults that keep old call sites working, with no clock read:
 
 Values below 10^11 are heights and values at or above it are Unix ms (`LEGACY_MS_THRESHOLD`). 10^11 ms is March 1973, and 10^11 heights at 5 s blocks are about 15,800 years.
 
-**Removal.** The shims above were deprecated in 0.5.0 and stay until at least 0.6.0. A removal needs a CHANGELOG entry and, for HTTP, a major version of `UEP_HTTP_API_VERSION`.
+**Removal.** The shims above were deprecated in 0.5.0. The test-only millisecond mode (`testOnlyNowMs` / `now`, and `*Ms` options read in ms in that mode) is scheduled for removal in the next minor version, 0.6.0. The other shims stay until at least 0.6.0. A removal needs a CHANGELOG entry and, for HTTP, a major version of `UEP_HTTP_API_VERSION`.
 
 ## 7. HTTP API versioning
 

@@ -26,27 +26,33 @@ const LT_MAX_S = 1_203.6;
 type Outcome = string;
 
 /** Height mode: the Marketplace and the IoT service read the single-node testnet's height. */
-function runHeights(profile: DomainProfileId | undefined, delayHeights: number): Outcome {
+function runHeights(profile: DomainProfileId | undefined, delayHeights: number, beforeObserve = 0): Outcome {
   const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, faucetSigningKey: null });
   const marketplace = new DigitalServicesMarketplace({ height: () => ledger.height, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex });
   const iot = new IoTM2MService(marketplace);
-  return flow(marketplace, iot, profile, () => ledger.advanceHeight(delayHeights));
+  return flow(marketplace, iot, profile, () => ledger.advanceHeight(delayHeights), () => ledger.advanceHeight(beforeObserve));
+}
+
+/** Round trip: the request travels `out` heights to Mars, the machine waits `wait`, the report travels `back`. */
+function runRoundTrip(profile: DomainProfileId | undefined, out: number, wait: number, back: number): Outcome {
+  return runHeights(profile, back, out + wait);
 }
 
 /** Pre-v0.5.0 setup (test-only legacy ms clock shared by both services); only the profile is added. */
 function runLegacyMs(profile: DomainProfileId | undefined, delayS: number): Outcome {
   let now = 1_000_000_000;
-  const marketplace = new DigitalServicesMarketplace({ now: () => now, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex });
-  const iot = new IoTM2MService(marketplace, { now: () => now });
+  const marketplace = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex });
+  const iot = new IoTM2MService(marketplace, { testOnlyNowMs: () => now });
   return flow(marketplace, iot, profile, () => { now += Math.round(delayS * 1000); });
 }
 
-function flow(marketplace: DigitalServicesMarketplace, iot: IoTM2MService, profile: DomainProfileId | undefined, lightTravel: () => void): Outcome {
+function flow(marketplace: DigitalServicesMarketplace, iot: IoTM2MService, profile: DomainProfileId | undefined, lightTravel: () => void, beforeObserve: () => void = () => undefined): Outcome {
   registerProviderAs(iot, { providerId: "mars-provider", displayName: "Mars lab" });
   registerMachineAs(iot, { machineId: "mars-01", providerId: "mars-provider", serviceType: "power-kwh", model: "SIM", endpointRef: "sim://mars-01" });
   const listing = publishAs(marketplace, { providerId: "mars-provider", title: "Power", description: "sim", category: IOT_M2M_CATEGORY, asset: "EUR", unitPrice: 100n, capacity: 10n, ...(profile ? { domainProfile: profile } : {}) });
   const r = requestAs(iot, { buyerId: "earth-buyer", listingId: listing.listingId, machineId: "mars-01", quantity: 1n });
   holdAs(iot, r.requestId, "earth-buyer");
+  beforeObserve(); // round trip: the request reaches Mars and the machine waits
   const observedAt = marketplace.clock(); // the machine observes on Mars
   const t = simulateAs(iot, r.requestId, "mars-01", { kWh: "1.0" }, observedAt);
   lightTravel(); // the report reaches Earth after the light-time delay
@@ -87,6 +93,16 @@ describe("IoT telemetry with Earth-Mars light-time delay (in heights)", () => {
     assert.equal(runHeights("MARS", heightsForMs((LT_MAX_S + 3_600) * 1000)), "REJECTED RESERVATION_EXPIRED");
   });
 
+  it("MARS round trip: request out and report back at the maximum light time (241 + 241) settle; the machine may wait up to 240 heights", () => {
+    const lt = heightsForMs(LT_MAX_S * 1000);
+    assert.equal(runRoundTrip("MARS", heightsForMs(LT_MIN_S * 1000), 0, heightsForMs(LT_MIN_S * 1000)), OK);
+    assert.equal(runRoundTrip("MARS", lt, 0, lt), OK);
+    // Reservation window 120 + 602 = 722 heights = 2 x 241 + 240.
+    assert.equal(runRoundTrip("MARS", lt, 240, lt), OK);
+    assert.equal(runRoundTrip("MARS", lt, 241, lt), "REJECTED RESERVATION_EXPIRED");
+    assert.equal(runRoundTrip("EARTH", heightsForMs(LT_MIN_S * 1000), 0, heightsForMs(LT_MIN_S * 1000)), "REJECTED RESERVATION_EXPIRED");
+  });
+
   it("MOON profile: about 1.3 s one-way fits in one delay height", () => {
     assert.equal(runHeights("MOON", heightsForMs(1_300)), OK);
     assert.equal(runHeights("MOON", 61), OK); // 60 + 1
@@ -102,12 +118,12 @@ describe("IoT telemetry with Earth-Mars light-time delay (in heights)", () => {
   });
 
   it("the IoT service follows the Marketplace height; a legacy `now` is ignored in height mode", () => {
-    const marketplace = new DigitalServicesMarketplace();
+    const marketplace = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
     marketplace.advanceHeight(7);
-    const legacy = new IoTM2MService(marketplace, { now: () => 1_800_000_000_000 });
+    const legacy = new IoTM2MService(marketplace, { testOnlyNowMs: () => 1_800_000_000_000 });
     assert.equal(registerProviderAs(legacy, { providerId: "p-legacy", displayName: "legacy" }).registeredAt, 7);
-    const iot = new IoTM2MService(new DigitalServicesMarketplace(), { telemetryMaxAgeHeights: 10 });
+    const iot = new IoTM2MService(new DigitalServicesMarketplace({ testOnlyLocalHeight: true }), { telemetryMaxAgeHeights: 10 });
     assert.equal(iot.telemetryMaxAge, 10);
-    assert.throws(() => new IoTM2MService(new DigitalServicesMarketplace(), { telemetryMaxAgeHeights: 1, telemetryMaxAgeMs: 1 }), /CLOCK_CONFIG_CONFLICT/);
+    assert.throws(() => new IoTM2MService(new DigitalServicesMarketplace({ testOnlyLocalHeight: true }), { telemetryMaxAgeHeights: 1, telemetryMaxAgeMs: 1 }), /CLOCK_CONFIG_CONFLICT/);
   });
 });

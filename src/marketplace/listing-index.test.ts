@@ -7,7 +7,7 @@ import { publishAs } from "./testkit.ts";
 const base = { providerId: "p", description: "d", category: "API" as const, asset: "uep-test/teur", unitPrice: 1n, capacity: 1n };
 
 test("near-duplicate detection matches the exhaustive Jaccard >= 0.9 rule", () => {
-  const m = new DigitalServicesMarketplace({ maxListingsPerWindow: 1_000_000 });
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, maxListingsPerWindow: 1_000_000 });
   // 10 distinct tokens; 9 shared of 11 total = 0.818 (allowed), 10 of 10 reordered = 1 (rejected).
   const t = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
   publishAs(m, { ...base, title: t });
@@ -23,7 +23,7 @@ test("near-duplicate detection matches the exhaustive Jaccard >= 0.9 rule", () =
 });
 
 test("publishing many listings stays fast (no full scan per listing)", () => {
-  const m = new DigitalServicesMarketplace({ maxListingsPerWindow: 1_000_000 });
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, maxListingsPerWindow: 1_000_000 });
   const t0 = performance.now();
   for (let i = 0; i < 5_000; i++) publishAs(m, { ...base, title: `service ${i} tier ${i % 7} region r${i % 13}` });
   const ms = performance.now() - t0;

@@ -11,6 +11,7 @@ import { UepLedger } from "../src/testnet/ledger.ts";
 import { TESTNET } from "../src/network/profiles.ts";
 import { encodeAccountAddress, parseAccountAddress } from "../src/core/address.ts";
 import { creatorFee } from "../src/core/fee.ts";
+import { HeightProducer } from "../src/service/height-producer.ts";
 
 async function main() {
   console.log("UEP TESTNET smoke (public reference implementation)");
@@ -25,18 +26,18 @@ async function main() {
     connected: true,
     allowFaucet: true,
   });
+  // v0.5.0 (ADR 0002): heights come from real time through the producer, outside the transitions.
+  const producer = new HeightProducer({ ledger: node }).start();
 
   const asset = "uep-test/tenergy";
   node.faucet(alice.accountId, asset, 1_000_000n);
 
   const sendAmount = 250_000n;
   const prepared = node.prepareSpend(alice, bob.accountId, asset, sendAmount);
-  assert.ok("tx" in prepared);
   if (!("tx" in prepared)) throw new Error(prepared.error.message);
 
   // Signed spend: verified with the public key only, no secret sent to the node.
   const submitted = node.submit(prepared.tx);
-  assert.ok("tx" in submitted);
   if (!("tx" in submitted)) throw new Error(submitted.error.message);
 
   const fee = creatorFee(sendAmount);
@@ -58,6 +59,10 @@ async function main() {
   console.log("nullifier:   ", submitted.tx.nullifier.toHex());
   console.log("state root:  ", node.stateRoot().toHex());
   console.log("bob address: ", addr);
+  const status = producer.status();
+  producer.stop();
+  assert.ok(status.running && status.aheadBy === 0 && status.blockTimeMs === 5000);
+  console.log("height:      ", node.height, `(producer: one block per ${status.blockTimeMs} ms of real time)`);
   console.log("verification: PASS (local reference path)");
   console.log("SMOKE OK");
 }

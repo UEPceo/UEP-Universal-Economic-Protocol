@@ -27,6 +27,12 @@ export type HttpApiOptions = {
   objectsToken?: string;
   /** CORS allowlist (see applyCors). Overrides UEP_HTTP_CORS_ORIGINS. */
   cors?: { allowedOrigins: string[] };
+  /**
+   * v0.5.0 (ADR 0002): height producer of the node's ledger (src/service/height-producer.ts).
+   * listenUepHttpApi() starts it with the server and stops it when the server closes, so the
+   * Marketplace windows behind the API pass in real time. Outside the transitions.
+   */
+  heightProducer?: { start(): unknown; stop(): void };
 };
 
 /**
@@ -325,6 +331,11 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
 export function listenUepHttpApi(opts: HttpApiOptions): Promise<{ server: Server; port: number }> {
   const server = createUepHttpApi(opts);
   const host = opts.host ?? "127.0.0.1";
+  if (opts.heightProducer) {
+    const producer = opts.heightProducer;
+    server.once("listening", () => producer.start());
+    server.once("close", () => producer.stop());
+  }
   return new Promise((resolve) => {
     server.listen(opts.port ?? 0, host, () => {
       const addr = server.address();

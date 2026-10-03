@@ -129,10 +129,12 @@ export type IoTSettlement = ReturnType<DigitalServicesMarketplace["settle"]> & {
 
 export type IoTM2MConfig = {
   /**
-   * @deprecated TEST-ONLY injected counter, in the Marketplace's time unit
-   * (only allowed when the Marketplace uses the test-only legacy ms clock).
-   * Default: the Marketplace height (`marketplace.clock()`).
+   * TEST-ONLY injected counter, in the Marketplace's time unit (used only
+   * when the Marketplace uses the test-only millisecond clock; ignored with a
+   * height-based Marketplace). Default: the Marketplace clock. Removed in 0.6.0.
    */
+  testOnlyNowMs?: () => number;
+  /** @deprecated alias of `testOnlyNowMs`. */
   now?: () => number;
   /** Base telemetry age window in heights (default 60); the order's domain delay is added. */
   telemetryMaxAgeHeights?: number;
@@ -253,8 +255,11 @@ export class IoTM2MService {
     this.marketplace = marketplace;
     const clock: TransitionClock = marketplace.transitionClock;
     // v0.5.0 compatibility: with a height-based Marketplace a legacy `now` is ignored (deprecated); time is the Marketplace height.
-    const legacyNow = config.now !== undefined && clock.unit === "legacy-ms" ? config.now : undefined;
-    if (config.now !== undefined && clock.unit !== "legacy-ms") deprecate(DEPRECATIONS.IOT_NOW_IGNORED, "IoTM2MService: `now` is ignored with a height-based Marketplace since v0.5.0; the service uses the Marketplace height");
+    if (config.now !== undefined && config.testOnlyNowMs !== undefined) throw new Error("CLOCK_CONFIG_CONFLICT: `now` is the deprecated alias of `testOnlyNowMs`; pass one");
+    const injected = config.testOnlyNowMs ?? config.now;
+    const legacyNow = injected !== undefined && clock.unit === "legacy-ms" ? injected : undefined;
+    if (injected !== undefined && clock.unit !== "legacy-ms") deprecate(DEPRECATIONS.IOT_NOW_IGNORED, "IoTM2MService: `testOnlyNowMs` / `now` is ignored with a height-based Marketplace since v0.5.0; the service uses the Marketplace height");
+    else if (config.now !== undefined) deprecate(DEPRECATIONS.NOW_OPTION, "`now` is deprecated since v0.5.0: renamed `testOnlyNowMs`; the millisecond mode is removed in 0.6.0");
     this.heightMode = clock.unit === "height";
     this.now = legacyNow ?? (() => marketplace.clock());
     this.telemetryMaxAge = clock.window("telemetryMaxAge", config.telemetryMaxAgeHeights, config.telemetryMaxAgeMs, DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS);
@@ -506,7 +511,7 @@ export class IoTM2MService {
     const nextAction = order.status === "ACCEPTED" ? "HOLD"
       : order.status === "HELD" ? "EXECUTE_AND_DELIVER"
       : order.status === "DELIVERED" && !verification ? "VERIFY_TELEMETRY"
-      : order.status === "DELIVERED" && !verification.fullyDelivered ? "DISPUTE_USAGE_SHORTFALL"
+      : order.status === "DELIVERED" && verification && !verification.fullyDelivered ? "DISPUTE_USAGE_SHORTFALL"
       : order.status === "DELIVERED" ? "SETTLE"
       : order.status === "SETTLED" || order.status === "REFUNDED" ? "COMPLETE"
       : order.status;
