@@ -1,4 +1,4 @@
-> Histórico. Describe el circuito de 12 entradas y 152_621 restricciones. El circuito actual (v3, con domain_id y suelo de comisión) mide 153_956 en D=32 y 46_660 en D=4. Ver uep-26-spend-circuit/README.md.
+> Historical: describes the 12-input circuit with 152_621 constraints. The current circuit (v3, with `domain_id` and the fee floor) measures 153_956 constraints at D=32 and 46_660 at D=4; see `uep-26-spend-circuit/README.md`.
 
 # UEP-29.4 CLOSED
 

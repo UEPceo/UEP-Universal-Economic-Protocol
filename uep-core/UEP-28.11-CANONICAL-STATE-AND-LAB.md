@@ -64,7 +64,7 @@ Artifacts print `keys=DEV-TEST-KEYS`. Mixing DEV proofs into a profile that forb
 
 ### 6. Poseidon Ledger Lab (P3 of roadmap)
 
-`src/core/poseidon-ledger-lab.ts` — orchestrates:
+`src/lab/poseidon-ledger-lab.ts` — orchestrates:
 
 ```
 economic fields → prove-spend-json → 12 publics → verify → transition record

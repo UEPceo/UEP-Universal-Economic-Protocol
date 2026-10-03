@@ -20,4 +20,4 @@ Poseidon, SMT, SpendCircuit, fee formula, public-input schema.
 
 ## Tests
 
-`src/node/swap.test.ts` — happy path + insufficient inventory.
+`src/node/swap.test.ts` (internal workspace, not published) — happy path + insufficient inventory.

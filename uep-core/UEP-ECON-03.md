@@ -1,38 +1,44 @@
-# UEP-ECON-03 — Escrow / hold del cliente (lab)
+# UEP-ECON-03 — Client escrow / hold (lab)
 
-## Justificación (directiva)
+## Rationale
 
-1. **Problema:** en ECON-02 el cliente podía aceptar varias obligaciones sobre el mismo saldo.
-2. **Autonomía:** proveedores confían en que el pago está *reservado* hasta entrega o cancel.
-3. **Sanidad:** hold = price+fee; settlement sigue ECON-01 (conservación + treasury).
-4. **Relación real:** obliga capacidad económica antes del servicio.
-5. **¿Ahora?** Sí — cierra el hueco de over-commit tras ECON-02.
-6. **Complejidad:** `EscrowBook` lab; **sin** BFT/ZK/Poseidon; sin token.
+1. **Problem:** in ECON-02 a client could accept several obligations against the
+   same balance.
+2. **Autonomy:** providers can rely on the payment being *reserved* until delivery
+   or cancellation.
+3. **Sanity:** hold = price + fee; settlement still follows ECON-01
+   (conservation + treasury).
+4. **Relation to real use:** economic capacity is committed before the service.
+5. **Why now:** it closes the over-commitment gap left by ECON-02.
+6. **Complexity:** a lab `EscrowBook`; **no** new BFT, ZK or Poseidon work; no token.
 
-## Flujo
+## Flow
 
 ```
 acceptWithEscrow
-  → canHold(available >= price+fee)
+  → canHold(available >= price + fee)
   → Obligation OPEN + Hold HELD
 
-submitDelivery → planSettlement → BatchTx multinodo
+submitDelivery → planSettlement → multi-node BatchTx
   → completeSettlement → Hold CONSUMED + SETTLED
 
 cancel OPEN → Hold RELEASED
-DISPUTED → releaseDisputed → Hold RELEASED (lab; sin refund TX automático)
+DISPUTED → releaseDisputed → Hold RELEASED (lab; no automatic refund transaction)
 ```
 
-## available
+## Available balance
 
-`available(client) = chain.balance(client) - Σ holds HELD`
+`available(client) = chain.balance(client) − Σ holds HELD`
 
 ## Tests
 
-`test:econ-03` → 7/7 PASS · regresión ECON-01/02 12/12 PASS
+`src/lab/uep-econ-03.test.ts` (7 tests). Run with `npm run test:lab -- uep-econ-03`,
+or `npm run test:lab -- uep-econ` for all economic labs including the ECON-01
+and ECON-02 regressions.
 
-## Limitaciones
+## Limitations
 
-- Hold **no** mueve fondos on-chain (no cuenta escrow en SMT); es reserva lógica sobre vista de saldo.
-- Escrow on-chain (leaf dedicada) = futura ECON-04 si se prioriza.
-- Fee policy sigue experimental.
+- A hold does **not** move funds on-chain (there is no escrow account in the SMT);
+  it is a logical reservation over the balance view.
+- On-chain escrow (a dedicated leaf) is explored in ECON-04.
+- The fee policy is still experimental.

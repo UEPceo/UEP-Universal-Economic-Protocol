@@ -34,4 +34,4 @@ See `SPEND_PUBLIC_INPUT_NAMES` / Rust `public_inputs_from_circuit`.
 
 ## Tests
 
-`src/core/zk-witness-contract.test.ts`
+`src/lab/zk-witness-contract.test.ts`
