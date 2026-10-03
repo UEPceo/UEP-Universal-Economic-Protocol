@@ -65,6 +65,9 @@ describe("UEP-36.4 multi-node DigestAggregate pipeline", () => {
       { txs: [{ id: "a", from: "s0", to: "r0", amount: 1n }] },
       { txs: [{ id: "b", from: "s1", to: "r1", amount: 1n }] },
     ]);
+    // UEP-37.6: mn-1 proposes height 2 once height 1 is applied everywhere.
+    for (let i = 0; i < 150 && !cluster.nodes.every((n) => n.economic.sequence >= 1); i++) cluster.tick(20, 5);
+    assert.equal(cluster.leaderForNextHeight(), "mn-1");
     const b = cluster.proposeAggregateFrom("mn-1", [
       { txs: [{ id: "c", from: "s0", to: "r0", amount: 1n }] },
       { txs: [{ id: "d", from: "s1", to: "r1", amount: 1n }] },

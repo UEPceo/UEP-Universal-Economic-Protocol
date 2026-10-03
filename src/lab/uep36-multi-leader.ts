@@ -142,8 +142,10 @@ export class MultiLeaderLab {
    * Each height: one leader proposes; payload is digest-only; wait finality.
    */
   consensusHeight(txsPer = 2): WaveResult | null {
-    const ids = this.nodeIds();
-    const leader = ids[this.heightIndex % ids.length]!;
+    // v0.5.0: the rotation is the UEP-37.6 single-proposer schedule
+    // (scheduledLeader over sorted ids and the current view), so every
+    // height has exactly one proposer the cluster accepts.
+    const leader = this.cluster.leaderForNextHeight();
     const txs: BatchTx[] = [];
     for (let t = 0; t < txsPer; t++) {
       txs.push({
@@ -153,8 +155,15 @@ export class MultiLeaderLab {
         amount: 1n,
       });
     }
-    const prop = this.cluster.proposeFrom(leader, txs);
-    if (!prop) return null;
+    // v0.5.0: heights are proposed on the official aggregate (digest-only)
+    // path; the plain single-batch proposal is no longer accepted by the
+    // UEP-37.6 cluster.
+    const target = this.cluster.globalSeq + 1;
+    const agg0 = this.cluster.proposeAggregateFrom(leader, [{ txs }]);
+    if (!agg0) return null;
+    const batchId = agg0.batchIds[0]!;
+    const header = this.cluster.node(leader).worker.dag.getHeader(batchId);
+    const prop = { header: { batchId, txDigest: header?.txDigest ?? "" }, proposalDigest: agg0.proposalDigest };
     const agg = buildDigestAggregate(
       this.cluster.epoch,
       Math.max(1, this.heightIndex + 1),
@@ -163,20 +172,10 @@ export class MultiLeaderLab {
     );
     const payloadJson = JSON.stringify(aggregateProposalPayload(agg));
     const digestOnly = isOfficialDigestPayload(payloadJson);
-    for (let i = 0; i < 80; i++) {
-      this.cluster.tick(20, 1);
+    for (let i = 0; i < 150; i++) {
+      this.cluster.tick(20, 5);
       const honest = this.cluster.nodes.filter((n) => !n.byzantine);
-      if (
-        honest.every(
-          (n) =>
-            n.economic.isFinalized(prop.header.batchId) ||
-            n.finalityCerts.has(prop.proposalDigest),
-        )
-      ) {
-        break;
-      }
-      // fallback: all applied
-      if (honest.every((n) => n.appliedBatches.has(prop.header.batchId))) break;
+      if (honest.every((n) => n.economic.sequence >= target)) break;
     }
     this.cluster.tick(20, 10);
     this.stats.consensusFinalized++;

@@ -22,20 +22,12 @@
       "reason": "Fails in the source lab snapshot too (before integration). Multi-transaction batch on OS processes; result varies between runs."
     },
     {
-      "file": "src/lab/uep36-multi-leader.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Rotating-leader tests conflict with the later single-proposer schedule (UEP-37.6)."
-    },
-    {
       "file": "src/lab/uep36.1-scale.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Rotating-leader tests conflict with the later single-proposer schedule (UEP-37.6)."
+      "reason": "v0.5.0: the in-process rotating-leader cases now follow the UEP-37.6 single-proposer schedule and pass; the OS-process case (two sequential aggregates on 4 processes) does not finalize within the timeout."
     },
     {
       "file": "src/lab/uep36.1.1-hardening.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Process path with rotating proposers conflicts with the single-proposer schedule (UEP-37.6)."
-    },
-    {
-      "file": "src/lab/uep36.4-multinode-aggregate.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Aggregate proposal digest field check."
+      "reason": "v0.5.0: in-process cases pass; the OS-process case (three heights on 4 processes) does not finalize within the timeout."
     },
     {
       "file": "src/lab/uep36.5-process-aggregate.test.ts",

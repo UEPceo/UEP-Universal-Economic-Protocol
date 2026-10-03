@@ -108,8 +108,9 @@ describe("UEP-36.1 digest aggregate + parallel exec + process multi-leader", () 
     const cluster = new ProcessCluster();
     try {
       await cluster.start(4);
-      await cluster.propose("mn-0", [
-        { id: "ml-0", from: "s0", to: "r0", amount: "1" },
+      // Official digest-only aggregate path (plain proposals are not accepted by peers).
+      await cluster.proposeAggregate("mn-0", [
+        [{ id: "ml-0", from: "s0", to: "r0", amount: "1" }],
       ]);
       let ok1 = false;
       for (let i = 0; i < 40; i++) {
@@ -122,8 +123,8 @@ describe("UEP-36.1 digest aggregate + parallel exec + process multi-leader", () 
       }
       assert.equal(ok1, true);
 
-      await cluster.propose("mn-1", [
-        { id: "ml-1", from: "s1", to: "r1", amount: "1" },
+      await cluster.proposeAggregate("mn-1", [
+        [{ id: "ml-1", from: "s1", to: "r1", amount: "1" }],
       ]);
       let ok2 = false;
       for (let i = 0; i < 50; i++) {

@@ -28,8 +28,10 @@ describe("UEP-37.5 Process/TCP Poseidon SMT", () => {
       assert.equal(new Set(genesis.filter(Boolean)).size, 1);
       assert.equal(genesis[0]!.length, 64);
 
-      await cluster.propose("mn-0", [
-        { id: "p-1", from: "s0", to: "r0", amount: "5" },
+      // Official digest-only aggregate path (one batch); plain single-batch
+      // proposals are not accepted by peers since the digest-binding rule.
+      await cluster.proposeAggregate("mn-0", [
+        [{ id: "p-1", from: "s0", to: "r0", amount: "5" }],
       ]);
       const ok = await cluster.waitRootChange(genesis[0]!, 120_000);
       assert.equal(ok, true);
