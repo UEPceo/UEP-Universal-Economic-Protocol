@@ -18,11 +18,12 @@ For the layer-by-layer architecture and the current status of each layer, see [`
 
 | Item | Status |
 |---|---|
-| Current version | `0.4.7-public-iot-m2m` on `main` (latest tag `v0.4.6-public-iot-m2m`) |
-| Tests | protocol 83/83, Marketplace + IoT/M2M 104/104, scale 3/3, IoT 23/23 (`npm run test:all` runs everything) |
+| Current version | `0.4.7-public-iot-m2m` on `main`, plus the unreleased research-labs integration and Poseidon protocol hash (latest GitHub Release `v0.4.6-public-iot-m2m`) |
+| Tests | testnet: protocol 83/83, Marketplace + IoT/M2M 104/104 (includes IoT 23/23 and scale 3/3); research labs: Rust 107, labs 440 in 93 files (`npm run test:all` runs everything) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process, not a throughput claim) |
-| CI | GitHub Actions on Node.js 22.x and 24.x |
+| CI | GitHub Actions: `npm run test:all` on Node.js 22.x and 24.x (blocking); 16 lab files with known issues in a separate non-blocking job |
 | Network | Local, single-node, in-process testnet |
+| Research labs | Rust/ZK core in `uep-core/`, consensus, node, economic and agent experiments in `src/lab/` and `src/agent/`: experimental, not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
 
 ```text
 Phase 0  Foundation                      done
@@ -135,6 +136,7 @@ Node D
    └── consensus
 ```
 
+- *Starting point:* the local consensus experiments in `src/lab/` (leader election, quorum and commit certificates, BFT configuration gate, DAG dissemination, partitions, view change; see [`docs/LABS.md`](./docs/LABS.md)). They are research inputs, not the deliverable, and several of them have known failures (`scripts/lab-known-issues.json`).
 - *Prerequisites:* validity rules that do not depend on local configuration; key rotation and revocation; a written consensus scope.
 - *To test:* state replication, conflicting transactions, leader failure, view change, network partitions, snapshot exchange, recovery, Byzantine behaviour, cross-node replay, duplicate settlement, censorship until expiry, clock drift.
 - *Exit criteria:* a reproducible multi-node test harness in CI; nodes with different local configurations accept exactly the same transactions; an independent assessment of consensus.
@@ -221,7 +223,7 @@ Delay-tolerant networking, asynchronous settlement, delayed consensus, local eco
 ├── Production network
 ├── Cross-domain economy
 ├── Advanced ZK
-└── Interplanetary infrastructure
+└── Interplanetary infrastructure (research)
 
 Future
 └── Autonomous / interplanetary economic network

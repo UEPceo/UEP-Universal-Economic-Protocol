@@ -48,6 +48,8 @@ UEP is not simply a blockchain, a cryptocurrency or a marketplace. The goal is a
 | **Design** | Defined in architecture documents; no code in this repository |
 | **Future** | A later phase; neither code nor a settled design |
 
+Research labs (`src/lab`, `src/agent`, the service/API lab in `src/service`, `uep-core/`) are mentioned in the table as **Labs** where they explore a layer. They are experimental, are not part of the testnet rules and never count toward a layer's status ([`LABS.md`](./LABS.md)).
+
 | Layer | Status | In this repository today | Main gaps |
 |---|---|---|---|
 | **A. Core protocol** | Implemented (testnet) | `src/core`: transactions and TxIDs, nonces, notes, commitments, nullifiers, state roots, state transition, 0.1% fee with a 1-unit floor, value conservation | Multi-input spends (nullifier vector) |
@@ -158,13 +160,17 @@ The public release uses deterministic field/hash/commitment primitives and the
 reference development spend-MAC path, plus Ed25519 (`node:crypto`) signatures for
 sender spend keys, snapshots, mints, Marketplace actions and IoT telemetry. The active hash is Poseidon over BN254 (x^5, t = 3, circomlib-compatible constants), checked against the `uep-core/vectors` test vectors; the older SHA-256-to-field backend is kept only as an inactive reference. The ZK witness contract is not wired into the transaction path and has no range checks yet (UEP-A22). The repository deliberately does not claim a production Groth16/Nova deployment. A development circuit is never treated as production ZK.
 
+Labs: the UEP-26 Groth16 spend circuit (v3, `UEP-27-SPEND-POSEIDON-D32-v3-feefloor`) and the `uep-zk` CLI in `uep-core/uep-26-spend-circuit`, the Poseidon R1CS gadget in `uep-core/uep-21-poseidon`, and the TypeScript bridge in `src/lab/zk-*.ts`. They use development keys from a seeded setup (no ceremony), a 32-level tree and the older `H_ACCOUNT(secret, salt)` account binding, so they are not interchangeable with the testnet path (see [`LABS.md`](./LABS.md), "Differences between the labs and the public core").
+
 ### D. Consensus & network — Future
 
 ```text
 Users → Apps / Agents → Nodes → Validators / Provers → Relayers → Oracles → Storage
 ```
 
-The repository has one `local://uep-testnet-1` profile and no consensus or P2P code. Signed, hash-chained snapshots and verify-only restore are the groundwork for replication. Planned evolution: local testnet → multi-node testnet → distributed testnet → public testnet → production network.
+The testnet has one `local://uep-testnet-1` profile, and its code path has no consensus or P2P networking. Signed, hash-chained snapshots and verify-only restore are the groundwork for replication. Planned evolution: local testnet → multi-node testnet → distributed testnet → public testnet → production network.
+
+Labs: `src/lab/uep34-*` to `uep38-*` contain local consensus experiments (leader election and heartbeat, quorum and commit certificates, a classic BFT configuration gate with `N = 3f + 1`, DAG dissemination, partitions and recovery, multi-leader aggregates, single-proposer schedule, silent-leader view change, an SMT economic state on the consensus path). They run in-process or as local processes over TCP on one machine. Several of these suites have known failures and run in a non-blocking CI job (`scripts/lab-known-issues.json`). They are research inputs to Phase 4, not a consensus implementation of the testnet.
 
 ### E. Marketplace — Implemented (testnet)
 
@@ -235,6 +241,8 @@ Evidence            →  Hashes + references
 
 There is no event bus yet; the planned events map to transitions that already exist in code. Large telemetry should never become a large object inside the ledger.
 
+Lab: `src/service/uep-service-api.ts` and `uep-http-api.ts` (a versioned service API over HTTP), `storage-provider.ts` with memory, S3 and IPFS adapters (content-hash identity), and `observability.ts`. These are experimental inputs to the Phase 2 milestones (storage abstraction, local API), not the milestones themselves.
+
 ### J. SDK / developer platform — Design
 
 ```text
@@ -247,6 +255,8 @@ Planned packages: `@uep/client`, `@uep/marketplace`, `@uep/iot-m2m`. Today devel
 
 Planned roles: user, app/agent, node, validator, prover, oracle, relayer, storage. Not all of them are needed for the first multi-node testnet.
 
+Labs: authenticated node envelopes, TCP transport and handshake, and pinned verifying keys (`src/lab/node-*.ts`, `verifying-key-registry.ts`); an agent-identity lab with owner-signed capabilities in `src/agent/`.
+
 ### L. Testnet — Implemented (testnet), local only
 
 ```text
@@ -257,7 +267,7 @@ Multi-node local
 Public testnet
 ```
 
-Reproduce everything with `npm run test:all` (`npm test`, `npm run smoke:testnet`, `npm run quickstart` and `npm run simulate:20k`; see [`REPRODUCIBILITY.md`](./REPRODUCIBILITY.md)). The testnet is not a real economy.
+Reproduce everything with `npm run test:all`: the testnet part (`npm test`, `npm run smoke:testnet`, `npm run quickstart`, `npm run simulate:20k`) followed by the research labs (`npm run test:rust`, `npm run build:uep-zk`, `npm run test:lab`); see [`REPRODUCIBILITY.md`](./REPRODUCIBILITY.md). The testnet is not a real economy.
 
 ### M. Interplanetary extensions — Future
 
@@ -266,6 +276,8 @@ EARTH → MOON → MARS → LAGRANGE → DEEP SPACE
 ```
 
 Delayed messaging, delay-tolerant networking and `LOCK` / `MESSAGE` / `RECEIPT` / `SETTLEMENT` models are research tracks. The aim is an economic protocol that does not depend on constant terrestrial latency. Nothing here is operational.
+
+Lab: `src/lab/uep-net-adapt/` simulates link observations, relays, topologies and a delay-tolerant bridge with mock or recorded-sample adapters. The `StarlinkAdapter` there is a simulator and interface placeholder, not a live integration; no real link is used.
 
 ### N. Public economic network — Design
 
