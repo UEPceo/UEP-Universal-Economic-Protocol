@@ -23,6 +23,11 @@
  * v0.4.6 (UEP-D04/D05): a dispute timeout configured as RELEASE runs the same
  * guard and refunds the buyer when it fails; units executed per verified
  * telemetry are reported to the marketplace as consumed capacity.
+ *
+ * v0.5.0 (ADR 0002): time is the Marketplace's block height. `observedAt` is
+ * the height at which the machine observed the measurement, and the telemetry
+ * age window is the base window plus the fixed delay of the order's domain
+ * profile (EARTH 0, MOON 1, MARS 602 heights). No clock is read here.
  */
 import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from "node:crypto";
 import { encodeCanonicalCbor } from "./iot-m2m-codec.ts";
@@ -30,6 +35,12 @@ import { contentHash } from "./content-hash.ts";
 import { tupleKey } from "../core/composite-key.ts";
 import type { CategoryServiceAccess, DigitalServicesMarketplace, ServiceOrder } from "../marketplace/marketplace.ts";
 import type { ActorAuth } from "../marketplace/identity.ts";
+import type { TransitionClock } from "../core/height.ts";
+
+/** Default telemetry age window, in heights (60 = 5 min at 5 s blocks). */
+export const DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS = 60;
+/** Default tolerance for an observation height ahead of the Marketplace height (6 = 30 s). */
+export const DEFAULT_TELEMETRY_MAX_FUTURE_SKEW_HEIGHTS = 6;
 
 export const IOT_M2M_VERSION = "0.3" as const;
 export const IOT_M2M_CATEGORY = "IOT_M2M" as const;
@@ -116,8 +127,18 @@ export type IoTSettlement = ReturnType<DigitalServicesMarketplace["settle"]> & {
 };
 
 export type IoTM2MConfig = {
+  /**
+   * @deprecated TEST-ONLY injected counter, in the Marketplace's time unit
+   * (only allowed when the Marketplace uses the test-only legacy ms clock).
+   * Default: the Marketplace height (`marketplace.clock()`).
+   */
   now?: () => number;
+  /** Base telemetry age window in heights (default 60); the order's domain delay is added. */
+  telemetryMaxAgeHeights?: number;
+  /** Legacy form of telemetryMaxAgeHeights in ms (converted, ceil). */
   telemetryMaxAgeMs?: number;
+  /** Tolerance for an observation height ahead of the Marketplace height (default 6). */
+  telemetryMaxFutureSkewHeights?: number;
   telemetryMaxFutureSkewMs?: number;
   /**
    * Optional extra gate for deactivation, evaluated after the marketplace
@@ -206,8 +227,9 @@ const telemetryPayload = iotTelemetryPayload;
 export class IoTM2MService {
   readonly version = IOT_M2M_VERSION;
   private readonly now: () => number;
-  private readonly telemetryMaxAgeMs: number;
-  private readonly telemetryMaxFutureSkewMs: number;
+  /** Base telemetry age window and future skew, in Marketplace ticks (heights; ms with the test-only clock). */
+  readonly telemetryMaxAge: number;
+  readonly telemetryMaxFutureSkew: number;
   private readonly adminAuthorizer?: (actorId: string) => boolean;
   private readonly providers = new Map<string, IoTProvider>();
   private readonly machines = new Map<string, IoTMachine>();
@@ -227,9 +249,12 @@ export class IoTM2MService {
 
   constructor(marketplace: DigitalServicesMarketplace, config: IoTM2MConfig = {}) {
     this.marketplace = marketplace;
-    this.now = config.now ?? (() => Date.now());
-    this.telemetryMaxAgeMs = config.telemetryMaxAgeMs ?? 5 * 60 * 1000;
-    this.telemetryMaxFutureSkewMs = config.telemetryMaxFutureSkewMs ?? 30_000;
+    const clock: TransitionClock = marketplace.transitionClock;
+    if (config.now !== undefined && clock.unit !== "legacy-ms") throw new Error("CLOCK_CONFIG_CONFLICT: the IoT service uses the Marketplace height; `now` is only allowed with the test-only legacy clock");
+    this.now = config.now ?? (() => marketplace.clock());
+    this.telemetryMaxAge = clock.window("telemetryMaxAge", config.telemetryMaxAgeHeights, config.telemetryMaxAgeMs, DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS);
+    this.telemetryMaxFutureSkew = clock.window("telemetryMaxFutureSkew", config.telemetryMaxFutureSkewHeights, config.telemetryMaxFutureSkewMs, DEFAULT_TELEMETRY_MAX_FUTURE_SKEW_HEIGHTS);
+    if (!Number.isSafeInteger(this.telemetryMaxAge) || this.telemetryMaxAge <= 0 || !Number.isSafeInteger(this.telemetryMaxFutureSkew) || this.telemetryMaxFutureSkew < 0) throw new Error("IOT_TELEMETRY_WINDOW_INVALID");
     this.adminAuthorizer = config.adminAuthorizer;
     // Every release of an IoT order (settle, dispute withdrawal, RELEASE timeout)
     // requires verified, complete telemetry; verified units count as consumed capacity.
@@ -441,21 +466,28 @@ export class IoTM2MService {
     const lastObserved = this.telemetry.get(telemetry.telemetryId);
     if (!lastObserved) throw new Error("IOT_TELEMETRY_NOT_REGISTERED");
     if (stableJson(lastObserved) !== stableJson(telemetry)) throw new Error("IOT_TELEMETRY_TAMPERED");
-    if (this.now() - telemetry.observedAt > this.telemetryMaxAgeMs) throw new Error("IOT_TELEMETRY_STALE");
-    if (telemetry.observedAt > this.now() + this.telemetryMaxFutureSkewMs) throw new Error("IOT_TELEMETRY_FUTURE_TIMESTAMP");
+    // v0.5.0 (ADR 0002): heights; the window includes the fixed delay of the order's domain profile.
+    const order = this.orders.readOrder(contract.orderId);
+    if (typeof telemetry.observedAt !== "number" || !Number.isFinite(telemetry.observedAt)) throw new Error("IOT_TELEMETRY_OBSERVED_AT_INVALID");
+    if (this.now() - telemetry.observedAt > this.telemetryMaxAgeFor(order)) throw new Error("IOT_TELEMETRY_STALE");
+    if (telemetry.observedAt > this.now() + this.telemetryMaxFutureSkew) throw new Error("IOT_TELEMETRY_FUTURE_TIMESTAMP");
     if (!verifyIoTTelemetrySignature(telemetry, machine.publicKeyHex)) throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
     if (typeof telemetry.unitsDelivered !== "string" || !/^[0-9]+$/.test(telemetry.unitsDelivered)) throw new Error("IOT_TELEMETRY_UNITS_INVALID");
     const unitsDelivered = BigInt(telemetry.unitsDelivered);
     if (unitsDelivered > contract.quantity) throw new Error("IOT_TELEMETRY_UNITS_INVALID");
     // Only the report actually delivered to the marketplace order can be verified.
     const deliveryHash = iotTelemetryDeliveryHash(telemetry);
-    const order = this.orders.readOrder(contract.orderId);
     if (order.deliveryHash !== deliveryHash) throw new Error("IOT_TELEMETRY_NOT_DELIVERED");
     const verification: IoTVerification = { ok: true, telemetryHash: hash(telemetry), verifiedAt: this.now(), machineId: machine.machineId, sequence: telemetry.sequence, authentication: "ED25519", unitsDelivered, fullyDelivered: unitsDelivered === contract.quantity, deliveryHash };
     this.verifiedMachineSequences.set(machine.machineId, telemetry.sequence);
     this.verifiedNonces.set(tupleKey(machine.machineId, telemetry.nonce), this.now());
     this.verified.set(requestId, verification);
     return verification;
+  }
+
+  /** v0.5.0: telemetry age window of one order (base + the order's domain delay), in Marketplace ticks. */
+  telemetryMaxAgeFor(order: Pick<ServiceOrder, "windows">): number {
+    return this.telemetryMaxAge + (order.windows?.domainDelay ?? 0);
   }
 
   /** Status of a request for a party or the admin (marketplace "read" authorization on the order). */

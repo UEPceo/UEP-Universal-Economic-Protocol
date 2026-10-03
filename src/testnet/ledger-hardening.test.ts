@@ -177,7 +177,7 @@ test("bare transactions cannot bypass ownership authorization", async () => {
   const l = ledger();
   l.faucet(a.accountId, "uep-test/teur", 1000n);
   // A local development-MAC spend needs the sender identity in-process.
-  const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n, Date.now(), { authorization: "development-mac" });
+  const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n, l.height, { authorization: "development-mac" });
   assert.ok("tx" in p);
   if (!("tx" in p)) return;
   const result = l.submit(p.tx);

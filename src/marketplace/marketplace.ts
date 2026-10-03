@@ -26,23 +26,39 @@ import { TESTNET } from "../network/profiles.ts";
 import { DEFAULT_MARKETPLACE_ID, actionMessage, disputeReasonHash, listingTerms, reservationMessage, type ActorAuth, type MarketplaceAction } from "./identity.ts";
 import { NestedAmountMap, tupleKey } from "../core/composite-key.ts";
 import { findAsset } from "../core/assets.ts";
+import { HEIGHTS_PER_DAY, TransitionClock, type HeightSource, type TimeUnit } from "../core/height.ts";
+import { domainProfile, isDomainProfileId, DEFAULT_DOMAIN_PROFILE, type DomainProfileId } from "../core/domain-profiles.ts";
+import { EvidenceCaps, type EvidenceCapsConfig, type ListingEvidencePolicy } from "./evidence.ts";
 
 export const MARKETPLACE_VERSION = "0.4" as const;
 
+/*
+ * v0.5.0 (ADR 0002): every window is measured in block heights. The *_MS
+ * constants are the nominal durations at the 5 s reference block time; the
+ * *_HEIGHTS constants are what the Marketplace uses.
+ */
 /** Default reservation deposit: 1.00% of the order's gross amount (same bps model as the Marketplace fee). */
 export const DEFAULT_RESERVATION_DEPOSIT_BPS = 100;
 /** Minimum default reservation deposit (smallest asset unit), so no reservation is free by default. */
 export const MIN_RESERVATION_DEPOSIT = 1n;
 /** Default buyer cancellation grace window: the deposit is refunded if the buyer cancels within it. */
 export const DEFAULT_CANCELLATION_GRACE_MS = 2 * 60 * 1000;
+export const DEFAULT_CANCELLATION_GRACE_HEIGHTS = 24;
 /** Default reservation TTL. */
 export const DEFAULT_RESERVATION_TTL_MS = 10 * 60 * 1000;
+export const DEFAULT_RESERVATION_TTL_HEIGHTS = 120;
 /** Default limit of concurrent open reservations per identity. */
 export const DEFAULT_MAX_ACTIVE_RESERVATIONS = 8;
 /** Default time the arbiter has to resolve an open dispute (7 days). */
 export const DEFAULT_DISPUTE_RESOLUTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_DISPUTE_RESOLUTION_WINDOW_HEIGHTS = 7 * HEIGHTS_PER_DAY;
+/** Default buyer dispute window after delivery (24 h). */
+export const DEFAULT_DELIVERY_DISPUTE_WINDOW_HEIGHTS = HEIGHTS_PER_DAY;
 /** Default validity of a signed read / list authorization (5 minutes, either direction). */
 export const DEFAULT_READ_AUTHORIZATION_TTL_MS = 5 * 60 * 1000;
+export const DEFAULT_READ_AUTHORIZATION_TTL_HEIGHTS = 60;
+/** Default listing rate-limit window (1 h). */
+export const DEFAULT_LISTING_WINDOW_HEIGHTS = 720;
 /**
  * Marketplace asset ids: ASCII letters, digits and `.`, `_`, `:`, `/`, `-` (v0.5.0 adds `/`
  * for `<namespace>/<symbol>` ids), 1 to 64 characters, starting with a letter or digit. With
@@ -79,6 +95,20 @@ export type CategoryServiceAccess = { readOrder(orderId: string): ServiceOrder }
 export type ServiceCategory = "COMPUTE" | "STORAGE" | "API" | "DATA" | "IOT_M2M";
 export type OrderStatus = "ACCEPTED" | "HELD" | "DELIVERED" | "DISPUTED" | "SETTLED" | "REFUNDED" | "CANCELLED" | "EXPIRED";
 
+/**
+ * v0.5.0 (ADR 0002): windows of one contract, in Marketplace ticks (block
+ * heights; ms only with the test-only legacy clock). Each counterparty window
+ * is the Marketplace base window plus the fixed delay of the domain profile.
+ */
+export type ContractWindows = {
+  /** Fixed domain-profile delay included in the windows below. */
+  domainDelay: number;
+  reservationTtl: number;
+  cancellationGrace: number;
+  deliveryDisputeWindow: number;
+  disputeResolutionWindow: number;
+};
+
 export type ServiceListing = {
   listingId: string;
   providerId: string;
@@ -92,6 +122,24 @@ export type ServiceListing = {
   active: boolean;
   sellerBond: bigint;
   catalogFingerprint: string;
+  /** v0.5.0: domain profile declared at publication (default EARTH); immutable. */
+  domainProfile: DomainProfileId;
+  /** v0.5.0: the profile's fixed delay in heights (EARTH 0, MOON 1, MARS 602). */
+  delayHeights: number;
+  /** v0.5.0: contract windows fixed at publication (copied to every order). */
+  windows: ContractWindows;
+  /** v0.5.0: evidence terms (attester set and per-contract value cap), when the listing is bound to evidence. */
+  evidencePolicy?: ListingEvidencePolicy;
+};
+
+/** Input of publishListing(). */
+export type ListingInput = Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint" | "domainProfile" | "delayHeights" | "windows" | "evidencePolicy"> & {
+  listingId?: string;
+  sellerBond?: bigint;
+  /** v0.5.0: EARTH (default), MOON or MARS; signed as part of the listing terms when not EARTH. */
+  domainProfile?: DomainProfileId;
+  /** v0.5.0: bind the listing to an attester set with a per-contract value cap (signed). */
+  evidencePolicy?: ListingEvidencePolicy;
 };
 
 export type ServiceOrder = {
@@ -140,6 +188,11 @@ export type ServiceOrder = {
   createdAt: number;
   updatedAt: number;
   reservationExpiresAt?: number;
+  /** v0.5.0: domain profile and windows of the listing at reserve() time (ticks). */
+  domainProfile: DomainProfileId;
+  windows: ContractWindows;
+  /** v0.5.0: value counted against the listing's evidence caps while the order is open (0n once closed). */
+  evidenceLocked?: bigint;
 };
 
 export type SettlementRecord = {
@@ -183,9 +236,24 @@ export type CapacityAccounting = {
 export type MarketplaceConfig = {
   treasury?: MarketplaceTreasury;
   reputation?: MarketplaceReputation;
+  /**
+   * v0.5.0 (ADR 0002): block height source of the ledger the Marketplace
+   * settles against (e.g. `() => ledger.height`). Default: a local height
+   * counter at 0, advanced only by advanceHeight(). Every window is in heights.
+   */
+  height?: HeightSource;
+  /**
+   * @deprecated TEST-ONLY: injected millisecond counter for tests and
+   * experiments written before v0.5.0 (never a real clock). Windows are then
+   * in ms (heights x 5000). Cannot be combined with `height`.
+   */
   now?: () => number;
+  /** Reservation TTL in heights (default 120 = 10 min). `reservationTtlMs` is the legacy form (converted, ceil). */
+  reservationTtlHeights?: number;
   reservationTtlMs?: number;
   maxListingsPerWindow?: number;
+  /** Listing rate-limit window in heights (default 720 = 1 h). */
+  listingWindowHeights?: number;
   listingWindowMs?: number;
   deliveryValidator?: (order: ServiceOrder, bytes: Uint8Array | Buffer) => { ok: boolean; reason?: string };
   paymaster?: MarketplacePaymaster;
@@ -198,13 +266,16 @@ export type MarketplaceConfig = {
   settlementArbiterId?: string;
   /** v0.4.4: Ed25519 public key of the settlement arbiter (required when settlementArbiterId is set). */
   settlementArbiterPublicKey?: PublicKeyLike;
-  /** Buyer dispute window after delivery; the provider can claim only after it (default 24 h). */
+  /** Buyer dispute window after delivery; the provider can claim only after it (default 17_280 heights = 24 h). */
+  deliveryDisputeWindowHeights?: number;
   deliveryDisputeWindowMs?: number;
-  /** v0.4.4: time the arbiter has to resolve a dispute (default 7 days). */
+  /** v0.4.4: time the arbiter has to resolve a dispute (default 120_960 heights = 7 days). */
+  disputeResolutionWindowHeights?: number;
   disputeResolutionWindowMs?: number;
   /** v0.4.4: outcome applied when a dispute is not resolved in time (default REFUND_BUYER). */
   disputeTimeoutOutcome?: "REFUND_BUYER" | "RELEASE";
-  /** v0.4.4: validity window of signed read / list authorizations (default 5 min). */
+  /** v0.4.4: validity window of signed read / list authorizations (default 60 heights = 5 min); `issuedAt` is a height. */
+  readAuthorizationTtlHeights?: number;
   readAuthorizationTtlMs?: number;
   /**
    * Fixed reservation deposit per order. When omitted, the deposit is
@@ -229,7 +300,8 @@ export type MarketplaceConfig = {
   reservationDepositBps?: number;
   /** Concurrent open (not settled / cancelled / expired) reservations per identity. Default 8. */
   maxActiveReservationsPerIdentity?: number;
-  /** Buyer cancellation within this window after reserve() refunds the deposit; later it is forfeited. Default 2 min. */
+  /** Buyer cancellation within this window after reserve() refunds the deposit; later it is forfeited. Default 24 heights = 2 min. */
+  cancellationGraceHeights?: number;
   cancellationGraceMs?: number;
   /** Domain separator bound into buyer signatures. Default "uep-marketplace-testnet". */
   marketplaceId?: string;
@@ -251,6 +323,12 @@ export type MarketplaceConfig = {
    * once. Default false (testnet funding rail, as before).
    */
   requireSignedCredits?: boolean;
+  /**
+   * v0.5.0 (ADR 0002 rule 6): attester sets with their per-asset open-value
+   * caps. Listings may bind to one of them with a per-contract cap. Default:
+   * no attester sets (no listing is bound to evidence).
+   */
+  evidence?: EvidenceCapsConfig;
 };
 
 export type RegisteredIdentity = { identityId: string; publicKeyHex: string; registeredAt: number };
@@ -311,6 +389,13 @@ export function isWellFormedMarketplaceAsset(asset: unknown): asset is string {
   return typeof asset === "string" && MARKETPLACE_ASSET_ID_PATTERN.test(asset);
 }
 
+/** Copy of a listing for callers (windows and evidence terms copied too). */
+function copyListing(l: ServiceListing): ServiceListing {
+  const out: ServiceListing = { ...l, windows: { ...l.windows } };
+  if (l.evidencePolicy) out.evidencePolicy = { ...l.evidencePolicy };
+  return out;
+}
+
 function makeId(prefix: string, payload: string, counter: number): string {
   const digest = createHash("sha256").update(`${prefix}|${counter}|${payload}`).digest("hex").slice(0, 24);
   return `${prefix}_${digest}`;
@@ -319,6 +404,8 @@ function makeId(prefix: string, payload: string, counter: number): string {
 export class DigitalServicesMarketplace {
   readonly version = MARKETPLACE_VERSION;
   readonly treasury: MarketplaceTreasury;
+  /** v0.5.0 (ADR 0002): the Marketplace's only time source (block heights by default). */
+  readonly transitionClock: TransitionClock;
   private readonly now: () => number;
   private sequence = 0;
   private readonly listings = new Map<string, ServiceListing>();
@@ -326,9 +413,13 @@ export class DigitalServicesMarketplace {
   private readonly held = new NestedAmountMap();
   private readonly settlements = new Map<string, SettlementRecord>();
   readonly reputation: MarketplaceReputation;
+  /** Nominal base reservation TTL in ms (heights x 5 s; legacy clock: ms). */
   readonly reservationTtlMs: number;
   private readonly maxListingsPerWindow: number;
-  private readonly listingWindowMs: number;
+  /** v0.5.0: base windows in ticks (EARTH; other profiles add their fixed delay). */
+  readonly baseWindows: Readonly<Omit<ContractWindows, "domainDelay">> & { readonly readAuthorizationTtl: number; readonly listingWindow: number };
+  /** v0.5.0: evidence attester sets and open-value caps. */
+  readonly evidenceCaps: EvidenceCaps;
   private readonly listingAttempts = new Map<string, number[]>();
   private readonly orderIdempotency = new Map<string, string>();
   private readonly operationIdempotency = new Map<string, string>();
@@ -346,6 +437,7 @@ export class DigitalServicesMarketplace {
   private readonly adminKey?: KeyObject;
   readonly settlementArbiterId?: string;
   private readonly arbiterKey?: KeyObject;
+  /** Nominal base windows in ms (heights x 5 s; legacy clock: ms). */
   readonly deliveryDisputeWindowMs: number;
   readonly disputeResolutionWindowMs: number;
   readonly disputeTimeoutOutcome: "REFUND_BUYER" | "RELEASE";
@@ -378,14 +470,25 @@ export class DigitalServicesMarketplace {
   private readonly gasCollected = new Map<string, bigint>();
 
   constructor(config: MarketplaceConfig = {}) {
-    this.treasury = config.treasury ?? new MarketplaceTreasury();
+    this.transitionClock = TransitionClock.from(config);
+    const clock = this.transitionClock;
+    this.now = () => clock.tick();
+    this.treasury = config.treasury ?? new MarketplaceTreasury({ height: () => this.now() });
     this.reputation = config.reputation ?? new MarketplaceReputation();
-    this.now = config.now ?? (() => Date.now());
-    this.reservationTtlMs = config.reservationTtlMs ?? DEFAULT_RESERVATION_TTL_MS;
+    const base = {
+      reservationTtl: clock.window("reservationTtl", config.reservationTtlHeights, config.reservationTtlMs, DEFAULT_RESERVATION_TTL_HEIGHTS),
+      cancellationGrace: clock.window("cancellationGrace", config.cancellationGraceHeights, config.cancellationGraceMs, DEFAULT_CANCELLATION_GRACE_HEIGHTS),
+      deliveryDisputeWindow: clock.window("deliveryDisputeWindow", config.deliveryDisputeWindowHeights, config.deliveryDisputeWindowMs, DEFAULT_DELIVERY_DISPUTE_WINDOW_HEIGHTS),
+      disputeResolutionWindow: clock.window("disputeResolutionWindow", config.disputeResolutionWindowHeights, config.disputeResolutionWindowMs, DEFAULT_DISPUTE_RESOLUTION_WINDOW_HEIGHTS),
+      readAuthorizationTtl: clock.window("readAuthorizationTtl", config.readAuthorizationTtlHeights, config.readAuthorizationTtlMs, DEFAULT_READ_AUTHORIZATION_TTL_HEIGHTS),
+      listingWindow: clock.window("listingWindow", config.listingWindowHeights, config.listingWindowMs, DEFAULT_LISTING_WINDOW_HEIGHTS),
+    };
+    this.baseWindows = Object.freeze(base);
+    this.reservationTtlMs = clock.toNominalMs(base.reservationTtl);
     this.maxListingsPerWindow = config.maxListingsPerWindow ?? 10;
-    this.listingWindowMs = config.listingWindowMs ?? 60 * 60 * 1000;
     this.deliveryValidator = config.deliveryValidator;
     this.paymaster = config.paymaster;
+    if (this.paymaster && this.paymaster.clock.unit !== clock.unit) throw new Error("CLOCK_CONFIG_CONFLICT: the paymaster and the Marketplace must use the same time unit");
     this.adminIdentity = config.adminIdentity ?? "uep:marketplace-admin";
     if (this.adminIdentity === "marketplace-admin") throw new Error("LEGACY_ADMIN_ID_RESERVED");
     if ((RESERVED_IDENTITIES as readonly string[]).includes(this.adminIdentity)) throw new Error("LEGACY_ADMIN_ID_RESERVED");
@@ -399,23 +502,24 @@ export class DigitalServicesMarketplace {
       if (config.settlementArbiterPublicKey === undefined) throw new Error("ARBITER_PUBLIC_KEY_REQUIRED");
       try { this.arbiterKey = toPublicKey(config.settlementArbiterPublicKey); } catch { throw new Error("ARBITER_PUBLIC_KEY_INVALID"); }
     }
-    this.deliveryDisputeWindowMs = config.deliveryDisputeWindowMs ?? 24 * 60 * 60 * 1000;
-    this.disputeResolutionWindowMs = config.disputeResolutionWindowMs ?? DEFAULT_DISPUTE_RESOLUTION_WINDOW_MS;
+    this.deliveryDisputeWindowMs = clock.toNominalMs(base.deliveryDisputeWindow);
+    this.disputeResolutionWindowMs = clock.toNominalMs(base.disputeResolutionWindow);
     this.disputeTimeoutOutcome = config.disputeTimeoutOutcome ?? "REFUND_BUYER";
-    this.readAuthorizationTtlMs = config.readAuthorizationTtlMs ?? DEFAULT_READ_AUTHORIZATION_TTL_MS;
-    if (!Number.isSafeInteger(this.deliveryDisputeWindowMs) || this.deliveryDisputeWindowMs < 0 || !Number.isSafeInteger(this.disputeResolutionWindowMs) || this.disputeResolutionWindowMs <= 0 || !Number.isSafeInteger(this.readAuthorizationTtlMs) || this.readAuthorizationTtlMs <= 0) throw new Error("INVALID_DISPUTE_CONFIG");
+    this.readAuthorizationTtlMs = clock.toNominalMs(base.readAuthorizationTtl);
+    if (!Number.isSafeInteger(base.deliveryDisputeWindow) || base.deliveryDisputeWindow < 0 || !Number.isSafeInteger(base.disputeResolutionWindow) || base.disputeResolutionWindow <= 0 || !Number.isSafeInteger(base.readAuthorizationTtl) || base.readAuthorizationTtl <= 0) throw new Error("INVALID_DISPUTE_CONFIG");
+    if (!Number.isSafeInteger(base.listingWindow) || base.listingWindow <= 0) throw new Error("INVALID_LISTING_WINDOW");
     if (this.disputeTimeoutOutcome !== "REFUND_BUYER" && this.disputeTimeoutOutcome !== "RELEASE") throw new Error("INVALID_DISPUTE_CONFIG");
     this.fixedReservationDeposit = config.reservationDeposit;
     this.reservationDepositBps = config.reservationDepositBps ?? DEFAULT_RESERVATION_DEPOSIT_BPS;
     this.maxActiveReservationsPerIdentity = config.maxActiveReservationsPerIdentity ?? DEFAULT_MAX_ACTIVE_RESERVATIONS;
-    this.cancellationGraceMs = config.cancellationGraceMs ?? DEFAULT_CANCELLATION_GRACE_MS;
+    this.cancellationGraceMs = clock.toNominalMs(base.cancellationGrace);
     this.marketplaceId = config.marketplaceId ?? DEFAULT_MARKETPLACE_ID;
     this.ledgerNetworkId = config.ledgerNetworkId ?? TESTNET.networkId;
     this.testOnlyAllowZeroReservationDeposit = config.testOnlyAllowZeroReservationDeposit === true;
     if (this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit >= 0n && this.fixedReservationDeposit < MIN_RESERVATION_DEPOSIT && !(this.testOnlyAllowZeroReservationDeposit && this.fixedReservationDeposit === 0n)) {
       throw new Error(`RESERVATION_DEPOSIT_BELOW_MINIMUM: reservationDeposit must be at least ${MIN_RESERVATION_DEPOSIT} (testOnlyAllowZeroReservationDeposit permits 0n in tests)`);
     }
-    if (!Number.isSafeInteger(this.reservationTtlMs) || this.reservationTtlMs <= 0 || !Number.isSafeInteger(this.cancellationGraceMs) || this.cancellationGraceMs < 0) throw new Error("INVALID_RESERVATION_LIMIT");
+    if (!Number.isSafeInteger(base.reservationTtl) || base.reservationTtl <= 0 || !Number.isSafeInteger(base.cancellationGrace) || base.cancellationGrace < 0) throw new Error("INVALID_RESERVATION_LIMIT");
     if ((this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit < 0n) || !Number.isInteger(this.reservationDepositBps) || this.reservationDepositBps < 0 || this.reservationDepositBps > 10_000 || !Number.isInteger(this.maxActiveReservationsPerIdentity) || this.maxActiveReservationsPerIdentity < 1) throw new Error("INVALID_RESERVATION_LIMIT");
     this.assetRegistryNetworkId = config.assetRegistryNetworkId;
     if (this.assetRegistryNetworkId !== undefined && (typeof this.assetRegistryNetworkId !== "string" || !this.assetRegistryNetworkId)) throw new Error("ASSET_REGISTRY_NETWORK_INVALID");
@@ -424,6 +528,36 @@ export class DigitalServicesMarketplace {
       this.minReservationDepositByAsset.set(asset, min);
     }
     this.requireSignedCredits = config.requireSignedCredits === true;
+    this.evidenceCaps = new EvidenceCaps(config.evidence);
+  }
+
+  /** v0.5.0: "height" (default) or the test-only "legacy-ms" clock. */
+  get timeUnit(): TimeUnit {
+    return this.transitionClock.unit;
+  }
+
+  /**
+   * v0.5.0: advance the local height counter by `blocks` (stand-alone
+   * Marketplace without an injected height source). Throws when the height
+   * comes from a ledger (`height`) or the test-only `now`.
+   */
+  advanceHeight(blocks = 1): number {
+    const counter = this.transitionClock.counter;
+    if (!counter) throw new Error("HEIGHT_SOURCE_EXTERNAL: the height comes from the injected source");
+    return counter.advance(blocks);
+  }
+
+  /** v0.5.0: contract windows of a domain profile (base windows plus the profile's fixed delay), in ticks. */
+  contractWindowsFor(profile: DomainProfileId = DEFAULT_DOMAIN_PROFILE): ContractWindows {
+    const delay = this.transitionClock.fromHeights(domainProfile(profile).delayHeights);
+    const b = this.baseWindows;
+    return {
+      domainDelay: delay,
+      reservationTtl: b.reservationTtl + delay,
+      cancellationGrace: b.cancellationGrace + delay,
+      deliveryDisputeWindow: b.deliveryDisputeWindow + delay,
+      disputeResolutionWindow: b.disputeResolutionWindow + delay,
+    };
   }
 
   /**
@@ -552,16 +686,20 @@ export class DigitalServicesMarketplace {
    * Publish a listing. v0.4.4: the provider must be a registered identity and
    * `auth` must be its "publish" signature over the listing terms (see listingTerms()).
    */
-  publishListing(input: Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint"> & { listingId?: string; sellerBond?: bigint }, auth?: ActorAuth): ServiceListing {
+  publishListing(input: ListingInput, auth?: ActorAuth): ServiceListing {
     if (!input.providerId || !input.title || !input.asset) throw new Error("LISTING_METADATA_REQUIRED");
     this.assertAsset(input.asset);
+    // v0.5.0 (ADR 0002): the domain profile and the evidence terms are fixed here.
+    if (input.domainProfile !== undefined && !isDomainProfileId(input.domainProfile)) throw new Error("DOMAIN_PROFILE_INVALID");
+    const profile: DomainProfileId = input.domainProfile ?? DEFAULT_DOMAIN_PROFILE;
+    const evidencePolicy = input.evidencePolicy !== undefined ? this.evidenceCaps.assertListingPolicy(input.evidencePolicy, input.asset) : undefined;
     if (this.isReservedIdentity(input.providerId)) throw new Error("RESERVED_IDENTITY");
     if (!this.identities.has(input.providerId)) throw new Error("IDENTITY_NOT_REGISTERED");
     const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", listingTerms(input));
     if (actor !== input.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (input.unitPrice <= 0n || input.capacity <= 0n) throw new Error("INVALID_LISTING_ECONOMICS");
     const now = this.now();
-    const recent = (this.listingAttempts.get(input.providerId) ?? []).filter((t) => now - t < this.listingWindowMs);
+    const recent = (this.listingAttempts.get(input.providerId) ?? []).filter((t) => now - t < this.baseWindows.listingWindow);
     if (recent.length >= this.maxListingsPerWindow) throw new Error("LISTING_RATE_LIMITED");
     const fingerprint = catalogFingerprint(input);
     // v0.5.0 (DOS-001): indexed checks instead of scanning every listing.
@@ -585,7 +723,9 @@ export class DigitalServicesMarketplace {
     if (this.listings.has(listingId)) throw new Error("LISTING_ALREADY_EXISTS");
     recent.push(now);
     this.listingAttempts.set(input.providerId, recent);
-    const listing: ServiceListing = { ...input, listingId, available: input.capacity, active: true, sellerBond: input.sellerBond ?? 0n, catalogFingerprint: fingerprint };
+    const { domainProfile: _profile, evidencePolicy: _evidence, ...terms } = input;
+    const listing: ServiceListing = { ...terms, listingId, available: input.capacity, active: true, sellerBond: input.sellerBond ?? 0n, catalogFingerprint: fingerprint, domainProfile: profile, delayHeights: domainProfile(profile).delayHeights, windows: Object.freeze(this.contractWindowsFor(profile)) };
+    if (evidencePolicy) listing.evidencePolicy = Object.freeze(evidencePolicy);
     this.listings.set(listingId, listing);
     this.fingerprintIndex.set(fingerprint, listingId);
     const simIndex = this.similarityIndex.get(simKey) ?? new Map<string, Set<string>>();
@@ -599,14 +739,14 @@ export class DigitalServicesMarketplace {
     const bucket = this.listingIndex.get(indexKey) ?? new Set<string>();
     bucket.add(listingId);
     this.listingIndex.set(indexKey, bucket);
-    return { ...listing };
+    return copyListing(listing);
   }
 
   getListing(listingId: string): ServiceListing {
     this.reapExpiredReservations();
     const listing = this.listings.get(listingId);
     if (!listing) throw new Error("LISTING_NOT_FOUND");
-    return { ...listing };
+    return copyListing(listing);
   }
 
   searchListings(query?: { category?: ServiceCategory; asset?: string; providerId?: string; activeOnly?: boolean; offset?: number; limit?: number }): ServiceListing[] {
@@ -623,7 +763,7 @@ export class DigitalServicesMarketplace {
       .filter((l) => !query?.asset || l.asset === query.asset)
       .filter((l) => !query?.providerId || l.providerId === query.providerId)
       .slice(offset, offset + limit)
-      .map((l) => ({ ...l }));
+      .map(copyListing);
   }
 
   /**
@@ -653,6 +793,9 @@ export class DigitalServicesMarketplace {
     const deposit = this.reservationDepositFor(grossAmount, gasFee, listing.asset);
     // No reservation without funds.
     if (this.availableBalance(listing.asset, input.buyerId) < deposit) throw new Error("INSUFFICIENT_FUNDS_FOR_DEPOSIT");
+    // v0.5.0 (ADR 0002 rule 6): an evidence-bound order may not lock more than its caps allow.
+    const evidenceValue = grossAmount + gasFee;
+    if (listing.evidencePolicy) this.evidenceCaps.checkLock(listing.evidencePolicy, listing.asset, evidenceValue);
     listing.available -= input.quantity;
     this.accounts.add(listing.asset, input.buyerId, -deposit);
     this.locked.add(listing.asset, input.buyerId, deposit);
@@ -676,8 +819,14 @@ export class DigitalServicesMarketplace {
       providerNetEstimate: this.treasury.quote(grossAmount, listing.asset).providerNet,
       createdAt: now,
       updatedAt: now,
-      reservationExpiresAt: now + this.reservationTtlMs,
+      reservationExpiresAt: now + listing.windows.reservationTtl,
+      domainProfile: listing.domainProfile,
+      windows: { ...listing.windows },
     };
+    if (listing.evidencePolicy) {
+      this.evidenceCaps.lock(listing.evidencePolicy, listing.asset, evidenceValue);
+      order.evidenceLocked = evidenceValue;
+    }
     this.orders.set(orderId, order);
     this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
     this.enqueueReservation(order);
@@ -692,6 +841,7 @@ export class DigitalServicesMarketplace {
         this.orders.delete(orderId);
         this.removeQueuedReservation(order);
         this.decrementActiveReservation(input.buyerId);
+        this.releaseEvidence(order);
         throw error;
       }
     }
@@ -783,7 +933,7 @@ export class DigitalServicesMarketplace {
   /**
    * Release a delivered order to the provider (v0.4.4, "settle" signature).
    *  - Buyer: any time after delivery (also withdraws an open dispute).
-   *  - Provider: only after `deliveryDisputeWindowMs` and only if no dispute is open.
+   *  - Provider: only after the order's delivery dispute window (heights) and only if no dispute is open.
    *  - Arbiter: may release a DELIVERED order; open disputes go through resolveDispute().
    *  - Administrator and anyone else: not authorized.
    * A DISPUTED order past its resolution deadline closes with `disputeTimeoutOutcome`
@@ -816,13 +966,13 @@ export class DigitalServicesMarketplace {
       this.assertReservationLive(order);
       throw new Error("ORDER_NOT_SETTLEABLE");
     }
-    if (isProvider && !isBuyer && !isArbiter && this.now() < (order.deliveredAt ?? order.updatedAt) + this.deliveryDisputeWindowMs) throw new Error("SETTLEMENT_DISPUTE_WINDOW_ACTIVE");
+    if (isProvider && !isBuyer && !isArbiter && this.now() < (order.deliveredAt ?? order.updatedAt) + order.windows.deliveryDisputeWindow) throw new Error("SETTLEMENT_DISPUTE_WINDOW_ACTIVE");
     this.runSettlementGuard(order);
     return this.payout(order, order.grossAmount, "RELEASE", undefined, this.isGuardedCategory(order) ? "PASSED" : undefined);
   }
 
   /**
-   * Buyer opens a dispute on a DELIVERED order within `deliveryDisputeWindowMs`
+   * Buyer opens a dispute on a DELIVERED order within the order's delivery dispute window
    * ("dispute" signature over { reasonHash }). Requires a configured arbiter.
    * Funds stay in escrow until the arbiter resolves, the buyer withdraws, the
    * provider refunds, or the resolution deadline passes.
@@ -837,11 +987,11 @@ export class DigitalServicesMarketplace {
     if (order.status === "DISPUTED") return { ...order };
     if (order.status !== "DELIVERED") throw new Error("ORDER_NOT_DISPUTABLE");
     const now = this.now();
-    if (now >= (order.deliveredAt ?? order.updatedAt) + this.deliveryDisputeWindowMs) throw new Error("DISPUTE_WINDOW_CLOSED");
+    if (now >= (order.deliveredAt ?? order.updatedAt) + order.windows.deliveryDisputeWindow) throw new Error("DISPUTE_WINDOW_CLOSED");
     order.status = "DISPUTED";
     order.disputedAt = now;
     order.disputeReasonHash = reasonHash;
-    order.disputeDeadline = now + this.disputeResolutionWindowMs;
+    order.disputeDeadline = now + order.windows.disputeResolutionWindow;
     order.updatedAt = now;
     return { ...order };
   }
@@ -889,7 +1039,7 @@ export class DigitalServicesMarketplace {
 
   /**
    * Cancel an open order ("cancel" signature).
-   *  - Buyer: within `cancellationGraceMs` of reserve() the deposit is refunded;
+   *  - Buyer: within the order's cancellation grace (heights) of reserve() the deposit is refunded;
    *    afterwards it is forfeited to the provider. Any funded remainder is refunded.
    *  - Provider or authenticated admin: the buyer is refunded in full.
    */
@@ -904,7 +1054,7 @@ export class DigitalServicesMarketplace {
     if (order.status === "DELIVERED" || order.status === "DISPUTED") throw new Error("DELIVERED_ORDER_NOT_CANCELLABLE");
     if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
     const forfeit = isBuyer && !isAdmin && !isProvider;
-    const withinGrace = this.now() - order.createdAt <= this.cancellationGraceMs;
+    const withinGrace = this.now() - order.createdAt <= order.windows.cancellationGrace;
     this.closeOrder(order, "CANCELLED", forfeit && !withinGrace);
     return { ...order };
   }
@@ -942,11 +1092,11 @@ export class DigitalServicesMarketplace {
     if (actor !== order.buyerId) throw new Error("REVIEW_NOT_AUTHORIZED");
     if (order.status !== "SETTLED") throw new Error("REVIEW_REQUIRES_SETTLEMENT");
     this.reputation.record({ sellerId: order.providerId, buyerId: order.buyerId, orderId: order.orderId, rating: input.rating, settledAmount: order.grossAmount, sellerBond: this.listing(order.listingId).sellerBond, createdAt: order.updatedAt });
-    return this.reputation.score(order.providerId, this.now());
+    return this.reputation.score(order.providerId, this.now(), this.transitionClock.fromHeights(HEIGHTS_PER_DAY));
   }
 
   sellerReputation(providerId: string): SellerReputation {
-    return this.reputation.score(providerId, this.now());
+    return this.reputation.score(providerId, this.now(), this.transitionClock.fromHeights(HEIGHTS_PER_DAY));
   }
 
   /** Orders visible to the signer ("list" signature with `issuedAt`): own orders, or all for the admin. */
@@ -969,7 +1119,7 @@ export class DigitalServicesMarketplace {
     return this.orders.size;
   }
 
-  /** Marketplace clock (used by clients to stamp read / list authorizations). */
+  /** Marketplace clock: the current height (used by clients to stamp read / list authorizations). */
   clock(): number {
     return this.now();
   }
@@ -998,6 +1148,9 @@ export class DigitalServicesMarketplace {
   }
 
   private runSettlementGuard(order: ServiceOrder): void {
+    // v0.5.0 (ADR 0002 rule 6): an evidence-gated release never moves more than the per-contract cap.
+    const policy = this.listing(order.listingId).evidencePolicy;
+    if (policy) this.evidenceCaps.checkSettlement(policy, order.grossAmount + (order.gasFee ?? 0n));
     const category = this.listing(order.listingId).category;
     const hooks = this.categoryServices.get(category);
     // IoT / M2M orders settle only against verified telemetry: no attached IoT service, no normal release.
@@ -1151,6 +1304,7 @@ export class DigitalServicesMarketplace {
     order.updatedAt = this.now();
     this.applyCapacityRestore(order, capacity.consumed, capacity.restore);
     this.decrementActiveReservation(order.buyerId);
+    this.releaseEvidence(order);
     const record: SettlementRecord = {
       orderId: order.orderId,
       asset: order.asset,
@@ -1196,7 +1350,8 @@ export class DigitalServicesMarketplace {
     const quote = this.treasury.quote(grossAmount, listing.asset);
     const gasQuote = gasUnits > 0n ? (this.paymaster?.quote(listing.asset, gasUnits, this.now()) ?? (() => { throw new Error("PAYMASTER_NOT_CONFIGURED"); })()) : undefined;
     const deposit = this.reservationDepositFor(grossAmount, gasQuote?.gasFee ?? 0n, listing.asset);
-    return { listingId, quantity, asset: listing.asset, unitPrice: listing.unitPrice, grossAmount, marketplaceFee: quote.marketplaceFee, providerNet: quote.providerNet, feeBps: quote.feeBps, gasFee: gasQuote?.gasFee ?? 0n, reservationDeposit: deposit, buyerTotal: grossAmount + (gasQuote?.gasFee ?? 0n), dueAtFunding: grossAmount + (gasQuote?.gasFee ?? 0n) - deposit, gasQuote, reservationTtlMs: this.reservationTtlMs, cancellationGraceMs: this.cancellationGraceMs, maxActiveReservationsPerIdentity: this.maxActiveReservationsPerIdentity };
+    const clock = this.transitionClock;
+    return { listingId, quantity, asset: listing.asset, unitPrice: listing.unitPrice, grossAmount, marketplaceFee: quote.marketplaceFee, providerNet: quote.providerNet, feeBps: quote.feeBps, gasFee: gasQuote?.gasFee ?? 0n, reservationDeposit: deposit, buyerTotal: grossAmount + (gasQuote?.gasFee ?? 0n), dueAtFunding: grossAmount + (gasQuote?.gasFee ?? 0n) - deposit, gasQuote, reservationTtlMs: clock.toNominalMs(listing.windows.reservationTtl), cancellationGraceMs: clock.toNominalMs(listing.windows.cancellationGrace), maxActiveReservationsPerIdentity: this.maxActiveReservationsPerIdentity, domainProfile: listing.domainProfile, delayHeights: listing.delayHeights, reservationTtlHeights: clock.toHeights(listing.windows.reservationTtl), cancellationGraceHeights: clock.toHeights(listing.windows.cancellationGrace) };
   }
 
   heldBalance(asset: string, buyerId: string): bigint {
@@ -1239,11 +1394,11 @@ export class DigitalServicesMarketplace {
     return auth.actorId;
   }
 
-  /** Read / list authorizations carry `issuedAt` and expire after `readAuthorizationTtlMs`. */
+  /** Read / list authorizations carry `issuedAt` (a height) and expire after the read authorization TTL. */
   private authenticateRead(auth: ActorAuth | undefined, action: "read" | "list", target: string): string {
     const issuedAt = auth?.issuedAt;
     if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt)) throw new Error("ACTOR_AUTH_ISSUED_AT_REQUIRED");
-    if (Math.abs(this.now() - issuedAt) > this.readAuthorizationTtlMs) throw new Error("ACTOR_AUTH_EXPIRED");
+    if (Math.abs(this.now() - issuedAt) > this.baseWindows.readAuthorizationTtl) throw new Error("ACTOR_AUTH_EXPIRED");
     return this.authenticateActor(auth, action, target, { issuedAt });
   }
 
@@ -1301,6 +1456,15 @@ export class DigitalServicesMarketplace {
     order.status = status;
     order.updatedAt = this.now();
     this.decrementActiveReservation(order.buyerId);
+    this.releaseEvidence(order);
+  }
+
+  /** v0.5.0: release the order's open value from its attester set's cap (exactly once). */
+  private releaseEvidence(order: ServiceOrder): void {
+    if (!order.evidenceLocked) return;
+    const policy = this.listing(order.listingId).evidencePolicy;
+    if (policy) this.evidenceCaps.release(policy.attesterSetId, order.asset, order.evidenceLocked);
+    order.evidenceLocked = 0n;
   }
 
   private add(map: Map<string, bigint>, k: string, delta: bigint): void {

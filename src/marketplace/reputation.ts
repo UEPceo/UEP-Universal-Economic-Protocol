@@ -1,4 +1,5 @@
 /** Reputation and seller-integrity primitives for the UEP marketplace. */
+import { HEIGHTS_PER_DAY } from "../core/height.ts";
 
 export type ReputationEvent = {
   sellerId: string;
@@ -19,19 +20,24 @@ export type SellerReputation = {
   accountAgeDays: number;
 };
 
-/** Bayesian shrinkage prevents tiny, collusive samples from immediately reaching 5/5. */
+/**
+ * Bayesian shrinkage prevents tiny, collusive samples from immediately reaching 5/5.
+ * v0.5.0 (ADR 0002): `now` and `createdAt` are heights (no default clock);
+ * `ticksPerDay` converts them to days (default HEIGHTS_PER_DAY at 5 s blocks).
+ */
 export function calculateBayesianReputation(
   events: ReputationEvent[],
   sellerId: string,
-  now = Date.now(),
+  now: number,
   priorMean = 3.5,
   priorWeight = 8,
+  ticksPerDay = HEIGHTS_PER_DAY,
 ): SellerReputation {
   const rows = events.filter((e) => e.sellerId === sellerId);
   const settledVolume = rows.reduce((n, e) => n + e.settledAmount, 0n);
   const bondedAmount = rows.reduce((n, e) => n > e.sellerBond ? n : e.sellerBond, 0n);
   const weighted = rows.reduce((n, e) => {
-    const ageDays = Math.max(1, (now - e.createdAt) / 86_400_000);
+    const ageDays = Math.max(1, (now - e.createdAt) / ticksPerDay);
     const volumeWeight = Math.max(1, Math.log10(Number(e.settledAmount > 0n ? e.settledAmount : 1n)) + 1);
     const ageWeight = Math.min(1, ageDays / 30);
     const bondWeight = e.sellerBond > 0n ? 1.25 : 0.75;
@@ -39,11 +45,11 @@ export function calculateBayesianReputation(
   }, 0);
   const sampleWeight = rows.reduce((n, e) => {
     const volumeWeight = Math.max(1, Math.log10(Number(e.settledAmount > 0n ? e.settledAmount : 1n)) + 1);
-    const ageDays = Math.max(1, (now - e.createdAt) / 86_400_000);
+    const ageDays = Math.max(1, (now - e.createdAt) / ticksPerDay);
     return n + volumeWeight * Math.max(0.25, Math.min(1, ageDays / 30)) * (e.sellerBond > 0n ? 1.25 : 0.75);
   }, 0);
   const score = (priorMean * priorWeight + weighted) / (priorWeight + sampleWeight);
-  return { sellerId, score, effectiveReviews: rows.length, settledVolume, bondedAmount, accountAgeDays: rows.length ? Math.max(...rows.map((e) => Math.max(0, (now - e.createdAt) / 86_400_000))) : 0 };
+  return { sellerId, score, effectiveReviews: rows.length, settledVolume, bondedAmount, accountAgeDays: rows.length ? Math.max(...rows.map((e) => Math.max(0, (now - e.createdAt) / ticksPerDay))) : 0 };
 }
 
 export class MarketplaceReputation {
@@ -59,8 +65,9 @@ export class MarketplaceReputation {
     this.ratedOrders.add(event.orderId);
   }
 
-  score(sellerId: string, now = Date.now()): SellerReputation {
-    return calculateBayesianReputation(this.events, sellerId, now);
+  /** `now` is the current height (or tick); `ticksPerDay` its ticks per day. */
+  score(sellerId: string, now: number, ticksPerDay = HEIGHTS_PER_DAY): SellerReputation {
+    return calculateBayesianReputation(this.events, sellerId, now, 3.5, 8, ticksPerDay);
   }
 
   listEvents(): readonly ReputationEvent[] { return [...this.events]; }

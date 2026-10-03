@@ -74,7 +74,7 @@ The manifest is designed so that the registry can be opened later without changi
 
 The ledger still uses the static templates in `assets.ts`. It also keeps a per-asset issuer signer map that falls back to the faucet key. The planned integration:
 
-1. **Snapshot format 7.** The snapshot commits `registryVersion` and `registryHash`. `restore()` rejects a snapshot whose registry does not match the trusted manifest, and checks mints against the registry in the same way as transactions.
+1. **Snapshot format 8** (format 7 added the ledger height, ADR 0002). The snapshot commits `registryVersion` and `registryHash`. `restore()` rejects a snapshot whose registry does not match the trusted manifest, and checks mints against the registry in the same way as transactions.
 2. **Threshold-signed mints.** The mint message includes the asset id, the issuer key epoch and the registry hash. The ledger verifies `meetsThreshold` against the issuer key set in force at that point of the log.
 3. **Fee floor from the registry (audit V47-04).** The fee floor is read from the immutable `minProtocolFee` of the registered asset (`AssetRegistry.feeFloor`). Because the floor is immutable, replay is independent of the manifest version.
 4. **No faucet fallback (audit DC-01 / V47-05).** An asset with no issuer key set cannot be minted. The shared faucet key is restricted to explicitly listed development assets.

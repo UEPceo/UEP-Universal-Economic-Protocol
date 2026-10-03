@@ -94,8 +94,12 @@ function ak(account: Fr, asset: Fr): AccountKey {
  * (UEP-26 domain composition) instead of the SHA-256 field reference hash. Account
  * ids, note commitments, nullifiers, SMT and note-tree roots all change, so v5 state
  * cannot be restored.
+ * v7 (v0.5.0, ADR 0002): adds the block `height` of the single-node testnet;
+ * `lastReconcileAt` and the `createdAt` of spends prepared by this ledger are
+ * heights, and the policy window is `windowHeights`. No wall-clock value is
+ * part of the state.
  */
-export const SNAPSHOT_FORMAT_VERSION = 6;
+export const SNAPSHOT_FORMAT_VERSION = 7;
 /** Default bound of the pending (offline / conflict) queue. */
 export const DEFAULT_MAX_PENDING_TRANSACTIONS = 1024;
 /** Upper limit accepted for `maxPendingTransactions`. */
@@ -318,7 +322,15 @@ export class UepLedger {
   txs: UepTransaction[] = [];
   pending: UepTransaction[] = [];
   noteCounter = 0n;
+  /** v0.5.0: height at the last reconcilePending() (was a wall-clock ms value before format 7). */
   lastReconcileAt = 0;
+  /**
+   * v0.5.0 (ADR 0002): block height of this single-node testnet. Starts at 0
+   * and only moves through advanceHeight() (the local block producer); it is
+   * part of the signed snapshot. Transitions read time from it, never from a
+   * clock or a header timestamp.
+   */
+  private blockHeight = 0;
   /** Total minted (faucet) value per asset (asset hex -> amount), derived from `mints`. */
   supply = new Map<string, bigint>();
   /** v0.4.4: append-only Merkle tree of every note commitment, in `notes` order. */
@@ -364,6 +376,23 @@ export class UepLedger {
     );
     this.state = new SparseMerkleTree(ACCOUNT_DEPTH);
     this.nullifiers = new NullifierSet();
+  }
+
+  /** v0.5.0: current block height (deterministic; see advanceHeight()). */
+  get height(): number {
+    return this.blockHeight;
+  }
+
+  /**
+   * v0.5.0: seal `blocks` blocks (default 1) and return the new height. This
+   * is the single-node testnet's block producer: a node loop calls it, for
+   * example once per 5 s target block time. Transitions committed between two
+   * calls belong to the same height. It never reads a clock itself.
+   */
+  advanceHeight(blocks = 1): number {
+    if (!Number.isSafeInteger(blocks) || blocks < 0 || !Number.isSafeInteger(this.blockHeight + blocks)) throw new Error("HEIGHT_ADVANCE_INVALID");
+    this.blockHeight += blocks;
+    return this.blockHeight;
   }
 
   stateRoot(): Fr {
@@ -577,13 +606,15 @@ export class UepLedger {
    * (`sender-signature`) and the node verifies it with `submit(tx)` without
    * secrets. `{ authorization: "development-mac" }` builds the legacy
    * development MAC, which only an in-process `submit(tx, secrets)` can check.
+   * v0.5.0: `now` is a height (default: this ledger's height); it is the
+   * policy pre-check height and the spend's `createdAt`.
    */
   prepareSpend(
     secrets: IdentitySecrets,
     recipientOrAddress: Fr | string,
     assetIdStr: string,
     amount: bigint,
-    now = Date.now(),
+    now = this.blockHeight,
     opts: SpendBuildOptions = {},
   ): SubmitResult {
     const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
@@ -626,7 +657,7 @@ export class UepLedger {
     recipientOrAddress: Fr | string,
     assetIdStr: string,
     amount: bigint,
-    now = Date.now(),
+    now = this.blockHeight,
     opts: SpendBuildOptions = {},
   ): BatchResult {
     const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
@@ -652,7 +683,7 @@ export class UepLedger {
       if (remaining > 0n) return { error: { code: "INSUFFICIENT", message: "Unspent notes do not cover the amount plus one protocol fee per note used." } };
       if (plan.length > MAX_PAYMENT_PARTS) return { error: { code: "BATCH_INVALID", message: `Payment needs more than ${MAX_PAYMENT_PARTS} notes.` } };
     }
-    const probes = plan.map(({ part }) => ({ accountHex: senderId.toHex(), assetId: assetIdStr, amount: part, fee: creatorFee(part, minFee), nowMs: now }));
+    const probes = plan.map(({ part }) => ({ accountHex: senderId.toHex(), assetId: assetIdStr, amount: part, fee: creatorFee(part, minFee), height: now }));
     const verdict = this.policy.checkSequence(probes);
     if (!verdict.ok) return { error: { code: "POLICY", message: `${verdict.code}: ${verdict.message}` } };
     const balances = { sender: this.balanceOf(senderId, assetId), recipient: this.balanceOf(recipient, assetId), treasury: this.balanceOf(TREASURY_ID, assetId) };
@@ -702,7 +733,7 @@ export class UepLedger {
           assetId: assetIdStr,
           amount,
           fee: feeGuess,
-          nowMs: now,
+          height: now,
         },
         false,
       );
@@ -903,8 +934,8 @@ export class UepLedger {
       if (tx.networkId !== this.networkId || tx.domainId !== this.domainId) return { error: { code: "WRONG_NETWORK", message: "Transaction network or domain does not match this ledger." }, index };
     }
     const assetIdStr = findAssetByFr(this.networkId, first.assetId)?.assetId ?? "unknown";
-    const nowMs = Date.now();
-    const verdict = this.policy.checkSequence(txs.map((tx) => ({ accountHex: tx.senderId.toHex(), assetId: assetIdStr, amount: tx.amount, fee: tx.fee, nowMs })));
+    const height = this.blockHeight;
+    const verdict = this.policy.checkSequence(txs.map((tx) => ({ accountHex: tx.senderId.toHex(), assetId: assetIdStr, amount: tx.amount, fee: tx.fee, height })));
     if (!verdict.ok) return { error: { code: "POLICY", message: `${verdict.code}: ${verdict.message}` } };
     const overlay = new Map<AccountKey, bigint>();
     const checkedParts: CheckedSpend[] = [];
@@ -938,7 +969,7 @@ export class UepLedger {
         assetId: assetIdStr,
         amount: tx.amount,
         fee: tx.fee,
-        nowMs: Date.now(),
+        height: this.blockHeight,
       },
       false,
     );
@@ -1094,7 +1125,7 @@ export class UepLedger {
         assetId: checked.assetIdStr,
         amount: tx.amount,
         fee: tx.fee,
-        nowMs: Date.now(),
+        height: this.blockHeight,
       },
       true,
     );
@@ -1195,7 +1226,7 @@ export class UepLedger {
       phase: "LOCAL_VALID" as const,
     }));
     this.pending = queued;
-    this.lastReconcileAt = Date.now();
+    this.lastReconcileAt = this.blockHeight;
     const settlements: ReturnType<typeof reconcile> = [];
     return { settlements, root: settlementRoot(settlements), queued: queued.map((t) => ({ ...t })), rejected };
   }
@@ -1224,6 +1255,7 @@ export class UepLedger {
       noteCount: this.noteTree.size,
       noteCounter: this.noteCounter.toString(),
       lastReconcileAt: this.lastReconcileAt,
+      height: this.blockHeight,
     };
   }
 
@@ -1357,7 +1389,10 @@ export class UepLedger {
     l.notes = data.notes.map(deserializeNote);
     l.txs = data.txs.map(deserializeTx);
     l.noteCounter = BigInt(data.noteCounter);
+    // v0.5.0 (format 7): the block height is a non-negative safe integer and not below the last reconcile height.
+    if (!Number.isSafeInteger(data.height) || data.height < 0 || !Number.isSafeInteger(data.lastReconcileAt) || data.lastReconcileAt < 0 || data.lastReconcileAt > data.height) fail("HEIGHT", "height must be a non-negative integer, at or above lastReconcileAt");
     l.lastReconcileAt = data.lastReconcileAt;
+    l.blockHeight = data.height;
     const p = data.policy as any;
     l.policy = new SecurityPolicy({ ...p, blockedAccounts: new Set(p.blockedAccounts ?? []), assetTier: { ...(p.assetTier ?? {}) } });
 

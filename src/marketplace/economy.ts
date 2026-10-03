@@ -5,6 +5,7 @@
  * does not move real-world funds. A production payment rail/custodian must
  * settle the same ledger events externally.
  */
+import type { HeightSource } from "../core/height.ts";
 
 export const MARKETPLACE_ECONOMY_VERSION = "0.1" as const;
 export const MARKETPLACE_FEE_BPS = 300; // 3.00% of SETTLED service value
@@ -116,6 +117,8 @@ export class MarketplaceTreasury {
   private readonly authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
   /** v0.4.7: per-asset Marketplace fee floor (asset -> minimum, each >= MIN_MARKETPLACE_FEE). */
   private readonly minFeeByAsset = new Map<string, bigint>();
+  /** v0.5.0: default entry stamp (a height; the Marketplace passes its own). */
+  private readonly height: HeightSource;
 
   constructor(opts?: {
     treasuryId?: string;
@@ -124,7 +127,10 @@ export class MarketplaceTreasury {
     authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
     /** v0.4.7: per-asset fee floors in the asset's smallest unit (default MIN_MARKETPLACE_FEE for every asset). */
     minFeeByAsset?: Record<string, bigint>;
+    /** v0.5.0 (ADR 0002): height stamped on entries when no timestamp is passed (default: height 0). */
+    height?: HeightSource;
   }) {
+    this.height = opts?.height ?? (() => 0);
     this.treasuryId = opts?.treasuryId ?? "marketplace-treasury";
     this.feeBps = opts?.feeBps ?? MARKETPLACE_FEE_BPS;
     this.allocationBps = opts?.allocationBps ?? DEFAULT_TREASURY_ALLOCATION_BPS;
@@ -155,7 +161,8 @@ export class MarketplaceTreasury {
     return quoteSettlement(grossAmount, asset, this.feeBps, this.minFeeFor(asset));
   }
 
-  settleMarketplaceFee(orderId: string, grossAmount: bigint, asset: string, timestamp = Date.now()): FeeQuote {
+  /** `timestamp` is the settlement height (ADR 0002); default: the treasury's height source. */
+  settleMarketplaceFee(orderId: string, grossAmount: bigint, asset: string, timestamp = this.height()): FeeQuote {
     if (!orderId) throw new Error("ORDER_ID_REQUIRED");
     if (this.settledOrders.has(orderId)) throw new Error("FEE_ALREADY_SETTLED");
     const quote = this.quote(grossAmount, asset);
@@ -229,7 +236,7 @@ export class MarketplaceTreasury {
     b[opts.bucket] -= opts.amount;
     const row: TreasuryWithdrawal = {
       id: opts.withdrawalId,
-      timestamp: opts.timestamp ?? Date.now(),
+      timestamp: opts.timestamp ?? this.height(),
       bucket: opts.bucket,
       asset: opts.asset,
       amount: opts.amount,
@@ -261,3 +268,4 @@ export class MarketplaceTreasury {
     };
   }
 }
+

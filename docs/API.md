@@ -7,7 +7,7 @@ This page lists the public signatures that changed in `0.5.0-public-iot-m2m` (un
 ## HTTP adapter and service API: `src/service/uep-http-api.ts`, `uep-service-api.ts`, `uep-api-types.ts`
 
 - `UEP_HTTP_API_VERSION = "1.2.0"`.
-- Signed actor headers: `x-uep-actor-id`, `x-uep-signature` (hex Ed25519 signature over `actionMessage({ marketplaceId, action, actorId, target, details })`), `x-uep-issued-at` (unix ms; required for `read`). Exported as `ACTOR_ID_HEADER`, `ACTOR_SIGNATURE_HEADER`, `ACTOR_ISSUED_AT_HEADER`. `x-uep-caller-id` is ignored.
+- Signed actor headers: `x-uep-actor-id`, `x-uep-signature` (hex Ed25519 signature over `actionMessage({ marketplaceId, action, actorId, target, details })`), `x-uep-issued-at` (Marketplace height since v0.5.0, see below; required for `read`). Exported as `ACTOR_ID_HEADER`, `ACTOR_SIGNATURE_HEADER`, `ACTOR_ISSUED_AT_HEADER`. `x-uep-caller-id` is ignored.
 - `ApiRequestMeta.auth?: { actorId, signature, issuedAt? }`; `callerId` is informational only.
 - Marketplace and IoT methods fail closed: no `auth` → `UNAUTHORIZED` (401); Marketplace errors map to `UNAUTHORIZED` (`ACTOR_SIGNATURE_*`, `IDENTITY_NOT_REGISTERED`, `RESERVATION_SIGNATURE_INVALID`, …), `FORBIDDEN` (`*_FORBIDDEN`, `*_NOT_AUTHORIZED`), `NOT_FOUND` or `INVALID_REQUEST`. `httpStatusOf(result, okStatus)` gives the HTTP status of a result.
 - `marketplaceFundOrder(orderId, amount, meta)`, `marketplaceDeliverOrder(orderId, body, expectedHash?, meta)` (no provider id: the provider is the signer), `marketplaceSettleOrder(orderId, meta)`, `marketplaceCancelOrder(orderId, meta)`, `marketplaceGetOrder(orderId, meta)`, `marketplacePublishListing(input, meta)` pass `meta.auth` to the Marketplace. `marketplaceAcceptOrder()` requires the reservation `signature`. `marketplaceTreasury(asset, meta)` requires an administrator `read` signature over `treasury:<asset>`. `iotHold`, `iotDeliverTelemetry`, `iotSettle` require `meta.auth`; `iotRequestService` requires `authorization`.
@@ -38,6 +38,33 @@ This page lists the public signatures that changed in `0.5.0-public-iot-m2m` (un
 ## Labs
 
 - `verifyZkSpendProofAgainstExpected(…, depth = 4)`, `verifyArtifactAgainstRoots(art, old, newRoot?, depth = 4)`; `src/lab/zk-vk-pins.ts` (`loadVkPins`, `pinnedVk`, `zkVerifyPinned`, codes `VK_NOT_PINNED`, `VK_PIN_MISMATCH`, `DOMAIN_MISMATCH`, `INVALID_PROOF`). `VerifyingKeyRegistry.pin()` requires a pinned key. `accountIndex(owner, depth, asset?)`, `stateKey(owner, asset)`. `zkStateIndex()` in `zk-bridge.ts`.
+
+## Deterministic transitions, domain profiles and evidence caps (ADR 0002)
+
+Background: `docs/adr/0002-deterministic-transitions.md`, `docs/EVIDENCE.md`. Every window below is in block heights (5 s reference block time; `ms` options are converted with ceil).
+
+- **New modules.**
+  - `src/core/height.ts`: `REFERENCE_BLOCK_TIME_MS = 5000`, `HEIGHTS_PER_DAY = 17_280`, `heightsForMs(ms)` (ceil), `msForHeights(h)`, `HeightCounter`, `TransitionClock.from({ height?, now? })` (unit `"height"` or test-only `"legacy-ms"`; both → `CLOCK_CONFIG_CONFLICT`; a height that goes backwards → `HEIGHT_REGRESSED`).
+  - `src/core/domain-profiles.ts`: `DomainProfileId = "EARTH" | "MOON" | "MARS"`, `DOMAIN_PROFILES` (delay 0, 1 and 602 heights), `domainProfile(id)`, `isDomainProfileId`, `delayHeightsFor(ms)`, `DEFAULT_DOMAIN_PROFILE = "EARTH"`.
+  - `src/marketplace/evidence.ts`: `EvidenceStatement` (type only), `AttesterSetPolicy`, `ListingEvidencePolicy`, `EvidenceCapsConfig`, `EvidenceCaps`.
+- **Ledger** (`src/testnet/ledger.ts`): `height` getter and `advanceHeight(blocks = 1)` (`HEIGHT_ADVANCE_INVALID`). `prepareSpend()` / `preparePayment()` default `now` is the ledger height (it was `Date.now()`), so `createdAt` and `lastReconcileAt` are heights. Policy probes carry the height.
+- **Snapshots: format version 7.** The payload adds `height` (non-negative safe integer, `INVALID_SNAPSHOT_HEIGHT`; `lastReconcileAt` may not exceed it). Snapshots of format 6 or older are rejected.
+- **Security policy** (`src/core/security-policy.ts`): `windowHeights` (default 12) replaces `windowMs`. `windowMs` is still accepted as a legacy alias in the probes' own unit (`CLOCK_CONFIG_CONFLICT` if both are given). `SpendProbe.height` replaces `nowMs` (still read when `height` is absent). `windowVolume(account, asset, at?)` has no clock default.
+- **Marketplace** (`src/marketplace/marketplace.ts`):
+  - Config `height?: () => number` (e.g. `() => ledger.height`). Without it the Marketplace keeps a local height counter at 0, advanced by `advanceHeight(blocks = 1)` (`HEIGHT_SOURCE_EXTERNAL` when a source is injected). `now?` is deprecated and test-only (an injected ms counter; windows are then in ms). `timeUnit`, `transitionClock` and `clock()` expose the time source.
+  - Window options in heights: `reservationTtlHeights` (120), `cancellationGraceHeights` (24), `deliveryDisputeWindowHeights` (17_280), `disputeResolutionWindowHeights` (120_960), `readAuthorizationTtlHeights` (60), `listingWindowHeights` (720). The `*Ms` options remain as legacy forms (converted; giving both → `CLOCK_CONFIG_CONFLICT`). `DEFAULT_*_HEIGHTS` constants are exported. The `*Ms` readonly fields hold nominal ms. `baseWindows` holds the ticks.
+  - `publishListing(input: ListingInput, auth)`: optional `domainProfile` (default `"EARTH"`, `DOMAIN_PROFILE_INVALID`) and `evidencePolicy`. Listings gain `domainProfile`, `delayHeights`, `windows: ContractWindows` (`domainDelay`, `reservationTtl`, `cancellationGrace`, `deliveryDisputeWindow`, `disputeResolutionWindow`), and `evidencePolicy?`. All are fixed at publication. `contractWindowsFor(profile)`.
+  - Orders gain `domainProfile`, `windows` (copied from the listing) and `evidenceLocked?`. Cancellation, expiry, delivery dispute and dispute resolution use `order.windows`.
+  - `listingTerms()` (`identity.ts`) signs `domainProfile` when it is not `EARTH`, and `evidencePolicy` when present. Existing EARTH listings keep the same terms and signatures.
+  - Config `evidence?: { attesterSets?: AttesterSetPolicy[] }` (default none). `reserve()` throws `EVIDENCE_CONTRACT_CAP_EXCEEDED` / `EVIDENCE_ATTESTER_SET_CAP_EXCEEDED` before moving value; settlement rechecks the per-contract cap. `evidenceCaps.openValue(setId, asset)`.
+  - `checkoutQuote()` lines add `domainProfile`, `delayHeights`, `reservationTtlHeights` and `cancellationGraceHeights`. The `*Ms` fields there are nominal.
+  - Read and list authorizations: `issuedAt` is a Marketplace height (`m.clock()`), valid for `readAuthorizationTtlHeights`. The HTTP header `x-uep-issued-at` carries that number.
+  - A paymaster with another time unit than the Marketplace → `CLOCK_CONFIG_CONFLICT`.
+- **Paymaster** (`paymaster.ts`): `height?` / deprecated `now?`, `quoteTtlHeights` (default 120; `quoteTtlMs` converted). New `quoteTtl` (ticks) and `clock`; `quoteTtlMs` is a nominal getter.
+- **Treasury** (`economy.ts`): `MarketplaceTreasury({ height? })`; entry timestamps default to that height (the Marketplace passes its own), not `Date.now()`.
+- **Reputation** (`reputation.ts`): `MarketplaceReputation.score(sellerId, now, ticksPerDay = HEIGHTS_PER_DAY)` and `calculateBayesianReputation(…, now, prior, priorWeight, ticksPerDay)`. `now` is required (no clock default), and ages are measured in heights.
+- **IoT/M2M** (`src/service/iot-m2m.ts`): the default time source is the Marketplace clock. `now` is only allowed with a test-only ms Marketplace (`CLOCK_CONFIG_CONFLICT` otherwise). Config options: `telemetryMaxAgeHeights` (60) and `telemetryMaxFutureSkewHeights` (6), with the legacy `*Ms` forms converted. Readonly `telemetryMaxAge` and `telemetryMaxFutureSkew`. The telemetry age window of an order is the base window plus `order.windows.domainDelay` (MARS: 662 heights). `observedAt` is a height (`IOT_TELEMETRY_OBSERVED_AT_INVALID` if it is not a finite number). Exports `DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS` and `DEFAULT_TELEMETRY_MAX_FUTURE_SKEW_HEIGHTS`.
+- **Scripts**: `npm run lint:determinism` (`scripts/check-deterministic-transitions.mjs`, exports `checkRepository`, `scanSource`, `RULES`, `ALLOWLIST`). It runs first in `npm run test:all`.
 
 # Unreleased: Poseidon protocol hash
 

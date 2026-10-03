@@ -263,7 +263,7 @@ test("note tree: restore checks the signed root and every committed spend's memb
   const unsignedTx = structuredClone(snap) as any;
   delete unsignedTx.txs[0].senderAuth;
   assert.throws(() => UepLedger.restore(resign(unsignedTx), TRUST), /INVALID_SNAPSHOT_TX_SENDER/);
-  for (const v of [3, 4, 5]) {
+  for (const v of [3, 4, 5, 6]) {
     const old = structuredClone(snap) as any;
     old.formatVersion = v;
     assert.throws(() => UepLedger.restore(resign(old), TRUST), new RegExp(`INVALID_SNAPSHOT_VERSION: snapshot formatVersion ${v} is no longer supported`));

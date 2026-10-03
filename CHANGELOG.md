@@ -4,6 +4,23 @@
 
 Version 0.5.0 bundles the research-labs integration and the Poseidon protocol hash (first sections below, unchanged) with the v0.5.0 work: namespaced assets and an asset registry manifest, circuit v4 with (account, asset) state keys, API authorization hardening, remote-safe signed spends, paymaster reserve protection, a compressed sparse Merkle tree and fixes from two independent external assessments. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
 
+### Deterministic transitions, domain delay windows and evidence caps (unreleased, on top of v0.5.0)
+
+See `docs/adr/0002-deterministic-transitions.md` and `docs/EVIDENCE.md`. No native token; fees unchanged.
+
+- **No external calls or wall clock in transitions.** The core, the testnet ledger, the Marketplace (including `settle()`, `deliver()`, settlement guards and category validators) and the IoT/M2M service no longer read `Date.now()` or `new Date()`. Time comes only from the block height, never from a header timestamp. `npm run lint:determinism` fails on `fetch`, `Date.now`, `new Date(`, `Date()`, `performance.now`, `process.hrtime`, timers and imports of network, file or process modules in those paths. Its allowlist has two test-only entries, each with a justification. It runs first in `npm run test:all` and as its own CI step.
+- **Deterministic height.** The single-node testnet ledger has `height` and `advanceHeight()`. The Marketplace takes a height source (`height: () => ledger.height`) or keeps a local counter. The paymaster and the IoT service use the Marketplace clock. The millisecond `now` option remains only as a deprecated test-only counter.
+- **Windows in heights.** Defaults at the 5 s reference block time: reservation TTL 120 heights (10 min), cancellation grace 24 (2 min), delivery dispute window 17,280 (24 h), dispute resolution 120,960 (7 days), read authorization TTL 60 (5 min), listing window 720 (1 h), paymaster quote TTL 120, IoT telemetry maximum age 60 (5 min) and future skew 6 (30 s), security-policy window 12 (60 s). The `*Ms` options are still accepted and are converted (rounded up).
+- **Domain profiles.** A listing declares `domainProfile` `EARTH` (default), `MOON` or `MARS` at publication. The profile is signed when it is not EARTH and cannot change. It adds a fixed delay to every counterparty window: one worst-case round trip plus 25%, i.e. 0, 1 and 602 heights (MARS: 50.17 min, from a maximum one-way light time of 20.06 min computed offline from the public JPL DE442s ephemeris). IoT telemetry from Mars that arrives 338.3 s or 1,203.6 s after observation now settles with the default configuration. EARTH behaviour is unchanged. Solar conjunctions and contact gaps are not covered.
+- **Evidence caps.** Listings may bind to a configured attester set (`evidencePolicy: { attesterSetId, maxValuePerContract }`). `reserve()` rejects an order above the per-contract cap or above the set's open-value cap for the asset, before any value moves. Settlement rechecks the per-contract cap. By default no attester sets are configured, and listings without an evidence policy are unchanged. Evidence records and attester selection are left for roadmap phase 2.3.
+- **Breaking changes:**
+  - Snapshot format 7 (adds `height`; format 6 and older are rejected).
+  - `lastReconcileAt`, spend `createdAt`, treasury entry timestamps, read `issuedAt` and telemetry `observedAt` are heights.
+  - `MarketplaceReputation.score()` requires `now`.
+  - `SecurityPolicy` uses `windowHeights` and probe `height` (the legacy names are still accepted).
+  - A Marketplace without a height source does not expire anything until `advanceHeight()`.
+  - Combining a height source with the legacy `now`, or giving both a `*Heights` and a `*Ms` option, throws `CLOCK_CONFIG_CONFLICT`.
+
 ### Security hardening (v0.5.0)
 
 - **API authorization hardening.** Marketplace and IoT/M2M calls of the service API and the HTTP adapter are authorized only by the actor's Ed25519 signature over the canonical action message (`src/marketplace/identity.ts`). HTTP carries it in `x-uep-actor-id`, `x-uep-signature` and `x-uep-issued-at` (required for reads). A missing or invalid authorization is `401 UNAUTHORIZED`, a valid one for the wrong actor `403 FORBIDDEN`; `x-uep-caller-id` is ignored. Fund, deliver, settle and cancel pass the signed authorization to the Marketplace; `POST /v1/marketplace/orders` passes the buyer's reservation signature and idempotency key; the treasury snapshot (`GET /v1/marketplace/treasury/<asset>`) needs a signed administrator `read`. HTTP status codes follow the error code. HTTP adapter version 1.2.0. End-to-end HTTP tests cover anonymous, wrong-actor and correctly signed calls.

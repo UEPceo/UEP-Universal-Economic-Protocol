@@ -11,6 +11,10 @@
  * asset (`assetLimits`), and the rolling volume is tracked per (account, asset):
  * units of different assets are never added together. The spend count per
  * account and window stays asset-independent (it counts transactions, not units).
+ *
+ * v0.5.0 (ADR 0002): the rolling window is measured in block heights
+ * (`windowHeights`, default 12 = 60 s at 5 s blocks) and probes carry the
+ * height of the ledger (`height`). The policy never reads a clock.
  */
 
 export type RiskTier = "experimental" | "registered" | "restricted" | "halted";
@@ -28,8 +32,8 @@ export type SecurityPolicyConfig = {
   maxTransferAmount: bigint;
   /** Max amount per account and asset per rolling window. Default for assets without an override. */
   maxTransferPerWindow: bigint;
-  /** Window length in ms. */
-  windowMs: number;
+  /** Window length in block heights (v0.5.0; default 12 = 60 s at 5 s blocks). */
+  windowHeights: number;
   /** Max spends per account per window. */
   maxTxPerWindow: number;
   /** Reject if fee below protocol minimum (0 allowed on testnet). */
@@ -65,8 +69,16 @@ export type SpendProbe = {
   assetId: string;
   amount: bigint;
   fee: bigint;
-  nowMs: number;
+  /** v0.5.0: ledger height of the check. */
+  height?: number;
+  /** @deprecated legacy name of `height` (same unit as the window; used when `height` is absent). */
+  nowMs?: number;
 };
+
+/** Tick of a probe: `height`, else the legacy `nowMs`, else 0. */
+function probeTick(p: SpendProbe): number {
+  return p.height ?? p.nowMs ?? 0;
+}
 
 type WindowBucket = {
   windowStart: number;
@@ -94,7 +106,7 @@ function normalizeAssetLimits(input: Record<string, AssetLimits> | undefined): R
 const DEFAULT_CONFIG: SecurityPolicyConfig = {
   maxTransferAmount: 10_000_000n,
   maxTransferPerWindow: 50_000_000n,
-  windowMs: 60_000,
+  windowHeights: 12,
   maxTxPerWindow: 30,
   minFee: 0n,
   paused: false,
@@ -113,10 +125,17 @@ export class SecurityPolicy {
   config: SecurityPolicyConfig;
   private windows = new Map<string, WindowBucket>();
 
-  constructor(config: Partial<SecurityPolicyConfig> = {}) {
+  /**
+   * `windowMs` is the pre-v0.5.0 name of `windowHeights`; it is taken as the
+   * window length in the probes' own unit (legacy probes pass `nowMs`).
+   */
+  constructor(config: Partial<SecurityPolicyConfig> & { windowMs?: number } = {}) {
+    const { windowMs, ...rest } = config;
+    if (windowMs !== undefined && rest.windowHeights !== undefined) throw new Error("CLOCK_CONFIG_CONFLICT: windowMs and windowHeights");
     this.config = {
       ...DEFAULT_CONFIG,
-      ...config,
+      ...rest,
+      windowHeights: rest.windowHeights ?? windowMs ?? DEFAULT_CONFIG.windowHeights,
       assetTier: { ...DEFAULT_CONFIG.assetTier, ...(config.assetTier ?? {}) },
       blockedAccounts: new Set(config.blockedAccounts ?? DEFAULT_CONFIG.blockedAccounts),
       assetLimits: normalizeAssetLimits(config.assetLimits),
@@ -154,20 +173,20 @@ export class SecurityPolicy {
     this.config.blockedAccounts.delete(accountHex.toLowerCase());
   }
 
-  private bucket(accountHex: string, nowMs: number): WindowBucket {
+  private bucket(accountHex: string, at: number): WindowBucket {
     const key = accountHex.toLowerCase();
     let b = this.windows.get(key);
-    if (!b || nowMs - b.windowStart >= this.config.windowMs) {
-      b = { windowStart: nowMs, volumeByAsset: new Map(), txCount: 0 };
+    if (!b || at - b.windowStart >= this.config.windowHeights) {
+      b = { windowStart: at, volumeByAsset: new Map(), txCount: 0 };
       this.windows.set(key, b);
     }
     return b;
   }
 
-  /** v0.4.7: rolling volume of one account in one asset (current window). */
-  windowVolume(accountHex: string, assetId: string, nowMs = Date.now()): bigint {
+  /** v0.4.7: rolling volume of one account in one asset (window open at height `at`; without `at`, the last window). */
+  windowVolume(accountHex: string, assetId: string, at?: number): bigint {
     const b = this.windows.get(accountHex.toLowerCase());
-    if (!b || nowMs - b.windowStart >= this.config.windowMs) return 0n;
+    if (!b || (at !== undefined && at - b.windowStart >= this.config.windowHeights)) return 0n;
     return b.volumeByAsset.get(assetId) ?? 0n;
   }
 
@@ -235,7 +254,7 @@ export class SecurityPolicy {
     if (probe.fee < config.minFee) {
       return { ok: false, code: "FEE_TOO_LOW", message: "Fee below policy minimum." };
     }
-    const b = this.bucket(acc, probe.nowMs);
+    const b = this.bucket(acc, probeTick(probe));
     if (b.txCount >= config.maxTxPerWindow) {
       return { ok: false, code: "RATE_LIMIT", message: "Too many spends in the current window." };
     }

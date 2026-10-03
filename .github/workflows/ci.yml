@@ -54,6 +54,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ADR 0002: no external calls or wall-clock reads in transition code.
+      # Also the first step of test:all; kept separate so a failure is named.
+      - name: Deterministic transitions lint
+        run: npm run lint:determinism
+
       - name: Full suite (npm run test:all)
         run: npm run test:all
 

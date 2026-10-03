@@ -84,9 +84,17 @@ export function signAction(a: ActionAuthorization, privateKey: PrivateKeyLike): 
   return { actorId: a.actorId, signature: signEd25519(actionMessage(a), privateKey), ...(typeof issuedAt === "number" ? { issuedAt } : {}) };
 }
 
-/** Canonical listing terms bound into a provider's publish signature. */
-export function listingTerms(input: { title: string; description: string; category: string; asset: string; unitPrice: bigint; capacity: bigint; sellerBond?: bigint }): Record<string, unknown> {
-  return { title: input.title, description: input.description, category: input.category, asset: input.asset, unitPrice: input.unitPrice, capacity: input.capacity, sellerBond: input.sellerBond ?? 0n };
+/**
+ * Canonical listing terms bound into a provider's publish signature.
+ * v0.5.0 (ADR 0002): a non-EARTH `domainProfile` and an `evidencePolicy` are
+ * contract terms and are signed too; EARTH listings without an evidence
+ * policy keep the previous terms (and signatures).
+ */
+export function listingTerms(input: { title: string; description: string; category: string; asset: string; unitPrice: bigint; capacity: bigint; sellerBond?: bigint; domainProfile?: string; evidencePolicy?: { attesterSetId: string; maxValuePerContract: bigint } }): Record<string, unknown> {
+  const terms: Record<string, unknown> = { title: input.title, description: input.description, category: input.category, asset: input.asset, unitPrice: input.unitPrice, capacity: input.capacity, sellerBond: input.sellerBond ?? 0n };
+  if (input.domainProfile !== undefined && input.domainProfile !== "EARTH") terms.domainProfile = input.domainProfile;
+  if (input.evidencePolicy !== undefined) terms.evidencePolicy = { attesterSetId: input.evidencePolicy.attesterSetId, maxValuePerContract: input.evidencePolicy.maxValuePerContract };
+  return terms;
 }
 
 /** Hash of a dispute reason (the reason text itself is not stored on the order). */

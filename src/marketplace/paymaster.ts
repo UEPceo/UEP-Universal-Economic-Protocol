@@ -7,6 +7,7 @@
  * The buyer therefore sees one deterministic checkout total before payment.
  */
 import { tupleKey } from "../core/composite-key.ts";
+import { TransitionClock, type HeightSource } from "../core/height.ts";
 
 export const PAYMASTER_VERSION = "0.1" as const;
 
@@ -38,8 +39,18 @@ export type GasPriceOracle = (input: { asset: string; gasUnits: bigint; now: num
 
 export type PaymasterConfig = {
   paymasterId?: string;
+  /** Gas quote validity in heights (default 120 = 10 min at 5 s blocks). */
+  quoteTtlHeights?: number;
+  /** Legacy name: gas quote validity in ms (converted to heights; test-only ms clock: ms). */
   quoteTtlMs?: number;
+  /**
+   * Price source called by quote() only. quote() is not a state transition: the
+   * quote is an input to reserve(). The oracle must not be called from a transition.
+   */
   oracle?: GasPriceOracle;
+  /** Block height source (ADR 0002). Default: a local height counter at 0; the Marketplace passes its own height to every call. */
+  height?: HeightSource;
+  /** @deprecated TEST-ONLY injected millisecond counter (never a real clock). Cannot be combined with `height`. */
   now?: () => number;
   /**
    * v0.5.0 reserve protection. An actor may hold at most
@@ -66,7 +77,14 @@ function quoteId(asset: string, gasUnits: bigint, at: number): string {
 export class MarketplacePaymaster {
   readonly version = PAYMASTER_VERSION;
   readonly paymasterId: string;
-  readonly quoteTtlMs: number;
+  /** Quote validity in the paymaster's ticks (heights; ms with the test-only clock). */
+  readonly quoteTtl: number;
+  /** v0.5.0 (ADR 0002): time source (block heights by default). */
+  readonly clock: TransitionClock;
+  /** Nominal quote validity in ms (heights x 5 s; the injected ms with the test-only clock). */
+  get quoteTtlMs(): number {
+    return this.clock.toNominalMs(this.quoteTtl);
+  }
   private readonly oracle: GasPriceOracle;
   private readonly now: () => number;
   private readonly reserves = new Map<string, bigint>();
@@ -85,7 +103,9 @@ export class MarketplacePaymaster {
 
   constructor(config: PaymasterConfig = {}) {
     this.paymasterId = config.paymasterId ?? "marketplace-paymaster";
-    this.quoteTtlMs = config.quoteTtlMs ?? 10 * 60 * 1000;
+    this.clock = TransitionClock.from(config);
+    this.quoteTtl = this.clock.window("quoteTtl", config.quoteTtlHeights, config.quoteTtlMs, 120);
+    if (!Number.isSafeInteger(this.quoteTtl) || this.quoteTtl <= 0) throw new Error("INVALID_QUOTE_TTL");
     this.maxOutstandingPerActor = config.maxOutstandingPerActor ?? 32;
     this.maxActorShareBps = config.maxActorShareBps ?? 2_500;
     this.maxOrderShareBps = config.maxOrderShareBps ?? 1_000;
@@ -94,7 +114,7 @@ export class MarketplacePaymaster {
       if (!Number.isInteger(v) || v <= 0 || v > 10_000) throw new Error(`INVALID_${name.toUpperCase()}`);
     }
     if (!Number.isInteger(this.maxOutstandingPerActor) || this.maxOutstandingPerActor <= 0) throw new Error("INVALID_MAX_OUTSTANDING_PER_ACTOR");
-    this.now = config.now ?? (() => Date.now());
+    this.now = () => this.clock.tick();
     this.oracle = config.oracle ?? (() => ({ gasPricePerUnit: 1n, oracleRef: "deterministic-local-gas", maxSlippageBps: 100 }));
   }
 
@@ -121,7 +141,7 @@ export class MarketplacePaymaster {
       gasPricePerUnit: o.gasPricePerUnit,
       gasFee,
       quotedAt: now,
-      expiresAt: now + this.quoteTtlMs,
+      expiresAt: now + this.quoteTtl,
       maxSlippageBps: o.maxSlippageBps ?? 100,
       oracleRef: o.oracleRef,
     };

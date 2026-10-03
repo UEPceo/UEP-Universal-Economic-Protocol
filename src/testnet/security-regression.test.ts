@@ -30,7 +30,7 @@ test("submit requires sender authentication by default and cannot bypass policy"
   const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
   ledger.faucet(owner.accountId, "uep-test/teur", 500_000n);
   // Local development MAC: without the sender identity there is no proof.
-  const mac = ledger.prepareSpend(owner, recipient.accountId, "uep-test/teur", 100_000n, Date.now(), { authorization: "development-mac" });
+  const mac = ledger.prepareSpend(owner, recipient.accountId, "uep-test/teur", 100_000n, ledger.height, { authorization: "development-mac" });
   assert.ok("tx" in mac);
   if (!("tx" in mac)) return;
   const noSecret = ledger.submit(mac.tx);
