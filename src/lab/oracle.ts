@@ -146,10 +146,10 @@ export class OracleAggregator {
  */
 export function seedTestnetOracles(agg: OracleAggregator, nowMs = Date.now()) {
   const pairs: Array<[string, string, bigint, string]> = [
-    ["asset:test:energy", "asset:test:eur", 120_000n, "sim-feed-a"], // 0.12 tEUR / energy
-    ["asset:test:energy", "asset:test:eur", 121_000n, "sim-feed-b"],
-    ["asset:test:btc", "asset:test:eur", 60_000_000_000n, "sim-feed-a"], // 60k tEUR / tBTC (e6)
-    ["asset:test:data", "asset:test:eur", 50_000n, "sim-feed-a"],
+    ["uep-test/tenergy", "uep-test/teur", 120_000n, "sim-feed-a"], // 0.12 tEUR / energy
+    ["uep-test/tenergy", "uep-test/teur", 121_000n, "sim-feed-b"],
+    ["uep-test/tbtc", "uep-test/teur", 60_000_000_000n, "sim-feed-a"], // 60k tEUR / tBTC (e6)
+    ["uep-test/tdata", "uep-test/teur", 50_000n, "sim-feed-a"],
   ];
   for (const [base, quote, priceE6, source] of pairs) {
     agg.publish({

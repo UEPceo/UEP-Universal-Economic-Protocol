@@ -23,7 +23,7 @@ const FAUCET_KEY = generateEd25519KeyPair();
 const TRUST = { authorities: [SNAPSHOT_KEY.publicKeyHex], faucetPublicKeys: [FAUCET_KEY.publicKeyHex] };
 const NODE_KEYS = { snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey };
 const NET = TESTNET.networkId;
-const EUR = "asset:test:eur";
+const EUR = "uep-test/teur";
 const asset = encodeStringToFr(EUR);
 
 const identity = async () => identityFromMnemonic(await generateMnemonic(128));

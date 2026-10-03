@@ -14,7 +14,7 @@ const ledger = new UepLedger({
   allowFaucet: true,
 });
 
-const asset = "asset:test:eur";
+const asset = "uep-test/teur";
 const amount = 10_000n;
 // v0.4.5: accounts are key-derived; addresses are Bech32m v2 (UEP-ADDR-002).
 const senderAddress = encodeAccountAddress(TESTNET.networkId, sender.accountId);

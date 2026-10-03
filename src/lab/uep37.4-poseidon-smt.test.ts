@@ -25,7 +25,7 @@ import { findUepZkBinary } from "./zk-bridge.ts";
 import { MultiNodeCluster } from "./uep35-multinode.ts";
 import { parallelSafeScheduleApply } from "./uep36-parallel-exec.ts";
 import { verifyStructuralWitness } from "./uep37-poseidon-leaf-provider.ts";
-import { LAB_ZERO_BLINDING, CANONICAL_ASSET_ID } from "./uep37-leaf-encoding.ts";
+import { LAB_ZERO_BLINDING, CANONICAL_ASSET_ID, accountIndex } from "./uep37-leaf-encoding.ts";
 import { poseidonNoteLeaf } from "./uep37-poseidon-leaf-provider.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -136,7 +136,8 @@ describe("UEP-37.4 Poseidon SMT root", () => {
       const leaf = s.getPoseidonLeaf(label === "treasury" ? "treasury" : label);
       if (!leaf) continue;
       const owner = accountLabelToFr(label === "treasury" ? "treasury" : label);
-      const idx = Number(owner.lowBits(8));
+      const idx = Number(accountIndex(owner, 8)); // (account, asset) state slot
+
       leaves.push({ index: idx, leafHex: leaf });
     }
     const rustRoot = zkSmtRoot(8, leaves);

@@ -14,7 +14,7 @@ import type { IdentitySecrets } from "../identity/kdf.ts";
 import { UepLedger, checkpointOf, cosignSnapshot, mintMessage, snapshotHash, type UepLedgerSnapshot } from "./ledger.ts";
 import { TESTNET } from "../network/profiles.ts";
 
-const EUR = "asset:test:eur";
+const EUR = "uep-test/teur";
 const asset = encodeStringToFr(EUR);
 const S1 = generateEd25519KeyPair();
 const S2 = generateEd25519KeyPair();

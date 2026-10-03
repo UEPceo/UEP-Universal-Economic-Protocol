@@ -98,7 +98,7 @@ describe("UEP-30.2 scheduled ZK independent senders (no SKIP)", () => {
       oneInFlightPerSender: true,
     });
     eng.registerAccount("alice", {
-      id: Fr.from(111n),
+      id: Fr.from(112n), // its depth-4 state slot differs from the treasury slot
       secret: Fr.from(11n),
       salt: Fr.from(22n),
       blinding: Fr.from(3n),

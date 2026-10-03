@@ -22,7 +22,7 @@ import { TESTNET, TREASURY_ID } from "../network/profiles.ts";
 const SNAPSHOT_KEY = generateEd25519KeyPair();
 const FAUCET_KEY = generateEd25519KeyPair();
 const AUTH = { authorities: [SNAPSHOT_KEY.publicKeyHex], faucetPublicKeys: [FAUCET_KEY.publicKeyHex] };
-const EUR = "asset:test:eur";
+const EUR = "uep-test/teur";
 const asset = encodeStringToFr(EUR);
 
 const newLedger = () => new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey });

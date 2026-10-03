@@ -26,7 +26,7 @@ async function main() {
     allowFaucet: true,
   });
 
-  const asset = "asset:test:energy";
+  const asset = "uep-test/tenergy";
   node.faucet(alice.accountId, asset, 1_000_000n);
 
   const sendAmount = 250_000n;

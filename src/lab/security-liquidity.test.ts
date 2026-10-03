@@ -15,7 +15,7 @@ describe("security policy", () => {
     });
     const base = {
       accountHex: "abc",
-      assetId: "asset:test:energy",
+      assetId: "uep-test/tenergy",
       fee: 0n,
       nowMs: 1_000,
     };
@@ -31,7 +31,7 @@ describe("security policy", () => {
     p.setPaused(true);
     const r = p.check({
       accountHex: "x",
-      assetId: "asset:test:energy",
+      assetId: "uep-test/tenergy",
       amount: 1n,
       fee: 0n,
       nowMs: 0,
@@ -39,10 +39,10 @@ describe("security policy", () => {
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.code, "PAUSED");
     p.setPaused(false);
-    p.setAssetTier("asset:test:energy", "halted");
+    p.setAssetTier("uep-test/tenergy", "halted");
     const h = p.check({
       accountHex: "x",
-      assetId: "asset:test:energy",
+      assetId: "uep-test/tenergy",
       amount: 1n,
       fee: 0n,
       nowMs: 0,
@@ -56,13 +56,13 @@ describe("oracle aggregator", () => {
   it("aggregates median and rejects stale", () => {
     const o = new OracleAggregator({ maxStalenessMs: 1000, minSources: 2 });
     seedTestnetOracles(o, 10_000);
-    const ok = o.read("asset:test:energy", "asset:test:eur", 10_500);
+    const ok = o.read("uep-test/tenergy", "uep-test/teur", 10_500);
     assert.equal(ok.ok, true);
     if (ok.ok) {
       assert.equal(ok.quote.sourcesUsed, 2);
       assert.ok(ok.quote.priceE6 > 0n);
     }
-    const stale = o.read("asset:test:energy", "asset:test:eur", 20_000);
+    const stale = o.read("uep-test/tenergy", "uep-test/teur", 20_000);
     assert.equal(stale.ok, false);
     if (!stale.ok) assert.equal(stale.code, "STALE");
   });
@@ -99,12 +99,12 @@ describe("liquidity AMM", () => {
     seedTestnetLiquidity(reg);
     const o = new OracleAggregator({ minSources: 1, maxStalenessMs: 60_000 });
     seedTestnetOracles(o, 0);
-    const q = o.read("asset:test:energy", "asset:test:eur", 0);
+    const q = o.read("uep-test/tenergy", "uep-test/teur", 0);
     assert.equal(q.ok, true);
 
     const sim = reg.simulateSwap(
       "pool:test:energy-eur",
-      "asset:test:energy",
+      "uep-test/tenergy",
       10_000n,
       q.ok ? q.quote : null,
     );
@@ -112,7 +112,7 @@ describe("liquidity AMM", () => {
     const before = reg.get("pool:test:energy-eur")!.reserveA;
     const swap = reg.swap(
       "pool:test:energy-eur",
-      "asset:test:energy",
+      "uep-test/tenergy",
       10_000n,
       q.ok ? q.quote : null,
     );
@@ -120,23 +120,23 @@ describe("liquidity AMM", () => {
     assert.notEqual(reg.get("pool:test:energy-eur")!.reserveA, before);
 
     o.publish({
-      baseAssetId: "asset:test:energy",
-      quoteAssetId: "asset:test:eur",
+      baseAssetId: "uep-test/tenergy",
+      quoteAssetId: "uep-test/teur",
       priceE6: 1n,
       source: "sim-feed-a",
       observedAtMs: 0,
     });
     o.publish({
-      baseAssetId: "asset:test:energy",
-      quoteAssetId: "asset:test:eur",
+      baseAssetId: "uep-test/tenergy",
+      quoteAssetId: "uep-test/teur",
       priceE6: 1n,
       source: "sim-feed-b",
       observedAtMs: 0,
     });
-    const badQ = o.read("asset:test:energy", "asset:test:eur", 0);
+    const badQ = o.read("uep-test/tenergy", "uep-test/teur", 0);
     const skewed = reg.simulateSwap(
       "pool:test:energy-eur",
-      "asset:test:energy",
+      "uep-test/tenergy",
       100n,
       badQ.ok ? badQ.quote : null,
     );

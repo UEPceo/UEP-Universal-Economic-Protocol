@@ -44,11 +44,11 @@ export const DEFAULT_DISPUTE_RESOLUTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** Default validity of a signed read / list authorization (5 minutes, either direction). */
 export const DEFAULT_READ_AUTHORIZATION_TTL_MS = 5 * 60 * 1000;
 /**
- * v0.4.7: Marketplace asset ids: ASCII letters, digits and `.`, `_`, `:`, `-`,
- * 1 to 64 characters, starting with a letter or digit. With
+ * Marketplace asset ids: ASCII letters, digits and `.`, `_`, `:`, `/`, `-` (v0.5.0 adds `/`
+ * for `<namespace>/<symbol>` ids), 1 to 64 characters, starting with a letter or digit. With
  * `assetRegistryNetworkId` set, the id must also be registered on that ledger network.
  */
-export const MARKETPLACE_ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+export const MARKETPLACE_ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/;
 /** v0.4.7: maximum identity id length (UTF-16 code units). */
 export const MAX_IDENTITY_ID_LENGTH = 256;
 /** Identity strings that can never be registered, listed or used as a buyer (UEP-A09/B12). */

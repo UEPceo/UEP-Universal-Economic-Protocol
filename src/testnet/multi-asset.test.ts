@@ -25,8 +25,8 @@ const SNAPSHOT_KEY = generateEd25519KeyPair();
 const FAUCET_KEY = generateEd25519KeyPair();
 const TRUST: SnapshotTrust = { authorities: [SNAPSHOT_KEY.publicKeyHex], faucetPublicKeys: [FAUCET_KEY.publicKeyHex] };
 const ASSETS = TESTNET_ASSETS.map((a) => a.assetId);
-const EUR = "asset:test:eur";
-const BTC = "asset:test:btc";
+const EUR = "uep-test/teur";
+const BTC = "uep-test/tbtc";
 const fr = (a: string) => encodeStringToFr(a);
 
 type LedgerOpts = Partial<ConstructorParameters<typeof UepLedger>[0]>;
@@ -71,10 +71,11 @@ test("asset ids: registries are canonical and their field encodings are distinct
   for (const reg of [TESTNET_ASSETS, GLOBAL_ASSETS, INTERPLANETARY_ASSETS]) assert.deepEqual(validateAssetRegistry(reg), []);
   const all = [...TESTNET_ASSETS, ...GLOBAL_ASSETS, ...INTERPLANETARY_ASSETS].map((a) => ledgerAssetIdToFr(a.assetId).toHex());
   assert.equal(new Set(all).size, all.length);
-  for (const bad of ["\u0000asset:test:eur", "asset:test:eur\u0000", "Asset:test:eur", "asset:tést", "a".repeat(32), "", ":asset", "asset test", "asset|test"]) {
+  for (const bad of ["\u0000uep-test/teur", "uep-test/teur\u0000", "Uep-test/teur", "uep-test/tést", "asset:test:eur", "uep-test", "uep-test/", "/teur", "a/b/c", "a".repeat(16) + "/x", "x/" + "a".repeat(16), "", "uep test/x", "uep|test/x"]) {
     assert.throws(() => ledgerAssetIdToFr(bad), /ASSET_ID_INVALID/, JSON.stringify(bad));
   }
-  assert.ok(ledgerAssetIdToFr("a".repeat(31)));
+  assert.ok(ledgerAssetIdToFr("a".repeat(15) + "/" + "b".repeat(15)));
+  assert.ok(validateAssetRegistry([{ ...TESTNET_ASSETS[0]!, decimals: 9 }]).some((p) => /decimals/.test(p)));
   assert.ok(validateAssetRegistry([...TESTNET_ASSETS, { ...TESTNET_ASSETS[0]! }]).some((p) => /duplicate/.test(p)));
   assert.ok(validateAssetRegistry([{ ...TESTNET_ASSETS[0]!, decimals: 19 }]).some((p) => /decimals/.test(p)));
   assert.ok(validateAssetRegistry([{ ...TESTNET_ASSETS[0]!, minProtocolFee: 0n }]).some((p) => /minProtocolFee/.test(p)));
@@ -83,11 +84,11 @@ test("asset ids: registries are canonical and their field encodings are distinct
 test("asset ids: unregistered or non-canonical assets are refused by faucet and prepareSpend", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
-  assert.throws(() => l.faucet(a.accountId, "asset:test:unregistered", 10n), /Unknown TESTNET asset/);
-  assert.throws(() => l.faucet(a.accountId, "\u0000asset:test:eur", 10n), /Unknown TESTNET asset/);
+  assert.throws(() => l.faucet(a.accountId, "uep-test/unregistered", 10n), /Unknown TESTNET asset/);
+  assert.throws(() => l.faucet(a.accountId, "\u0000uep-test/teur", 10n), /Unknown TESTNET asset/);
   l.faucet(a.accountId, EUR, 1_000n);
-  assert.equal(code(l.prepareSpend(a, b.accountId, "\u0000asset:test:eur", 10n)), "ASSET_MISMATCH");
-  assert.equal(code(l.prepareSpend(a, b.accountId, "asset:global:eur", 10n)), "ASSET_MISMATCH");
+  assert.equal(code(l.prepareSpend(a, b.accountId, "\u0000uep-test/teur", 10n)), "ASSET_MISMATCH");
+  assert.equal(code(l.prepareSpend(a, b.accountId, "uep-global/eur", 10n)), "ASSET_MISMATCH");
 });
 
 // ---------------------------------------------------------------- conservation
@@ -165,11 +166,11 @@ test("issuance: restore rejects mints and notes of assets that are not registere
   const a = await identity();
   const l = ledger();
   l.faucet(a.accountId, EUR, 10n);
-  injectMint(l, a.accountId, fr("asset:test:unregistered"), 5_000n, FAUCET_KEY.privateKey);
+  injectMint(l, a.accountId, fr("uep-test/unregistered"), 5_000n, FAUCET_KEY.privateKey);
   assert.throws(() => UepLedger.restore(structuredClone(l.snapshot()), TRUST), /INVALID_SNAPSHOT_(NOTE|MINT)_ASSET/);
   const l2 = ledger();
   l2.faucet(a.accountId, EUR, 10n);
-  injectMint(l2, a.accountId, fr("asset:global:eur"), 5_000n, FAUCET_KEY.privateKey);
+  injectMint(l2, a.accountId, fr("uep-global/eur"), 5_000n, FAUCET_KEY.privateKey);
   assert.throws(() => UepLedger.restore(structuredClone(l2.snapshot()), TRUST), /INVALID_SNAPSHOT_(NOTE|MINT)_ASSET/);
 });
 
@@ -198,7 +199,7 @@ test("issuance: a per-asset issuer key is the only key that mints its asset", as
   assert.throws(() => UepLedger.restore(structuredClone(l3.snapshot()), scoped), /INVALID_SNAPSHOT_MINT_SIGNATURE/);
   // Issuer keys must be distinct from snapshot authority keys, and trusted when handed to a restored node.
   assert.throws(() => ledger({ issuerSigningKeys: { [BTC]: SNAPSHOT_KEY.privateKey } }), /ISSUER_KEY_NOT_DISTINCT/);
-  assert.throws(() => ledger({ issuerSigningKeys: { "asset:test:nope": BTC_ISSUER.privateKey } }), /ISSUER_ASSET_UNKNOWN/);
+  assert.throws(() => ledger({ issuerSigningKeys: { "uep-test/nope": BTC_ISSUER.privateKey } }), /ISSUER_ASSET_UNKNOWN/);
   assert.throws(() => UepLedger.restore(structuredClone(snap), scoped, { issuerSigningKeys: { [EUR]: BTC_ISSUER.privateKey } }), /ISSUER_KEY_NOT_TRUSTED/);
   const resumed = UepLedger.restore(structuredClone(snap), scoped, { snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey, issuerSigningKeys: { [BTC]: BTC_ISSUER.privateKey } });
   resumed.faucet(a.accountId, BTC, 1n);
@@ -244,13 +245,13 @@ test("issuance: rotation and revocation of a mint key take effect from a mint in
 // ---------------------------------------------------------------- policy
 
 test("policy: window volume is tracked per asset and limits can be set per asset", async () => {
-  const p = new SecurityPolicy({ maxTransferPerWindow: 1_000n, assetLimits: { [BTC]: { maxTransferAmount: 500n }, "asset:test:energy": { minTransferAmount: 10n } } });
+  const p = new SecurityPolicy({ maxTransferPerWindow: 1_000n, assetLimits: { [BTC]: { maxTransferAmount: 500n }, "uep-test/tenergy": { minTransferAmount: 10n } } });
   const probe = (assetId: string, amount: bigint) => ({ accountHex: "ab", assetId, amount, fee: 1n, nowMs: 1_000 });
   assert.equal(p.check(probe(EUR, 900n), true).ok, true);
   assert.equal(p.check(probe(BTC, 400n), true).ok, true); // EUR volume does not count against BTC
   assert.deepEqual(p.check(probe(EUR, 200n)), { ok: false, code: "WINDOW_VOLUME", message: "Rolling window volume cap exceeded." });
   assert.equal((p.check(probe(BTC, 600n)) as { code?: string }).code, "AMOUNT_CAP");
-  assert.equal((p.check(probe("asset:test:energy", 9n)) as { code?: string }).code, "AMOUNT_TOO_SMALL");
+  assert.equal((p.check(probe("uep-test/tenergy", 9n)) as { code?: string }).code, "AMOUNT_TOO_SMALL");
   assert.equal(p.windowVolume("ab", EUR, 1_000), 900n);
   assert.equal(p.windowVolume("ab", BTC, 1_000), 400n);
   assert.deepEqual(p.limitsFor(EUR), { maxTransferAmount: 10_000_000n, maxTransferPerWindow: 1_000n, minTransferAmount: 0n });

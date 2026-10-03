@@ -39,7 +39,7 @@ function assertConserved(m: DigitalServicesMarketplace, assets: string[]) {
 
 test("balance keying: every (asset, identity) pair holds an independent balance", () => {
   const { m } = setup();
-  const assets = ["asset:test:eur", "asset:test", "asset", "EUR", "eur", "asset:test:eur:x", "a.b", "a_b", "a-b"];
+  const assets = ["uep-test/teur", "asset:test", "asset", "EUR", "eur", "asset:test:eur:x", "a.b", "a_b", "a-b"];
   const ids = ["alice", "eur:alice", "test:eur:alice", "alice:", ":alice", "a", "eur", "x|y", "ünï", "asset:test:eur:alice"];
   const expected = new Map<string, bigint>();
   let n = 1n;
@@ -65,15 +65,15 @@ test("balance keying: every (asset, identity) pair holds an independent balance"
 
 test("balance keying: a reservation only ever draws on the buyer's own balance in the listing asset", () => {
   const { m } = setup();
-  enrollIdentity(m, "alice", { asset: "asset:test:eur", amount: 1_000n });
+  enrollIdentity(m, "alice", { asset: "uep-test/teur", amount: 1_000n });
   enrollIdentity(m, "eur:alice");
   const listing = publishAs(m, { providerId: "prov-x", title: "Svc", description: "x", category: "COMPUTE", asset: "asset:test", unitPrice: 100n, capacity: 10n });
   assert.equal(m.availableBalance("asset:test", "eur:alice"), 0n);
   assert.throws(() => reserveAs(m, { listingId: listing.listingId, buyerId: "eur:alice", quantity: 5n }, { credit: 0n }), /INSUFFICIENT_FUNDS_FOR_DEPOSIT/);
-  assert.equal(m.availableBalance("asset:test:eur", "alice"), 1_000n);
-  assert.equal(m.heldBalance("asset:test:eur", "alice"), 0n);
+  assert.equal(m.availableBalance("uep-test/teur", "alice"), 1_000n);
+  assert.equal(m.heldBalance("uep-test/teur", "alice"), 0n);
   assert.equal(m.availableBalance("asset:test", "prov-x"), 0n);
-  assertConserved(m, ["asset:test:eur", "asset:test"]);
+  assertConserved(m, ["uep-test/teur", "asset:test"]);
 });
 
 test("idempotency keys are scoped to the signing identity", () => {
@@ -103,9 +103,9 @@ test("asset ids: with assetRegistryNetworkId only registered ledger assets are a
   enrollIdentity(m, "buyer");
   assert.throws(() => m.creditAccount("buyer", "EUR", 1n), /ASSET_NOT_REGISTERED/);
   assert.throws(() => m.creditAccount("buyer", "asset:test", 1n), /ASSET_NOT_REGISTERED/);
-  assert.throws(() => publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "asset:global:eur", unitPrice: 1n, capacity: 1n }), /ASSET_NOT_REGISTERED/);
-  assert.equal(m.creditAccount("buyer", "asset:test:eur", 5n), 5n);
-  assert.ok(publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "asset:test:btc", unitPrice: 1n, capacity: 1n }));
+  assert.throws(() => publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "uep-global/eur", unitPrice: 1n, capacity: 1n }), /ASSET_NOT_REGISTERED/);
+  assert.equal(m.creditAccount("buyer", "uep-test/teur", 5n), 5n);
+  assert.ok(publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "uep-test/tbtc", unitPrice: 1n, capacity: 1n }));
   assert.throws(() => new DigitalServicesMarketplace({ assetRegistryNetworkId: "" }), /ASSET_REGISTRY_NETWORK_INVALID/);
 });
 
@@ -127,16 +127,16 @@ test("fees: per-asset Marketplace fee and deposit floors; 3% and the defaults ar
   assert.equal(calculateMarketplaceFee(50n, 300, 100n), 50n); // never above the amount
   assert.throws(() => calculateMarketplaceFee(10n, 300, 0n), /INVALID_MIN_FEE/);
   assert.throws(() => new MarketplaceTreasury({ minFeeByAsset: { BTC: 0n } }), /INVALID_MIN_FEE/);
-  const treasury = new MarketplaceTreasury({ minFeeByAsset: { "asset:test:btc": 100n } });
-  const { m } = setup({ treasury, minReservationDepositByAsset: { "asset:test:btc": 500n } });
-  assert.equal(m.feeQuoteFor(1_000n, "asset:test:btc").marketplaceFee, 100n);
-  assert.equal(m.feeQuoteFor(1_000n, "asset:test:eur").marketplaceFee, 30n);
-  assert.equal(m.feeQuoteFor(100_000n, "asset:test:btc").marketplaceFee, 3_000n);
-  assert.equal(m.reservationDepositFor(1_000n, 0n, "asset:test:btc"), 500n);
-  assert.equal(m.reservationDepositFor(1_000n, 0n, "asset:test:eur"), 10n);
-  assert.equal(m.reservationDepositFor(10n, 0n, "asset:test:eur"), MIN_RESERVATION_DEPOSIT);
-  assert.equal(m.reservationDepositFor(100n, 0n, "asset:test:btc"), 100n); // capped at the order total
-  const l = publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "asset:test:btc", unitPrice: 1_000n, capacity: 5n });
+  const treasury = new MarketplaceTreasury({ minFeeByAsset: { "uep-test/tbtc": 100n } });
+  const { m } = setup({ treasury, minReservationDepositByAsset: { "uep-test/tbtc": 500n } });
+  assert.equal(m.feeQuoteFor(1_000n, "uep-test/tbtc").marketplaceFee, 100n);
+  assert.equal(m.feeQuoteFor(1_000n, "uep-test/teur").marketplaceFee, 30n);
+  assert.equal(m.feeQuoteFor(100_000n, "uep-test/tbtc").marketplaceFee, 3_000n);
+  assert.equal(m.reservationDepositFor(1_000n, 0n, "uep-test/tbtc"), 500n);
+  assert.equal(m.reservationDepositFor(1_000n, 0n, "uep-test/teur"), 10n);
+  assert.equal(m.reservationDepositFor(10n, 0n, "uep-test/teur"), MIN_RESERVATION_DEPOSIT);
+  assert.equal(m.reservationDepositFor(100n, 0n, "uep-test/tbtc"), 100n); // capped at the order total
+  const l = publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "uep-test/tbtc", unitPrice: 1_000n, capacity: 5n });
   assert.equal(m.checkoutQuote(l.listingId, 1n).reservationDeposit, 500n);
   const o = reserveAs(m, { listingId: l.listingId, buyerId: "b", quantity: 1n }, { credit: 2_000n });
   assert.equal(o.reservationDeposit, 500n);
@@ -145,7 +145,7 @@ test("fees: per-asset Marketplace fee and deposit floors; 3% and the defaults ar
   const rec = settle(m, o.orderId, "b");
   assert.equal(rec.marketplaceFee, 100n);
   assert.equal(rec.providerPayout, 900n);
-  assertConserved(m, ["asset:test:btc"]);
+  assertConserved(m, ["uep-test/tbtc"]);
   assert.throws(() => setup({ minReservationDepositByAsset: { EUR: 0n } }), /INVALID_RESERVATION_LIMIT/);
 });
 
@@ -162,7 +162,7 @@ test("credits: with requireSignedCredits only administrator-signed, single-use c
   // A signature for one amount, asset or identity does not authorize another.
   const signedFor5 = act(m, "ops-admin", "credit", "buyer", { asset: "EUR", amount: 5n, creditId: "c-3" });
   assert.throws(() => m.creditAccount("buyer", "EUR", 50n, { creditId: "c-3", auth: signedFor5 }), /ACTOR_SIGNATURE_INVALID/);
-  assert.throws(() => m.creditAccount("buyer", "asset:test:eur", 5n, { creditId: "c-3", auth: signedFor5 }), /ACTOR_SIGNATURE_INVALID/);
+  assert.throws(() => m.creditAccount("buyer", "uep-test/teur", 5n, { creditId: "c-3", auth: signedFor5 }), /ACTOR_SIGNATURE_INVALID/);
   assert.equal(m.availableBalance("EUR", "buyer"), 10n);
   assertConserved(m, ["EUR"]);
   // Default: the testnet funding rail is unchanged.
@@ -174,7 +174,7 @@ test("credits: with requireSignedCredits only administrator-signed, single-use c
 // ---------------------------------------------------------------- lifecycle
 
 test("lifecycle: every order path conserves value per asset with several assets and gas in the order asset", () => {
-  const assets = ["asset:test:eur", "asset:test:btc", "asset:test", "EUR"];
+  const assets = ["uep-test/teur", "uep-test/tbtc", "asset:test", "EUR"];
   const s = setup({ cancellationGraceMs: 2 * MIN }, assets);
   const { m } = s;
   const listings = assets.flatMap((asset, i) => [0, 1].map((j) => publishAs(m, { providerId: j === 0 ? `prov-${i}` : `${asset}:prov`, title: `Svc ${i}-${j}`, description: `d ${asset}`, category: "COMPUTE", asset, unitPrice: BigInt(50 + 25 * i + j), capacity: 1_000n })));
@@ -233,11 +233,11 @@ test("lifecycle: every order path conserves value per asset with several assets 
 });
 
 test("lifecycle: a gas quote in another asset than the listing is refused", () => {
-  const s = setup({}, ["asset:test:eur", "asset:test:btc"]);
-  const l = publishAs(s.m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "asset:test:eur", unitPrice: 10n, capacity: 5n });
-  const q = s.paymaster.quote("asset:test:btc", 3n);
-  enrollIdentity(s.m, "b", { asset: "asset:test:eur", amount: 100n });
+  const s = setup({}, ["uep-test/teur", "uep-test/tbtc"]);
+  const l = publishAs(s.m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "uep-test/teur", unitPrice: 10n, capacity: 5n });
+  const q = s.paymaster.quote("uep-test/tbtc", 3n);
+  enrollIdentity(s.m, "b", { asset: "uep-test/teur", amount: 100n });
   const sig = signReservation({ marketplaceId: s.m.marketplaceId, listingId: l.listingId, buyerId: "b", quantity: 1n, idempotencyKey: "k", gasQuoteId: q.quoteId }, enrollIdentity(s.m, "b").privateKey);
   assert.throws(() => s.m.reserve({ listingId: l.listingId, buyerId: "b", quantity: 1n, idempotencyKey: "k", signature: sig, gasQuote: q }), /GAS_ASSET_MISMATCH/);
-  assertConserved(s.m, ["asset:test:eur", "asset:test:btc"]);
+  assertConserved(s.m, ["uep-test/teur", "uep-test/tbtc"]);
 });

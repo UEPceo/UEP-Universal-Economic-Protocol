@@ -23,20 +23,20 @@ describe("UEP public testnet", () => {
   it("create / faucet / send / receive", async () => {
     const { a, b } = await twoIdentities();
     const node = testnetLedger();
-    node.faucet(a.accountId, "asset:test:eur", 250_000n);
-    const p = node.prepareSpend(a, b.accountId, "asset:test:eur", 100_000n);
+    node.faucet(a.accountId, "uep-test/teur", 250_000n);
+    const p = node.prepareSpend(a, b.accountId, "uep-test/teur", 100_000n);
     assert.ok("tx" in p);
     if (!("tx" in p)) return;
     const s = node.submit(p.tx, a);
     assert.ok("tx" in s);
-    assert.equal(node.balanceOf(b.accountId, encodeStringToFr("asset:test:eur")), 100_000n);
+    assert.equal(node.balanceOf(b.accountId, encodeStringToFr("uep-test/teur")), 100_000n);
   });
 
   it("replay and double spend are rejected", async () => {
     const { a, b } = await twoIdentities();
     const node = testnetLedger();
-    node.faucet(a.accountId, "asset:test:eur", 50_000n);
-    const p = node.prepareSpend(a, b.accountId, "asset:test:eur", 10_000n);
+    node.faucet(a.accountId, "uep-test/teur", 50_000n);
+    const p = node.prepareSpend(a, b.accountId, "uep-test/teur", 10_000n);
     assert.ok("tx" in p);
     if (!("tx" in p)) return;
     assert.ok("tx" in node.submit(p.tx, a));
@@ -48,10 +48,10 @@ describe("UEP public testnet", () => {
   it("wrong owner and amount mutation are rejected", async () => {
     const { a, b } = await twoIdentities();
     const node = testnetLedger();
-    const note = node.faucet(a.accountId, "asset:test:eur", 50_000n);
-    const wrong = node.prepareSpend(b, a.accountId, "asset:test:eur", 10_000n);
+    const note = node.faucet(a.accountId, "uep-test/teur", 50_000n);
+    const wrong = node.prepareSpend(b, a.accountId, "uep-test/teur", 10_000n);
     assert.ok("error" in wrong);
-    const p = node.prepareSpend(a, b.accountId, "asset:test:eur", 10_000n);
+    const p = node.prepareSpend(a, b.accountId, "uep-test/teur", 10_000n);
     assert.ok("tx" in p);
     if (!("tx" in p)) return;
     const mutated = { ...p.tx, amount: 99_000n };
@@ -62,7 +62,7 @@ describe("UEP public testnet", () => {
   it("network isolation is encoded in addresses", async () => {
     const { a } = await twoIdentities();
     const test = testnetLedger();
-    test.faucet(a.accountId, "asset:test:eur", 1_000n);
+    test.faucet(a.accountId, "uep-test/teur", 1_000n);
     const addrT = UepAddressV2.encode(test.networkId, a.accountId);
     const addrOther = UepAddressV2.encode("uep-global-1", a.accountId);
     assert.notEqual(addrT, addrOther);

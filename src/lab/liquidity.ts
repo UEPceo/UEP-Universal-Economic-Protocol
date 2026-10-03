@@ -243,8 +243,8 @@ export class LiquidityRegistry {
 export function seedTestnetLiquidity(reg: LiquidityRegistry) {
   reg.createPool({
     poolId: "pool:test:energy-eur",
-    assetA: "asset:test:energy",
-    assetB: "asset:test:eur",
+    assetA: "uep-test/tenergy",
+    assetB: "uep-test/teur",
     reserveA: 1_000_000n,
     reserveB: 120_000n,
     feePpm: DEFAULT_SWAP_FEE_PPM,
