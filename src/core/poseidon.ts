@@ -69,6 +69,11 @@ export function poseidon2(a: bigint, b: bigint): bigint {
 const MEMO_MAX = 1 << 18;
 const memo = new Map<string, bigint>();
 
+/** Drop the memo (benchmarks measure cold hashing and retained tree memory). */
+export function clearPoseidonMemo(): void {
+  memo.clear();
+}
+
 /** UEP-26 domain composition: H(d, a, b) = Poseidon(Poseidon(d, a), b). */
 export function poseidonDomainHash(domain: number, a: bigint, b: bigint): bigint {
   const key = domain + ":" + a.toString(36) + ":" + b.toString(36);
