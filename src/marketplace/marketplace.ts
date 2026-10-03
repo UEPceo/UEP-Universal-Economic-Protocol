@@ -1167,6 +1167,17 @@ export class DigitalServicesMarketplace {
   }
 
   /**
+   * Treasury read for remote callers: an administrator "read" signature (with
+   * `issuedAt`) over target `treasury:<asset>`. In-process callers may use
+   * treasurySnapshot() directly.
+   */
+  treasurySnapshotAuthorized(asset: string, auth: ActorAuth | undefined): TreasurySnapshot {
+    const actor = this.authenticateRead(auth, "read", `treasury:${asset}`);
+    if (!this.isAdmin(actor)) throw new Error("TREASURY_ACCESS_FORBIDDEN");
+    return this.treasury.snapshot(asset);
+  }
+
+  /**
    * Verify `auth` for one action and return the authenticated actor id.
    * Registered identities sign with their registered key; the administrator
    * and the settlement arbiter sign with the keys configured on the

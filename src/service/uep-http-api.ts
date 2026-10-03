@@ -5,9 +5,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { UepServiceApi } from "./uep-service-api.ts";
-import { UEP_API_VERSION } from "./uep-api-types.ts";
+import { UEP_API_VERSION, httpStatusOf, type ApiRequestMeta } from "./uep-api-types.ts";
 
-export const UEP_HTTP_API_VERSION = "1.1.0";
+export const UEP_HTTP_API_VERSION = "1.2.0";
 
 export type EconomicReadModel = {
   tip: () => { stateRoot: string; height: number; treasury?: string };
@@ -25,7 +25,63 @@ export type HttpApiOptions = {
    * return 401 OBJECTS_AUTH_REQUIRED.
    */
   objectsToken?: string;
+  /** CORS allowlist (see applyCors). Overrides UEP_HTTP_CORS_ORIGINS. */
+  cors?: { allowedOrigins: string[] };
 };
+
+/**
+ * v0.5.0 signed actor headers. Every marketplace call that changes or reads
+ * private state carries the actor's Ed25519 signature over the canonical
+ * action message (src/marketplace/identity.ts `actionMessage`):
+ *   x-uep-actor-id   registered identity id
+ *   x-uep-signature  hex signature
+ *   x-uep-issued-at  unix ms, required for reads (order, treasury)
+ * `x-uep-caller-id` is not an authorization and is ignored.
+ */
+export const ACTOR_ID_HEADER = "x-uep-actor-id";
+export const ACTOR_SIGNATURE_HEADER = "x-uep-signature";
+export const ACTOR_ISSUED_AT_HEADER = "x-uep-issued-at";
+const ALLOWED_REQUEST_HEADERS = ["content-type", "idempotency-key", ACTOR_ID_HEADER, ACTOR_SIGNATURE_HEADER, ACTOR_ISSUED_AT_HEADER, "authorization"];
+
+function header(req: IncomingMessage, name: string): string | undefined {
+  const v = req.headers[name];
+  return Array.isArray(v) ? v[0] : v;
+}
+
+function metaOf(req: IncomingMessage): Partial<ApiRequestMeta> {
+  const actorId = header(req, ACTOR_ID_HEADER);
+  const signature = header(req, ACTOR_SIGNATURE_HEADER);
+  const issuedAtRaw = header(req, ACTOR_ISSUED_AT_HEADER);
+  const issuedAt = issuedAtRaw !== undefined && /^[0-9]{1,16}$/.test(issuedAtRaw) ? Number(issuedAtRaw) : undefined;
+  return {
+    idempotencyKey: header(req, "idempotency-key"),
+    auth: actorId && signature ? { actorId, signature, ...(issuedAt !== undefined ? { issuedAt } : {}) } : undefined,
+  };
+}
+
+/**
+ * CORS allowlist. Default: none (no CORS headers; browsers only reach the API
+ * same-origin). `cors.allowedOrigins` or the env var UEP_HTTP_CORS_ORIGINS
+ * (comma-separated) lists exact origins. "*" is honoured only if listed
+ * explicitly, and credentials are never allowed.
+ */
+function allowedOrigins(opts: HttpApiOptions): string[] {
+  if (opts.cors?.allowedOrigins) return opts.cors.allowedOrigins;
+  return (process.env.UEP_HTTP_CORS_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+}
+
+function applyCors(opts: HttpApiOptions, req: IncomingMessage, res: ServerResponse): void {
+  const origin = header(req, "origin");
+  if (!origin) return;
+  const list = allowedOrigins(opts);
+  const allow = list.includes(origin) ? origin : list.includes("*") ? "*" : undefined;
+  if (!allow) return;
+  res.setHeader("access-control-allow-origin", allow);
+  if (allow !== "*") res.setHeader("vary", "Origin");
+  res.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("access-control-allow-headers", ALLOWED_REQUEST_HEADERS.join(", "));
+  res.setHeader("access-control-max-age", "600");
+}
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -67,6 +123,12 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
     try {
       const url = new URL(req.url ?? "/", `http://${host}`);
       const path = url.pathname;
+      applyCors(opts, req, res);
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, { "x-uep-api": UEP_HTTP_API_VERSION });
+        res.end();
+        return;
+      }
       if (req.method === "GET" && path === "/v1/capabilities") {
         send(res, 200, opts.api.capabilities());
         return;
@@ -134,8 +196,8 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
           asset: String(body.asset ?? ""),
           unitPrice: BigInt(String(body.unitPrice ?? "0")),
           capacity: BigInt(String(body.capacity ?? "0")),
-        }, { callerId: req.headers["x-uep-caller-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
-        send(res, result.ok ? 201 : 400, result);
+        }, metaOf(req));
+        send(res, httpStatusOf(result, 201), result);
         return;
       }
       if (req.method === "GET" && path === "/v1/marketplace/listings") {
@@ -143,59 +205,68 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
           category: (url.searchParams.get("category") as any) || undefined,
           asset: url.searchParams.get("asset") || undefined,
           providerId: url.searchParams.get("providerId") || undefined,
-        }, { callerId: req.headers["x-uep-caller-id"] as string | undefined });
-        send(res, result.ok ? 200 : 404, result);
+        }, metaOf(req));
+        send(res, httpStatusOf(result), result);
         return;
       }
       if (req.method === "GET" && path === "/v1/marketplace/quote") {
         const listingId = url.searchParams.get("listingId") ?? "";
         const quantity = BigInt(url.searchParams.get("quantity") ?? "0");
-        const result = opts.api.marketplaceCheckoutQuote(listingId, quantity, { callerId: req.headers["x-uep-caller-id"] as string | undefined });
-        send(res, result.ok ? 200 : 400, result);
+        const result = opts.api.marketplaceCheckoutQuote(listingId, quantity, metaOf(req));
+        send(res, httpStatusOf(result), result);
         return;
       }
       if (req.method === "POST" && path === "/v1/marketplace/orders") {
+        // Authorized by the buyer's reservation signature (body.signature).
         const body = JSON.parse((await readBody(req)).toString() || "{}");
-        const result = opts.api.marketplaceAcceptOrder({ listingId: String(body.listingId ?? ""), buyerId: String(body.buyerId ?? ""), quantity: BigInt(String(body.quantity ?? "0")), orderId: body.orderId ? String(body.orderId) : undefined }, { callerId: req.headers["x-uep-caller-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
-        send(res, result.ok ? 201 : 400, result);
+        const meta = metaOf(req);
+        const result = opts.api.marketplaceAcceptOrder({
+          listingId: String(body.listingId ?? ""),
+          buyerId: String(body.buyerId ?? ""),
+          quantity: BigInt(String(body.quantity ?? "0")),
+          idempotencyKey: String(body.idempotencyKey ?? meta.idempotencyKey ?? ""),
+          signature: String(body.signature ?? ""),
+          orderId: body.orderId ? String(body.orderId) : undefined,
+        }, meta);
+        send(res, httpStatusOf(result, 201), result);
         return;
       }
       const mOrderGet = path.match(/^\/v1\/marketplace\/orders\/([^/]+)$/);
       if (mOrderGet && req.method === "GET") {
-        const result = opts.api.marketplaceGetOrder(decodeURIComponent(mOrderGet[1]!), { callerId: req.headers["x-uep-caller-id"] as string | undefined });
-        send(res, result.ok ? 200 : 404, result);
+        const result = opts.api.marketplaceGetOrder(decodeURIComponent(mOrderGet[1]!), metaOf(req));
+        send(res, httpStatusOf(result), result);
         return;
       }
       const mOrder = path.match(/^\/v1\/marketplace\/orders\/([^/]+)\/(fund|deliver|settle|cancel)$/);
       if (mOrder && req.method === "POST") {
         const orderId = decodeURIComponent(mOrder[1]!);
         const action = mOrder[2]!;
+        const meta = metaOf(req);
         if (action === "fund") {
           const body = JSON.parse((await readBody(req)).toString() || "{}");
-          const result = opts.api.marketplaceFundOrder(orderId, BigInt(String(body.amount ?? "0")), { callerId: req.headers["x-uep-caller-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
-          send(res, result.ok ? 200 : 400, result);
+          const result = opts.api.marketplaceFundOrder(orderId, BigInt(String(body.amount ?? "0")), meta);
+          send(res, httpStatusOf(result), result);
           return;
         }
         if (action === "deliver") {
-          const providerId = url.searchParams.get("providerId") ?? "";
           const expectedHash = url.searchParams.get("expectedHash") ?? undefined;
-          const result = opts.api.marketplaceDeliverOrder(orderId, providerId, await readBody(req), expectedHash, { callerId: req.headers["x-uep-caller-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
-          send(res, result.ok ? 200 : 400, result);
+          const result = opts.api.marketplaceDeliverOrder(orderId, await readBody(req), expectedHash, meta);
+          send(res, httpStatusOf(result), result);
           return;
         }
         if (action === "settle") {
-          const result = opts.api.marketplaceSettleOrder(orderId, { callerId: req.headers["x-uep-caller-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
-          send(res, result.ok ? 200 : 400, result);
+          const result = opts.api.marketplaceSettleOrder(orderId, meta);
+          send(res, httpStatusOf(result), result);
           return;
         }
-        const result = opts.api.marketplaceCancelOrder(orderId, { callerId: req.headers["x-uep-caller-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
-        send(res, result.ok ? 200 : 400, result);
+        const result = opts.api.marketplaceCancelOrder(orderId, meta);
+        send(res, httpStatusOf(result), result);
         return;
       }
       const mTreasury = path.match(/^\/v1\/marketplace\/treasury\/([^/]+)$/);
       if (mTreasury && req.method === "GET") {
-        const result = opts.api.marketplaceTreasury(decodeURIComponent(mTreasury[1]!), { callerId: req.headers["x-uep-caller-id"] as string | undefined });
-        send(res, result.ok ? 200 : 404, result);
+        const result = opts.api.marketplaceTreasury(decodeURIComponent(mTreasury[1]!), metaOf(req));
+        send(res, httpStatusOf(result), result);
         return;
       }
       if (req.method === "POST" && path === "/v1/spends/commit") {

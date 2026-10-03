@@ -50,8 +50,36 @@ export type ApiRequestMeta = {
   timestamp: string;
   /** Auth hook placeholder — never stores secrets */
   authTokenPresent?: boolean;
+  /**
+   * Informational only. v0.5.0: never used for authorization; the actor is
+   * the one proven by `auth`.
+   */
   callerId?: string;
+  /**
+   * v0.5.0: signed actor authorization (Ed25519 over the canonical action
+   * message, see src/marketplace/identity.ts). Required by every marketplace
+   * and IoT call that changes or reads private state; a missing or invalid
+   * authorization is rejected (401), a valid one for the wrong actor is 403.
+   */
+  auth?: { actorId: string; signature: string; issuedAt?: number };
 };
+
+/** HTTP status of a failed result (by error code). */
+export function httpStatusOf(r: ApiResult<unknown>, okStatus = 200): number {
+  if (r.ok) return okStatus;
+  switch (r.error.code) {
+    case "UNAUTHORIZED": return 401;
+    case "FORBIDDEN": return 403;
+    case "NOT_FOUND": return 404;
+    case "PROVIDER_UNAVAILABLE": return 404;
+    case "CONFLICT":
+    case "IDEMPOTENCY_CONFLICT": return 409;
+    case "PAYLOAD_TOO_LARGE": return 413;
+    case "INTERNAL":
+    case "PROVIDER_ERROR": return 500;
+    default: return 400;
+  }
+}
 
 export type ApiResponseMeta = {
   requestId: string;
