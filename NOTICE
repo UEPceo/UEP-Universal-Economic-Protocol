@@ -1,10 +1,18 @@
 Universal Economic Protocol (UEP)
-Public Testnet + Digital Marketplace reference release
+Public Testnet + Digital Marketplace reference release, with research labs
 
 Copyright and licensing are governed by LICENSE.
 
-This repository is a deliberately limited public evaluation slice of the UEP project. It is not the complete internal development repository.
+This repository is the public evaluation release of the UEP project. It contains
+the local testnet reference implementation, the Digital Marketplace and IoT/M2M
+service layer, and the project's experimental research labs (src/lab, src/agent,
+the service/API lab in src/service and uep-core). It does not contain private
+credentials, keys, infrastructure configuration or unpublished assessment
+material (see PUBLIC-SCOPE.md).
 
-Third-party dependencies, when introduced in future releases, remain subject to their respective licenses. This release intentionally keeps the executable reference layer dependency-light.
+The Node.js reference layer has no runtime npm dependencies. The Rust research
+crates under uep-core depend on third-party crates from crates.io (for example
+the arkworks libraries), which are fetched at build time and remain subject to
+their respective licenses; see each crate's Cargo.toml and Cargo.lock.
 
 Project contact: uep.dev@proton.me
