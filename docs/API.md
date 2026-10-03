@@ -1,6 +1,25 @@
-# Public API reference: changed signatures (v0.4.3 – v0.5.0)
+# Public API reference: changed signatures (v0.4.3 – v0.5.1)
 
-This page lists the public signatures that changed in `0.5.0-public-iot-m2m` (unreleased), `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+This page lists the public signatures that changed in `0.5.1-public-iot-m2m` (unreleased), `0.5.0-public-iot-m2m`, `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# v0.5.1 (unreleased)
+
+## HTTP adapter: `src/service/uep-http-api.ts`
+
+- `UEP_HTTP_API_VERSION = "1.2.1"`.
+- `HttpApiOptions.allowedHosts?: string[]` (else `UEP_HTTP_ALLOWED_HOSTS`, comma-separated; default loopback names plus a non-wildcard bind host) and `HttpApiOptions.objectsAllowedOrigins?: string[]` (default same-origin loopback origins of the listening port plus the exact CORS origins). `/v1/objects*` answer `403 OBJECTS_HOST_NOT_ALLOWED` / `403 OBJECTS_ORIGIN_NOT_ALLOWED` before the bearer check. `parseHostHeader(raw)` is exported.
+
+## Labs: `src/lab/node-protocol.ts`, `envelope-public-bind.ts`, `zk-vk-pins.ts`
+
+- `assertLabDomainId(domainId)` (`DOMAIN_ID_INVALID`); `LabNode` constructor throws `VK_NOT_PINNED_FOR_DOMAIN` for an unpinned `defaultVkHex`; `apply()` errors `VK_NOT_PINNED_FOR_DOMAIN`, `ZK_PUBLIC_DOMAIN_MISMATCH`, `ZK_DOMAIN_MISMATCH`.
+- `assertEnvelopeMatchesPublicInputs()` also checks public input 12 (`domain_id`) against `env.domainId`.
+- `isVkPinnedForDomain(vkHex, domainId)`, `vkSha256Hex(vkHex)`, `developmentVkHashes()`, `assertDevelopmentKeysAllowed()`, `DEV_VK_PINS_LABEL`. `loadVkPins()` throws `VK_DEV_KEYS_REFUSED` (development pin file in production mode) and `VK_DEV_KEYS_MISLABELED`.
+
+## Asset registry: `src/core/asset-registry.ts`
+
+- `selfCertifiedNamespace(owner)` returns `k-` + 26 base32 characters (domain `UEP-NAMESPACE-v2`). New: `legacySelfCertifiedNamespace(owner)` (deprecated, v0.5.0 derivation), `selfCertifiedNamespaceVersion(ns)` (`2`, `1` or `null`), `isLegacySelfCertifiedNamespace(ns)`, `selfCertifiedNamespaceMatches(ns, owner)`, constants `SELF_CERTIFIED_NAMESPACE_CHARS = 26`, `LEGACY_SELF_CERTIFIED_NAMESPACE_CHARS = 13`, `MAX_SHORT_ASSET_ID_BYTES = 31`.
+- `NAMESPACE_PATTERN` and `ASSET_ID_PATTERN` accept `k-[a-z2-7]{26}`; ids under it may be up to 44 bytes. `assetIdToFr()` packs them above 2^248 (injective); other ids keep `encodeStringToFr`.
+- `buildSignedAssetRegistry({ allowLegacySelfCertifiedNamespaces? })`: without it, a legacy `k-` name not present in `previous` throws `ASSET_REGISTRY_LEGACY_NAMESPACE`. `validateAssetRegistryUpgrade()` reports a newly introduced legacy name.
 
 # v0.5.0 (unreleased)
 

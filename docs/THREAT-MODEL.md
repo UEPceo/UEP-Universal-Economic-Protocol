@@ -44,8 +44,9 @@ signature but without the right role. Since v0.5.0 the API fails closed:
 Marketplace and IoT calls need the signed actor headers (`x-uep-actor-id`,
 `x-uep-signature`, and `x-uep-issued-at` for reads) and return 401 or 403; the
 caller-id header is ignored; the treasury read needs an administrator
-signature; `/v1/objects*` needs a token outside loopback; CORS is off unless
-origins are configured.
+signature; `/v1/objects*` needs a token outside loopback and, since v0.5.1,
+checks `Host` and `Origin` against allowlists (DNS rebinding); CORS is off
+unless origins are configured.
 
 ### Queue injector
 

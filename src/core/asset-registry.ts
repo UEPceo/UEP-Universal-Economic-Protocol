@@ -14,10 +14,16 @@
  *  - Asset id: `<namespace>/<symbol>`, lowercase ASCII, at most 31 bytes, so
  *    the field encoding `encodeStringToFr` is injective over all valid ids
  *    (no two ids, whoever creates them, map to the same field element).
+ *    Exception: ids under a v2 self-certifying namespace (`k-` + 26 base32
+ *    characters, up to 44 bytes) use a packed encoding above 2^248 that is
+ *    also injective and never meets a short id (`assetIdToFr`).
  *  - Namespace: owned by a key set (`owner`). Every asset under a namespace
  *    carries `approvals` by that owner over its admission message, so a
  *    namespace is bound to its owner's keys. Namespaces that start with `k-`
- *    are self-certifying: the name is derived from the owner key set.
+ *    are self-certifying: the name is derived from the owner key set. Since
+ *    v0.5.1 (audit V50-13) new names carry 130 bits (`k-` + 26 base32 chars,
+ *    domain `UEP-NAMESPACE-v2`); legacy 65-bit names (`k-` + 13 chars, domain
+ *    `UEP-NAMESPACE-v1`) stay readable but cannot be newly admitted.
  *  - Issuer: each asset has its own issuer key set `{ keys, threshold }`.
  *    A mint needs `threshold` distinct valid signatures (threshold 1 today;
  *    M-of-N is the same code path). Issuer keys are never shared between
@@ -52,12 +58,24 @@ export const ASSET_REGISTRY_FORMAT_VERSION = 1;
 /** D-1: maximum decimals of any asset. Raising it requires a protocol decision. */
 export const MAX_ASSET_DECIMALS = 8;
 export const U64_MAX = 2n ** 64n - 1n;
-export const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9-]{0,14}$/;
+/** Namespace: a short name (1-15 chars) or a v2 self-certifying name (`k-` + 26 base32 chars). */
+export const NAMESPACE_PATTERN = /^(?:[a-z0-9][a-z0-9-]{0,14}|k-[a-z2-7]{26})$/;
 export const ASSET_SYMBOL_PATTERN = /^[a-z0-9][a-z0-9._-]{0,14}$/;
-/** Canonical asset id `<namespace>/<symbol>` (at most 31 bytes). */
-export const ASSET_ID_PATTERN = /^([a-z0-9][a-z0-9-]{0,14})\/([a-z0-9][a-z0-9._-]{0,14})$/;
-/** Prefix of self-certifying namespaces (`k-` + 13 base32 chars of SHA-256 of the owner key set). */
+/**
+ * Canonical asset id `<namespace>/<symbol>`: at most 31 bytes, or at most 44
+ * bytes under a v2 self-certifying namespace (see `parseAssetId`).
+ */
+export const ASSET_ID_PATTERN = /^([a-z0-9][a-z0-9-]{0,14}|k-[a-z2-7]{26})\/([a-z0-9][a-z0-9._-]{0,14})$/;
+/** Maximum byte length of an asset id under a short namespace (field-injective direct encoding). */
+export const MAX_SHORT_ASSET_ID_BYTES = 31;
+/** Prefix of self-certifying namespaces (`k-` + base32 of SHA-256 of the owner key set). */
 export const SELF_CERTIFIED_NAMESPACE_PREFIX = "k-";
+/** v0.5.1 (V50-13): base32 characters of a v2 self-certifying namespace (26 × 5 = 130 bits). */
+export const SELF_CERTIFIED_NAMESPACE_CHARS = 26;
+/** Legacy (v0.5.0) self-certifying namespaces: 13 base32 characters (65 bits). Read-only compatibility. */
+export const LEGACY_SELF_CERTIFIED_NAMESPACE_CHARS = 13;
+const SELF_CERTIFIED_V2_PATTERN = /^k-[a-z2-7]{26}$/;
+const SELF_CERTIFIED_LEGACY_PATTERN = /^k-[a-z2-7]{13}$/;
 export const ASSET_KINDS = ["test-currency", "resource-credit", "reserved", "simulation"] as const;
 export const ASSET_STATUSES = ["experimental", "registered", "deprecated"] as const;
 const MANIFEST_DOMAIN = "UEP-ASSET-REGISTRY-v1";
@@ -129,7 +147,8 @@ export type RegisteredAsset = Readonly<{
 export function parseAssetId(assetId: unknown): { namespace: string; symbol: string } {
   if (typeof assetId !== "string") throw new Error("ASSET_ID_INVALID: asset id must be a string");
   const m = ASSET_ID_PATTERN.exec(assetId);
-  if (!m || new TextEncoder().encode(assetId).length > 31) throw new Error("ASSET_ID_INVALID: asset ids must match <namespace>/<symbol> (" + ASSET_ID_PATTERN.source + ")");
+  // Short namespaces keep the 31-byte bound (direct field encoding); v2 self-certifying ones are bounded by the pattern (≤ 44 bytes).
+  if (!m || (!SELF_CERTIFIED_V2_PATTERN.test(m[1]!) && new TextEncoder().encode(assetId).length > MAX_SHORT_ASSET_ID_BYTES)) throw new Error("ASSET_ID_INVALID: asset ids must match <namespace>/<symbol> (" + ASSET_ID_PATTERN.source + ")");
   return { namespace: m[1]!, symbol: m[2]! };
 }
 
@@ -142,9 +161,35 @@ export function isCanonicalAssetId(assetId: unknown): assetId is string {
   }
 }
 
-/** Field encoding of a canonical asset id (injective over the grammar). */
+const SYMBOL_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789._-";
+const PACKED_ID_TAG = 1n << 248n;
+
+/**
+ * Packed field encoding of an id under a v2 self-certifying namespace:
+ * 2^248 + (130-bit namespace digest) * 2^80 + bijective base-40 symbol code
+ * (< 40^15 < 2^80). Injective, below the BN254 modulus, and never equal to a
+ * direct encoding of a short id (those are < 2^248).
+ */
+function packedSelfCertifiedAssetFr(namespace: string, symbol: string): Fr {
+  let ns = 0n;
+  for (const ch of namespace.slice(SELF_CERTIFIED_NAMESPACE_PREFIX.length)) ns = (ns << 5n) | BigInt(B32.indexOf(ch));
+  let sym = 0n;
+  let mul = 1n;
+  for (const ch of symbol) {
+    sym += BigInt(SYMBOL_ALPHABET.indexOf(ch) + 1) * mul;
+    mul *= 40n;
+  }
+  return new Fr(PACKED_ID_TAG + (ns << 80n) + sym);
+}
+
+/**
+ * Field encoding of a canonical asset id (injective over the grammar). Short
+ * ids (≤ 31 bytes) keep the direct `encodeStringToFr` encoding, so every
+ * existing id has the same field element as in v0.5.0.
+ */
 export function assetIdToFr(assetId: string): Fr {
-  parseAssetId(assetId);
+  const { namespace, symbol } = parseAssetId(assetId);
+  if (SELF_CERTIFIED_V2_PATTERN.test(namespace)) return packedSelfCertifiedAssetFr(namespace, symbol);
   return encodeStringToFr(assetId);
 }
 
@@ -220,15 +265,49 @@ function base32(bytes: Buffer): string {
   return out;
 }
 
+function namespaceDigest(owner: KeySetInput | KeySet, domain: string): Buffer {
+  const ks = normalizeKeySet(owner, "namespace owner");
+  return Buffer.from(sha256Hex(stableStringify({ domain, keys: [...ks.keys].sort(), threshold: ks.threshold })), "hex");
+}
+
 /**
- * Self-certifying namespace of an owner key set: `k-` + 13 base32 chars of
- * SHA-256 over the canonical key set. Extension point for third-party
- * namespaces: the name proves which keys own it, so it cannot be squatted.
+ * Self-certifying namespace of an owner key set: `k-` + 26 base32 chars
+ * (130 bits) of SHA-256 over the canonical key set, domain `UEP-NAMESPACE-v2`.
+ * Extension point for third-party namespaces: the name proves which keys own
+ * it, so it cannot be squatted (v0.5.1, audit V50-13: about 2^130 work for a
+ * second preimage and 2^65 for a collision).
  */
 export function selfCertifiedNamespace(owner: KeySetInput | KeySet): string {
-  const ks = normalizeKeySet(owner, "namespace owner");
-  const digest = Buffer.from(sha256Hex(stableStringify({ domain: "UEP-NAMESPACE-v1", keys: [...ks.keys].sort(), threshold: ks.threshold })), "hex");
-  return SELF_CERTIFIED_NAMESPACE_PREFIX + base32(digest).slice(0, 13);
+  return SELF_CERTIFIED_NAMESPACE_PREFIX + base32(namespaceDigest(owner, "UEP-NAMESPACE-v2")).slice(0, SELF_CERTIFIED_NAMESPACE_CHARS);
+}
+
+/**
+ * @deprecated Compatibility only. The v0.5.0 derivation: `k-` + 13 base32
+ * chars (65 bits), domain `UEP-NAMESPACE-v1`. Too short for an open registry
+ * (V50-13). Manifests that already list such a name keep loading; new
+ * manifests and version bumps cannot introduce one.
+ */
+export function legacySelfCertifiedNamespace(owner: KeySetInput | KeySet): string {
+  return SELF_CERTIFIED_NAMESPACE_PREFIX + base32(namespaceDigest(owner, "UEP-NAMESPACE-v1")).slice(0, LEGACY_SELF_CERTIFIED_NAMESPACE_CHARS);
+}
+
+/** 2 for a v2 self-certifying name, 1 for a legacy (v0.5.0) one, null otherwise. */
+export function selfCertifiedNamespaceVersion(namespace: string): 1 | 2 | null {
+  if (SELF_CERTIFIED_V2_PATTERN.test(namespace)) return 2;
+  if (SELF_CERTIFIED_LEGACY_PATTERN.test(namespace)) return 1;
+  return null;
+}
+
+export function isLegacySelfCertifiedNamespace(namespace: string): boolean {
+  return selfCertifiedNamespaceVersion(namespace) === 1;
+}
+
+/** True iff `namespace` is the self-certifying name (v2, or legacy v1) of `owner`. */
+export function selfCertifiedNamespaceMatches(namespace: string, owner: KeySetInput | KeySet): boolean {
+  const v = selfCertifiedNamespaceVersion(namespace);
+  if (v === 2) return selfCertifiedNamespace(owner) === namespace;
+  if (v === 1) return legacySelfCertifiedNamespace(owner) === namespace;
+  return false;
 }
 
 // ---------------------------------------------------------------- messages / hashes
@@ -288,7 +367,7 @@ export function validateAssetRegistryManifest(m: AssetRegistryManifest): string[
     let ks: KeySet;
     try { ks = normalizeKeySet(n.owner, `namespace ${n.namespace} owner`); } catch (e) { p.push((e as Error).message); continue; }
     if (ks.keys.join() !== n.owner.keys.join()) p.push(`namespace ${n.namespace}: owner keys must be canonical hex SPKI DER`);
-    if (n.namespace.startsWith(SELF_CERTIFIED_NAMESPACE_PREFIX) && selfCertifiedNamespace(ks) !== n.namespace) p.push(`namespace ${n.namespace}: self-certifying name does not match its owner keys`);
+    if (n.namespace.startsWith(SELF_CERTIFIED_NAMESPACE_PREFIX) && !selfCertifiedNamespaceMatches(n.namespace, ks)) p.push(`namespace ${n.namespace}: self-certifying name does not match its owner keys`);
     owners.set(n.namespace, ks);
     for (const k of ks.keys) ownerKeys.add(k);
   }
@@ -303,7 +382,7 @@ export function validateAssetRegistryManifest(m: AssetRegistryManifest): string[
     const id = a.assetId;
     if (ids.has(id)) p.push(`${id}: duplicate asset id`);
     ids.add(id);
-    const hex = encodeStringToFr(id).toHex();
+    const hex = assetIdToFr(id).toHex();
     if (encoded.has(hex)) p.push(`${id}: field encoding collides`);
     encoded.add(hex);
     const owner = owners.get(parsed.namespace);
@@ -344,6 +423,10 @@ export function validateAssetRegistryUpgrade(prev: SignedAssetRegistry, next: Si
   if (next.version !== prev.version + 1) p.push("upgrade: version must increase by 1");
   if (next.previousManifestHash !== prev.manifestHash) p.push("upgrade: previousManifestHash must be the previous manifest hash");
   for (const n of prev.namespaces) if (!next.namespaces.some((x) => x.namespace === n.namespace)) p.push(`upgrade: namespace ${n.namespace} removed`);
+  // V50-13: legacy 65-bit self-certifying names stay readable but cannot be newly admitted.
+  for (const n of next.namespaces) {
+    if (isLegacySelfCertifiedNamespace(n.namespace) && !prev.namespaces.some((x) => x.namespace === n.namespace)) p.push(`upgrade: namespace ${n.namespace} is a legacy 65-bit self-certifying name and cannot be newly admitted (use selfCertifiedNamespace)`);
+  }
   for (const a of prev.assets) {
     const b = next.assets.find((x) => x.assetId === a.assetId);
     if (!b) { p.push(`upgrade: asset ${a.assetId} removed (deprecate it instead)`); continue; }
@@ -402,7 +485,7 @@ function toRegistered(a: AssetDefinition): RegisteredAsset {
     minProtocolFee: BigInt(a.minProtocolFee),
     supplyCap: BigInt(a.supplyCap),
     issuer: a.issuer,
-    fr: encodeStringToFr(a.assetId),
+    fr: assetIdToFr(a.assetId),
   });
 }
 
@@ -506,8 +589,20 @@ export function buildSignedAssetRegistry(opts: {
   assets: Array<AssetDefinitionTemplate & { issuer: KeySetInput | KeySet }>;
   namespaceOwnerKeys: Record<string, PrivateKeyLike[]>;
   governanceKeys: PrivateKeyLike[];
+  /**
+   * Compatibility only (V50-13): allow legacy 65-bit `k-` names that are not
+   * already in `previous`, for example to rebuild a v0.5.0 fixture.
+   */
+  allowLegacySelfCertifiedNamespaces?: boolean;
 }): SignedAssetRegistry {
   const version = opts.version ?? (opts.previous ? opts.previous.version + 1 : 1);
+  if (!opts.allowLegacySelfCertifiedNamespaces) {
+    for (const n of opts.namespaces) {
+      if (isLegacySelfCertifiedNamespace(n.namespace) && !opts.previous?.namespaces.some((x) => x.namespace === n.namespace)) {
+        throw new Error(`ASSET_REGISTRY_LEGACY_NAMESPACE: ${n.namespace} is a legacy 65-bit self-certifying name; use selfCertifiedNamespace() (130 bits)`);
+      }
+    }
+  }
   const namespaces: NamespaceRecord[] = opts.namespaces.map((n) => ({ namespace: n.namespace, owner: normalizeKeySet(n.owner, `namespace ${n.namespace} owner`), ...(n.label ? { label: n.label } : {}) }));
   const assets: AssetDefinition[] = opts.assets.map((t) => {
     const def: Omit<AssetDefinition, "approvals"> = {

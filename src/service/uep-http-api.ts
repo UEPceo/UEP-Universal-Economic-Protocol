@@ -7,7 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { UepServiceApi } from "./uep-service-api.ts";
 import { UEP_API_VERSION, httpStatusOf, type ApiRequestMeta } from "./uep-api-types.ts";
 
-export const UEP_HTTP_API_VERSION = "1.2.0";
+export const UEP_HTTP_API_VERSION = "1.2.1";
 
 export type EconomicReadModel = {
   tip: () => { stateRoot: string; height: number; treasury?: string };
@@ -27,6 +27,24 @@ export type HttpApiOptions = {
   objectsToken?: string;
   /** CORS allowlist (see applyCors). Overrides UEP_HTTP_CORS_ORIGINS. */
   cors?: { allowedOrigins: string[] };
+  /**
+   * v0.5.1 (audit V50-12, DNS rebinding): host names accepted in the `Host`
+   * header of the object routes. Default: `127.0.0.1`, `localhost`, `::1` and
+   * the bind host when it is not a wildcard (`0.0.0.0`, `::`). Overrides
+   * UEP_HTTP_ALLOWED_HOSTS (comma-separated). A port in `Host`, when present,
+   * must be the listening port. Anything else is 403 OBJECTS_HOST_NOT_ALLOWED,
+   * with or without a bearer token.
+   */
+  allowedHosts?: string[];
+  /**
+   * v0.5.1 (audit V50-12): exact origins accepted in the `Origin` header of the
+   * object routes. A request without `Origin` (non-browser clients) passes this
+   * check. Default: the same-origin loopback origins of the listening port
+   * (`http://127.0.0.1:<port>`, `http://localhost:<port>`, `http://[::1]:<port>`)
+   * plus the exact origins of the CORS allowlist (`*` is never honoured here).
+   * Anything else, including `Origin: null`, is 403 OBJECTS_ORIGIN_NOT_ALLOWED.
+   */
+  objectsAllowedOrigins?: string[];
 };
 
 /**
@@ -84,6 +102,78 @@ function applyCors(opts: HttpApiOptions, req: IncomingMessage, res: ServerRespon
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const WILDCARD_HOSTS = new Set(["", "0.0.0.0", "::", "[::]"]);
+
+function normalizeHostName(h: string): string {
+  const v = h.trim().toLowerCase();
+  return v.startsWith("[") && v.endsWith("]") ? v.slice(1, -1) : v;
+}
+
+/** Parse a `Host` header into name and optional port. Undefined when malformed. */
+export function parseHostHeader(raw: string | undefined): { name: string; port?: number } | undefined {
+  if (raw === undefined) return undefined;
+  const v = raw.trim().toLowerCase();
+  if (!v || /[\s/@?#\\]/.test(v)) return undefined;
+  let name: string;
+  let portRaw: string | undefined;
+  if (v.startsWith("[")) {
+    const end = v.indexOf("]");
+    if (end < 0) return undefined;
+    name = v.slice(1, end);
+    const rest = v.slice(end + 1);
+    if (rest && !rest.startsWith(":")) return undefined;
+    portRaw = rest ? rest.slice(1) : undefined;
+  } else {
+    const parts = v.split(":");
+    if (parts.length > 2) return undefined; // bare IPv6 without brackets is not a valid Host
+    name = parts[0]!;
+    portRaw = parts[1];
+  }
+  if (!name) return undefined;
+  if (portRaw === undefined) return { name };
+  if (!/^[0-9]{1,5}$/.test(portRaw)) return undefined;
+  const port = Number(portRaw);
+  return port >= 1 && port <= 65535 ? { name, port } : undefined;
+}
+
+function allowedHostNames(opts: HttpApiOptions, bindHost: string): Set<string> {
+  const configured = opts.allowedHosts ?? (process.env.UEP_HTTP_ALLOWED_HOSTS ? process.env.UEP_HTTP_ALLOWED_HOSTS.split(",") : undefined);
+  if (configured) return new Set(configured.map(normalizeHostName).filter(Boolean));
+  const out = new Set(LOOPBACK_HOSTS);
+  const b = normalizeHostName(bindHost);
+  if (!WILDCARD_HOSTS.has(b)) out.add(b);
+  return out;
+}
+
+function allowedObjectOrigins(opts: HttpApiOptions, localPort: number | undefined): Set<string> {
+  if (opts.objectsAllowedOrigins) return new Set(opts.objectsAllowedOrigins);
+  const out = new Set(allowedOrigins(opts).filter((o) => o !== "*"));
+  if (localPort) for (const h of ["127.0.0.1", "localhost", "[::1]"]) out.add(`http://${h}:${localPort}`);
+  return out;
+}
+
+/**
+ * V50-12: the object routes check the request's `Host` and `Origin` against
+ * allowlists before any authorization, so a page served from another name
+ * that resolves to this listener (DNS rebinding) is refused. Fail closed: a
+ * missing, repeated or malformed `Host`, a port other than the listening port,
+ * or an `Origin` outside the allowlist is rejected.
+ */
+function objectsRequestOriginCheck(opts: HttpApiOptions, bindHost: string, req: IncomingMessage): { ok: true } | { ok: false; code: "OBJECTS_HOST_NOT_ALLOWED" | "OBJECTS_ORIGIN_NOT_ALLOWED"; message: string } {
+  const rawHost = req.headers.host;
+  const localPort = req.socket.localPort;
+  const host = typeof rawHost === "string" ? parseHostHeader(rawHost) : undefined;
+  if (!host || !allowedHostNames(opts, bindHost).has(host.name) || (host.port !== undefined && host.port !== localPort)) {
+    return { ok: false, code: "OBJECTS_HOST_NOT_ALLOWED", message: "Host header is not in the allowlist of the object routes" };
+  }
+  const origin = req.headers.origin;
+  if (origin !== undefined) {
+    if (typeof origin !== "string" || !allowedObjectOrigins(opts, localPort).has(origin)) {
+      return { ok: false, code: "OBJECTS_ORIGIN_NOT_ALLOWED", message: "Origin is not in the allowlist of the object routes" };
+    }
+  }
+  return { ok: true };
+}
 
 function objectsAuthorized(opts: HttpApiOptions, host: string, req: IncomingMessage): boolean {
   if (opts.objectsToken) {
@@ -93,7 +183,7 @@ function objectsAuthorized(opts: HttpApiOptions, host: string, req: IncomingMess
     const b = Buffer.from(want);
     return a.length === b.length && timingSafeEqual(a, b);
   }
-  return LOOPBACK_HOSTS.has(host);
+  return LOOPBACK_HOSTS.has(normalizeHostName(host));
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
@@ -156,6 +246,13 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         return;
       }
       const obj = path.match(/^\/v1\/objects\/([^/]+)$/);
+      if (obj || path === "/v1/objects") {
+        const check = objectsRequestOriginCheck(opts, host, req);
+        if (!check.ok) {
+          send(res, 403, { ok: false, error: { code: check.code, message: check.message } });
+          return;
+        }
+      }
       if ((obj || path === "/v1/objects") && !objectsAuthorized(opts, host, req)) {
         send(res, 401, { ok: false, error: { code: "OBJECTS_AUTH_REQUIRED", message: "object routes need a bearer token on this host" } });
         return;

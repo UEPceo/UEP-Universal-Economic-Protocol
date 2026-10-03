@@ -10,7 +10,7 @@
 import type { NodeIdentity } from "./node-identity.ts";
 import { signBytes, verifyBytes } from "./node-identity.ts";
 import { zkVerifyHex } from "./zk-bridge.ts";
-import { pinnedVk } from "./zk-vk-pins.ts";
+import { isVkPinnedForDomain, pinnedVk } from "./zk-vk-pins.ts";
 import { assertEnvelopeMatchesPublicInputs } from "./envelope-public-bind.ts";
 import {
   proposalFromEnvelope,
@@ -117,6 +117,14 @@ export function verifyEnvelope(
   return verifyBytes(sequencerPublicKeyHex, envelopeBody(body), e.signature);
 }
 
+/** V50-11: a node domain is a non-negative safe integer (it is compared with the proof's domain_id). */
+export function assertLabDomainId(domainId: unknown): number {
+  if (typeof domainId !== "number" || !Number.isSafeInteger(domainId) || domainId < 0) {
+    throw new Error(`DOMAIN_ID_INVALID: domainId must be a non-negative safe integer (got ${String(domainId)})`);
+  }
+  return domainId;
+}
+
 export class LabNode {
   readonly identity: NodeIdentity;
   readonly networkId: string;
@@ -138,7 +146,10 @@ export class LabNode {
    * Structural lab sets false; DEV-ZK / TESTNET-ZK set true.
    */
   requireZkVerify = false;
-  /** Operator-configured VK for the lab profile without registry (default: pinned dev key). */
+  /**
+   * Operator-configured VK for the lab profile without registry (default: pinned dev key).
+   * v0.5.1 (V50-11): must be pinned for this node's domain in the pin file.
+   */
   defaultVkHex?: string;
   /**
    * Pinned VK registry. When set with requireZkVerify, envelope.vkId must resolve;
@@ -178,7 +189,13 @@ export class LabNode {
   ) {
     this.identity = identity;
     this.networkId = networkId;
-    this.domainId = domainId;
+    // V50-11: the domain is bound three ways so a misconfiguration fails loudly:
+    // it must be a valid domain number here, the envelope domain must equal it,
+    // and in ZK mode the proof's domain_id (PI[12]) and the pinned key must match it.
+    this.domainId = assertLabDomainId(domainId);
+    if (opts?.defaultVkHex && !isVkPinnedForDomain(opts.defaultVkHex, domainId)) {
+      throw new Error(`VK_NOT_PINNED_FOR_DOMAIN: defaultVkHex is not pinned for domain ${domainId}`);
+    }
     this.sequencerPublicKeyHex = sequencerPublicKeyHex;
     this.sequencerNodeId = sequencerNodeId;
     if (opts?.requireZkVerify) this.requireZkVerify = true;
@@ -317,6 +334,10 @@ export class LabNode {
         if (env.vkHex && env.vkHex !== pinned.vkHex) {
           return { ok: false, error: "VK_HEX_PIN_MISMATCH" };
         }
+        // V50-11: the registry key must be pinned for this node's domain.
+        if (!isVkPinnedForDomain(pinned.vkHex, this.domainId)) {
+          return { ok: false, error: "VK_NOT_PINNED_FOR_DOMAIN" };
+        }
         vk = pinned.vkHex;
       } else if (this.requirePinnedVkId) {
         return { ok: false, error: "VK_REGISTRY_REQUIRED" };
@@ -338,6 +359,11 @@ export class LabNode {
       });
       if (!bind.ok) {
         return { ok: false, error: bind.error };
+      }
+      // V50-11: explicit binding of the proof's domain_id to this node's domain
+      // (same rule as zkVerifyPinned / verifyArtifactAgainstRoots).
+      if (BigInt("0x" + env.publicInputsHex[12]!.replace(/^0x/i, "")) !== BigInt(this.domainId)) {
+        return { ok: false, error: "ZK_DOMAIN_MISMATCH" };
       }
       const v = zkVerifyHex(vk, env.proofHex, env.publicInputsHex);
       if (!v.ok) {

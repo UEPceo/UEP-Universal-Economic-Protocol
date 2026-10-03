@@ -98,6 +98,10 @@ export function assertEnvelopeMatchesPublicInputs(
     r = eq(env.transactionCommitment, pi[11], "ZK_PUBLIC_TX_COMMIT_MISMATCH");
     if (!r.ok) return r;
   }
+  // V50-11: the signed envelope domain must be the domain_id the proof was made for (PI[12]).
+  if (!Number.isSafeInteger(env.domainId) || env.domainId < 0 || BigInt("0x" + normHex(pi[12]!)) !== BigInt(env.domainId)) {
+    return { ok: false, error: "ZK_PUBLIC_DOMAIN_MISMATCH" };
+  }
 
   return { ok: true };
 }

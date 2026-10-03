@@ -14,7 +14,6 @@
  * unit; `decimals` is fixed per asset and at most 8 (D-1).
  */
 import { Fr } from "./field.ts";
-import { encodeStringToFr } from "./encoding.ts";
 import {
   ASSET_ID_PATTERN,
   MAX_ASSET_DECIMALS,
@@ -78,7 +77,7 @@ export function validateAssetRegistry(records: readonly AssetRecord[]): string[]
     if (!isCanonicalLedgerAssetId(r.assetId)) { problems.push(`${r.assetId}: non-canonical asset id`); continue; }
     if (ids.has(r.assetId)) problems.push(`${r.assetId}: duplicate asset id`);
     ids.add(r.assetId);
-    const hex = encodeStringToFr(r.assetId).toHex();
+    const hex = assetIdToFr(r.assetId).toHex();
     if (encoded.has(hex)) problems.push(`${r.assetId}: field encoding collides`);
     encoded.add(hex);
     try { assertAssetDecimals(r.decimals, r.assetId); } catch { problems.push(`${r.assetId}: decimals out of range`); }
@@ -200,7 +199,7 @@ export function findAsset(networkId: string, assetId: string): AssetRecord | und
 
 /** Template asset of a network by its field encoding. */
 export function findAssetByFr(networkId: string, assetId: Fr): AssetRecord | undefined {
-  return assetsForNetwork(networkId).find((a) => encodeStringToFr(a.assetId).eq(assetId));
+  return assetsForNetwork(networkId).find((a) => assetIdToFr(a.assetId).eq(assetId));
 }
 
 /** Manifest templates (no keys) of a network's asset list. */

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.1-public-iot-m2m (unreleased) — fixes from the external audit of v0.5.0
+
+No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged. No ledger, snapshot or Marketplace settlement rule changes.
+
+### Security (v0.5.1)
+
+- **`/v1/objects*`: Host and Origin allowlist (DNS rebinding).** Before any authorization, the object routes check the request's `Host` header against an allowlist (default: `127.0.0.1`, `localhost`, `::1` and the bind host when it is not a wildcard; `allowedHosts` option or `UEP_HTTP_ALLOWED_HOSTS`) and its `Origin` header, when present, against exact origins (default: the same-origin loopback origins of the listening port plus the CORS allowlist without `*`; `objectsAllowedOrigins` option). A port in `Host` must be the listening port. A missing, malformed or foreign `Host` is `403 OBJECTS_HOST_NOT_ALLOWED`, a foreign or `null` origin `403 OBJECTS_ORIGIN_NOT_ALLOWED`, with or without a bearer token. HTTP adapter version 1.2.1.
+- **Lab node domain binding.** `LabNode` validates its domain (a non-negative safe integer, `DOMAIN_ID_INVALID`), requires an operator-configured `defaultVkHex` and any registry key to be pinned for that domain (`VK_NOT_PINNED_FOR_DOMAIN`), and in ZK mode requires the proof's `domain_id` public input to equal the signed envelope domain and the node domain (`ZK_PUBLIC_DOMAIN_MISMATCH`, `ZK_DOMAIN_MISMATCH`), the same rule as the pinned verifiers. A proof made for another domain is rejected even when the envelope is correctly signed.
+- **Self-certifying namespaces with 130 bits.** `selfCertifiedNamespace()` now returns `k-` + 26 base32 characters of SHA-256 over the owner key set (domain `UEP-NAMESPACE-v2`), up from 13 characters (65 bits). Asset ids under such a namespace may be up to 44 bytes and use a packed field encoding above 2^248, so the encoding stays injective over all valid ids; every other id keeps its v0.5.0 field element.
+- **ZK verifying keys: development keys only.** The pinned verifying keys are development keys. ZK verification in the labs is not trustworthy until a real multi-party setup ceremony is held. Loading the development pin file is refused when `NODE_ENV=production` or `UEP_ZK_KEY_MODE=production` (`VK_DEV_KEYS_REFUSED`) and warns once outside development/test runs; a pin file that is not labelled `DEV-TEST-KEYS` but lists a development key is refused (`VK_DEV_KEYS_MISLABELED`).
+
+### Tests (v0.5.1)
+
+- `npm run test:all` passes on Node.js 22.23 and 24.21 (Rust 1.85.1): protocol 101/101 (5 new asset-registry tests), Marketplace + IoT + HTTP 124/124 (3 new Host/Origin tests), smoke, quickstart, 20k simulation, Rust 115 (unchanged), labs 98 files / 463 tests (new `node-domain-binding` and `zk-dev-keys-guard`), 14 known-issue files skipped as before.
+
+### Compatibility (v0.5.1)
+
+- **Behaviour change (HTTP):** object routes reached through a name other than loopback or the bind host now answer 403 until that name is listed in `allowedHosts` / `UEP_HTTP_ALLOWED_HOSTS`, even with a valid bearer token. Browser pages need their origin in `objectsAllowedOrigins` or the CORS allowlist. Clients that send no `Origin` (curl, server-to-server) are unaffected.
+- **Behaviour change (labs):** `new LabNode()` throws on an invalid domain or on a `defaultVkHex` that is not pinned for the node's domain; ZK envelopes whose proof was made for another domain are rejected.
+- **Asset registry, compatibility path for legacy `k-` names:** names created with v0.5.0 (`k-` + 13 characters) remain valid and readable: manifests that list them load unchanged, with the same manifest hash and the same asset field encodings (tested against a frozen v0.5.0 manifest). `legacySelfCertifiedNamespace()` reproduces the old derivation, `selfCertifiedNamespaceVersion()` tells the two apart. New manifests and version bumps cannot introduce a legacy name (`ASSET_REGISTRY_LEGACY_NAMESPACE` in the builder, an upgrade problem on load); `buildSignedAssetRegistry({ allowLegacySelfCertifiedNamespaces: true })` exists only to rebuild old fixtures. Code that assumed every asset id is at most 31 bytes should use `parseAssetId()` / `assetIdToFr()`.
+
 ## 0.5.0-public-iot-m2m (unreleased) — research labs, Poseidon protocol hash, asset model and hardening
 
 Version 0.5.0 bundles the research-labs integration and the Poseidon protocol hash (first sections below, unchanged) with the v0.5.0 work: namespaced assets and an asset registry manifest, circuit v4 with (account, asset) state keys, API authorization hardening, remote-safe signed spends, paymaster reserve protection, a compressed sparse Merkle tree and fixes from two independent external assessments. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
@@ -9,7 +30,7 @@ Version 0.5.0 bundles the research-labs integration and the Poseidon protocol ha
 - **API authorization hardening.** Marketplace and IoT/M2M calls of the service API and the HTTP adapter are authorized only by the actor's Ed25519 signature over the canonical action message (`src/marketplace/identity.ts`). HTTP carries it in `x-uep-actor-id`, `x-uep-signature` and `x-uep-issued-at` (required for reads). A missing or invalid authorization is `401 UNAUTHORIZED`, a valid one for the wrong actor `403 FORBIDDEN`; `x-uep-caller-id` is ignored. Fund, deliver, settle and cancel pass the signed authorization to the Marketplace; `POST /v1/marketplace/orders` passes the buyer's reservation signature and idempotency key; the treasury snapshot (`GET /v1/marketplace/treasury/<asset>`) needs a signed administrator `read`. HTTP status codes follow the error code. HTTP adapter version 1.2.0. End-to-end HTTP tests cover anonymous, wrong-actor and correctly signed calls.
 - `/v1/objects*`: a bearer token (`objectsToken` option, constant-time comparison) when configured; without one, only loopback hosts are served.
 - **CORS:** off by default (same-origin only). `cors.allowedOrigins` or `UEP_HTTP_CORS_ORIGINS` (comma-separated) lists exact origins; `*` only if listed explicitly; credentials are never allowed. `OPTIONS` preflight answers `204`.
-- **Pin verifying key.** Lab verifiers use the development verifying key pinned by SHA-256 per depth and domain (`uep-core/vectors/UEP-ZK-DEV-VK-PINS.json`; deployments set `UEP_ZK_VK_PINS_FILE`). A key carried in a message must match the pinned key (`VK_PIN_MISMATCH`); `VerifyingKeyRegistry.pin()` only accepts pinned keys.
+- **Pinned verifying keys (development keys only).** Lab verifiers use the development verifying key pinned by SHA-256 per depth and domain (`uep-core/vectors/UEP-ZK-DEV-VK-PINS.json`; deployments set `UEP_ZK_VK_PINS_FILE`). A key carried in a message must match the pinned key (`VK_PIN_MISMATCH`); `VerifyingKeyRegistry.pin()` only accepts pinned keys. Pinning fixes which key a verifier uses; it does not make that key trustworthy. The pinned keys are development keys only, and ZK verification is not trustworthy until a real multi-party setup ceremony is held (see `SECURITY.md`).
 - **Strict field parsing** in `uep-zk` and the canonical-state parser: values `>= p` are rejected, no truncation through `u128`. The circuit library computes the fee with 128-bit intermediates (large amounts) and `prove-spend-json` rejects amount overflow.
 - `uep-zk` is executed in place; a private temporary copy (mode 0700, removed at exit) is made only when the build output is not executable.
 - `src/service/index.ts` no longer re-exports the lab proving queue.
@@ -25,7 +46,7 @@ Version 0.5.0 bundles the research-labs integration and the Poseidon protocol ha
 ### Research spend circuit v4 (v0.5.0)
 
 - `UEP-27-SPEND-POSEIDON-D32-v4-assetkey`, 155_393 constraints at D=32 and 48_097 at D=4: every state slot is keyed by `H_ACCOUNT(account, asset)`, the circuit constrains each index to the low bits of its key and requires the sender, recipient and treasury slots to be distinct. Witness builders, the execution engine and the SMT economic state reject an index collision (`SMT_INDEX_COLLISION`).
-- New CLI commands `uep-zk dev-vk <depth>` and `uep-zk state-index <account> <asset> <depth>`; development keys come from the fixed setup seed.
+- New CLI commands `uep-zk dev-vk <depth>` and `uep-zk state-index <account> <asset> <depth>`; `dev-vk` prints a development key (development and tests only, no ceremony).
 
 ### Performance (v0.5.0)
 
