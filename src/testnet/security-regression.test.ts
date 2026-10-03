@@ -29,12 +29,17 @@ test("submit requires sender authentication by default and cannot bypass policy"
   const recipient = await identityFromMnemonic(await generateMnemonic(128));
   const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
   ledger.faucet(owner.accountId, "uep-test/teur", 500_000n);
+  // Local development MAC: without the sender identity there is no proof.
+  const mac = ledger.prepareSpend(owner, recipient.accountId, "uep-test/teur", 100_000n, Date.now(), { authorization: "development-mac" });
+  assert.ok("tx" in mac);
+  if (!("tx" in mac)) return;
+  const noSecret = ledger.submit(mac.tx);
+  assert.equal("error" in noSecret, true);
+  if ("error" in noSecret) assert.equal(noSecret.error.code, "PROOF");
+  // Default (v0.5.0): sender-signature spend, verified without secrets.
   const prepared = ledger.prepareSpend(owner, recipient.accountId, "uep-test/teur", 100_000n);
   assert.ok("tx" in prepared);
   if (!("tx" in prepared)) return;
-  const noSecret = ledger.submit(prepared.tx);
-  assert.equal("error" in noSecret, true);
-  if ("error" in noSecret) assert.equal(noSecret.error.code, "PROOF");
   ledger.policy.setPaused(true);
   const paused = ledger.submit(prepared.tx, owner);
   assert.equal("error" in paused, true);

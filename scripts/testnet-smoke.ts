@@ -34,7 +34,8 @@ async function main() {
   assert.ok("tx" in prepared);
   if (!("tx" in prepared)) throw new Error(prepared.error.message);
 
-  const submitted = node.submit(prepared.tx, alice);
+  // Signed spend: verified with the public key only, no secret sent to the node.
+  const submitted = node.submit(prepared.tx);
   assert.ok("tx" in submitted);
   if (!("tx" in submitted)) throw new Error(submitted.error.message);
 

@@ -23,7 +23,9 @@ ledger.faucet(senderAddress, asset, 100_000n);
 const prepared = ledger.prepareSpend(sender, recipientAddress, asset, amount);
 if (!("tx" in prepared)) throw new Error(prepared.error.message);
 const oldStateRoot = ledger.stateRoot().toHex();
-const result = ledger.submit(prepared.tx, sender);
+// v0.5.0: the spend is signed locally with the sender's key-derived spend key;
+// the node verifies it with the public key only (no secret is submitted).
+const result = ledger.submit(prepared.tx);
 if (!("tx" in result)) throw new Error(result.error.message);
 
 const tx = result.tx;

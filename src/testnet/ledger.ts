@@ -10,14 +10,14 @@ import { markConflicts, reconcile, settlementRoot } from "../core/reconciliation
 import { assetsForNetwork, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr } from "../core/assets.ts";
 import { hAccount, hLeaf } from "../core/hash.ts";
 import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
-import { deriveNullifier } from "../core/nullifier.ts";
+import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
 import { deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, type Note } from "../core/note.ts";
 import { computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
 import { encodeStringToFr, u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
 import { TREASURY_ID } from "../network/profiles.ts";
 import { SecurityPolicy, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
-import { DevelopmentSpendProofProvider, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
+import { DevelopmentSpendProofProvider, SENDER_SIGNATURE_PROOF, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
 import type { KeyObject } from "node:crypto";
 import { generateEd25519KeyPair, publicKeyHexOf, sha256Hex, signEd25519, stableStringify, toPrivateKey, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
@@ -58,6 +58,13 @@ export type SubmitError =
 export type SubmitResult = { tx: UepTransaction } | { error: SubmitError };
 /** A spend that passed every check and can be applied without further validation. */
 interface CheckedSpend { inputs: Note[]; outputs: Note[]; next: { sender: bigint; recipient: bigint; treasury: bigint }; assetIdStr: string }
+
+/**
+ * v0.5.0 spend authorization. "sender-signature" (default): remote-safe, the
+ * node verifies with the public key only. "development-mac": LOCAL /
+ * IN-PROCESS DEVELOPMENT ONLY, verification needs the sender's secret.
+ */
+export type SpendBuildOptions = { authorization?: "sender-signature" | "development-mac" };
 
 /** v0.4.7: result of preparePayment() / submitBatch(). `index` is the failing part, when known. */
 export type BatchResult = { txs: UepTransaction[] } | { error: SubmitError; index?: number };
@@ -276,7 +283,9 @@ export class UepLedger {
   /** Optional security policy gate (TESTNET). */
   policy: SecurityPolicyType = new SecurityPolicy();
   /**
-   * When true, submit must include secrets (MAC) or a verifiable zkProof.
+   * When true, a spend must be a sender-signature spend (v0.5.0 default,
+   * verified with the public key only) or a local development-MAC spend
+   * submitted in-process together with the sender identity.
    * v0.4.7: fixed at construction. It is always true unless the ledger was
    * built with the test-only flag `testOnlyDisableProof`; assigning `false`
    * afterwards throws. The Ed25519 sender signature is required either way.
@@ -459,6 +468,13 @@ export class UepLedger {
     return undefined;
   }
 
+  /** v0.5.0: a signed spend uses the public, sender-bound nullifier of its note. */
+  private checkSignedNullifier(tx: UepTransaction): SubmitError | undefined {
+    if (tx.spendProof.backend !== SENDER_SIGNATURE_PROOF.backend || tx.spendProof.payload !== "") return { code: "PROOF", message: "Unknown sender-signature scheme." };
+    if (!signedSpendNullifier(tx.senderId, tx.nonce).eq(tx.nullifier)) return { code: "WRONG_OWNER", message: "Nullifier is not the sender-bound nullifier of the consumed note." };
+    return undefined;
+  }
+
   /** v0.4.5: every canonical input note must be owned by the account of the revealed key. */
   private checkInputOwnerKeys(tx: UepTransaction, inputs: Note[]): SubmitError | undefined {
     for (const n of inputs) {
@@ -555,7 +571,12 @@ export class UepLedger {
   }
 
   /**
-   * Build a spend from the caller's secrets. Selects FIFO notes.
+   * Build a spend from the caller's secrets. Selects FIFO notes. Runs on the
+   * client (its own ledger replica): the secrets never leave it.
+   * v0.5.0: by default the spend is authorized by the sender signature alone
+   * (`sender-signature`) and the node verifies it with `submit(tx)` without
+   * secrets. `{ authorization: "development-mac" }` builds the legacy
+   * development MAC, which only an in-process `submit(tx, secrets)` can check.
    */
   prepareSpend(
     secrets: IdentitySecrets,
@@ -563,6 +584,7 @@ export class UepLedger {
     assetIdStr: string,
     amount: bigint,
     now = Date.now(),
+    opts: SpendBuildOptions = {},
   ): SubmitResult {
     const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
     if ("error" in pre) return pre;
@@ -587,7 +609,7 @@ export class UepLedger {
     if ("err" in tr) {
       return { error: { code: "INSUFFICIENT", message: tr.err } };
     }
-    return { tx: this.buildSpend(secrets, recipient, assetId, amount, minFee, spent, now, tr.ok.new) };
+    return { tx: this.buildSpend(secrets, recipient, assetId, amount, minFee, spent, now, tr.ok.new, opts) };
   }
 
   /**
@@ -605,6 +627,7 @@ export class UepLedger {
     assetIdStr: string,
     amount: bigint,
     now = Date.now(),
+    opts: SpendBuildOptions = {},
   ): BatchResult {
     const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
     if ("error" in pre) return pre;
@@ -638,7 +661,7 @@ export class UepLedger {
       const tr = transition(balances, part, minFee);
       if ("err" in tr) return { error: { code: "INSUFFICIENT", message: tr.err }, index };
       Object.assign(balances, tr.ok.new);
-      txs.push(this.buildSpend(secrets, recipient, assetId, part, minFee, note, now, { ...tr.ok.new }));
+      txs.push(this.buildSpend(secrets, recipient, assetId, part, minFee, note, now, { ...tr.ok.new }, opts));
     }
     return { txs };
   }
@@ -711,8 +734,11 @@ export class UepLedger {
     spent: Note,
     now: number,
     balancesAfter: { sender: bigint; recipient: bigint; treasury: bigint },
+    opts: SpendBuildOptions = {},
   ): UepTransaction {
     const senderId = secrets.accountId;
+    const mode = opts.authorization ?? "sender-signature";
+    if (mode !== "sender-signature" && mode !== "development-mac") throw new Error("SPEND_AUTHORIZATION_INVALID");
     const fee = creatorFee(amount, minFee);
     const selected: Note[] = [spent];
     const total = spent.amount;
@@ -722,7 +748,7 @@ export class UepLedger {
     // (`amount`) plus optional change (`total - amount - fee`). The nullifier is
     // derived from that note (single-nullifier transition, matching UEP-25).
     const nonce = spent.nonce;
-    const nullifier = deriveNullifier(secrets.secret, nonce);
+    const nullifier = mode === "sender-signature" ? signedSpendNullifier(senderId, nonce) : deriveNullifier(secrets.secret, nonce);
     const outBlinding = hLeaf(secrets.secret, new Fr(++this.noteCounter));
     const output = makeNote(recipient, assetId, amount, outBlinding);
     const outputs = [output];
@@ -762,11 +788,9 @@ export class UepLedger {
       fee: u64ToFr(fee),
       transactionCommitment,
     };
-    const spendProof = DevelopmentSpendProofProvider.prove(pub, {
-      senderSecret: secrets.secret,
-      senderSalt: secrets.salt,
-      nonce,
-    });
+    const spendProof = mode === "sender-signature"
+      ? { ...SENDER_SIGNATURE_PROOF }
+      : DevelopmentSpendProofProvider.prove(pub, { senderSecret: secrets.secret, senderSalt: secrets.salt, nonce });
 
     const tx: UepTransaction = {
       version: 1,
@@ -964,7 +988,12 @@ export class UepLedger {
       return { error: { code: "ASSET_MISMATCH", message: "Asset is not registered on this network." } };
     }
 
-    if (secrets) {
+    if (tx.spendProof?.kind === "sender-signature") {
+      // v0.5.0 remote path: public-key verification only (sender signature and
+      // input owner keys are checked below); no secret is needed or used.
+      const nullifierError = this.checkSignedNullifier(tx);
+      if (nullifierError) return { error: nullifierError };
+    } else if (secrets) {
       if (!verifyOwnership(secrets.secret, secrets.salt, tx.senderId)) {
         return { error: { code: "WRONG_OWNER", message: "Spender is not the note owner." } };
       }
@@ -993,7 +1022,7 @@ export class UepLedger {
       return {
         error: {
           code: "PROOF",
-          message: "Proof required: provide the sender identity (development MAC).",
+          message: "Proof required: a sender-signature spend, or the sender identity for a local development MAC.",
         },
       };
     }
@@ -1112,7 +1141,7 @@ export class UepLedger {
     // The sender must be authenticated by the spend key its account commits to
     // (v0.4.5, no registry), and the inputs must be canonical, unspent ledger
     // notes owned by that key's account (same rules as submit()).
-    const senderError = this.checkSenderAuth(tx);
+    const senderError = this.checkSenderAuth(tx) ?? (tx.spendProof?.kind === "sender-signature" ? this.checkSignedNullifier(tx) : undefined);
     if (senderError) return { error: senderError };
     const resolved = this.canonicalInputs(tx);
     if ("error" in resolved) return resolved;
@@ -1393,6 +1422,7 @@ export class UepLedger {
       if (txIds.has(tx.txId.toHex())) fail("TX_DUPLICATE");
       txIds.add(tx.txId.toHex());
       if (!rebuiltNullifiers.insertOnce(tx.nullifier)) fail("NULLIFIER_SET");
+      if (tx.spendProof?.kind === "sender-signature" && !signedSpendNullifier(tx.senderId, tx.nonce).eq(tx.nullifier)) fail("TX_NULLIFIER");
       if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount, protocolFeeFloor(l.networkId, tx.assetId))) fail("TX_VALUE");
       if (!registeredAssets.some((a) => a.eq(tx.assetId))) fail("TX_ASSET");
       if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) fail("TX_NOTES");

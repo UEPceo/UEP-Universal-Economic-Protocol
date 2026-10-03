@@ -5,6 +5,14 @@ import { encodeStringToFr } from "../core/index.ts";
 import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
 import { UepLedger, signSnapshot, type UepLedgerSnapshot } from "./ledger.ts";
 import { generateEd25519KeyPair } from "../core/ed25519.ts";
+import { deserializeTx, serializeTx, type UepTransaction } from "../core/transaction.ts";
+import { signSenderAuth } from "../core/spend-key.ts";
+import type { IdentitySecrets } from "../identity/kdf.ts";
+
+/** Re-sign the sender envelope with another identity's spend key. */
+function l2sign(tx: UepTransaction, by: IdentitySecrets): UepTransaction {
+  return { ...tx, senderAuth: signSenderAuth(tx, by.secret, by.salt) };
+}
 const SNAPSHOT_KEY = generateEd25519KeyPair();
 const FAUCET_KEY = generateEd25519KeyPair();
 /** Public trust anchors (what a verifier needs). */
@@ -168,12 +176,43 @@ test("bare transactions cannot bypass ownership authorization", async () => {
   const { a, b } = await ids();
   const l = ledger();
   l.faucet(a.accountId, "uep-test/teur", 1000n);
-  const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
+  // A local development-MAC spend needs the sender identity in-process.
+  const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n, Date.now(), { authorization: "development-mac" });
   assert.ok("tx" in p);
   if (!("tx" in p)) return;
   const result = l.submit(p.tx);
   assert.ok("error" in result);
   if ("error" in result) assert.equal(result.error.code, "PROOF");
+  // Relabelling it as a sender-signature spend does not help: its nullifier is not the sender-bound one.
+  const relabelled = l.submit({ ...p.tx, spendProof: { kind: "sender-signature", backend: "ed25519-key-derived-account", payload: "" } });
+  assert.ok("error" in relabelled && relabelled.error.code === "WRONG_OWNER");
+  // A signed spend without its sender signature is rejected.
+  const s = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
+  assert.ok("tx" in s);
+  if (!("tx" in s)) return;
+  const unsigned = l.submit({ ...s.tx, senderAuth: undefined });
+  assert.ok("error" in unsigned && unsigned.error.code === "SENDER_AUTH");
+});
+
+test("remote path: a signed spend is verified with the public key only (no secret reaches the node)", async () => {
+  const { a, b } = await ids();
+  const client = ledger();
+  client.faucet(a.accountId, "uep-test/teur", 1000n);
+  // The client builds and signs on its own replica; the node only sees the serialized transaction.
+  const node = UepLedger.restore(client.snapshot(), TRUST);
+  const p = client.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
+  assert.ok("tx" in p);
+  if (!("tx" in p)) return;
+  assert.equal(p.tx.spendProof.kind, "sender-signature");
+  const wire = deserializeTx(JSON.parse(JSON.stringify(serializeTx(p.tx))));
+  // Another account cannot take over the spend by re-signing it.
+  const other = l2sign(wire, b);
+  assert.ok("error" in node.submit(other));
+  const accepted = node.submit(wire);
+  assert.ok("tx" in accepted, "error" in accepted ? accepted.error.message : "");
+  assert.equal(node.balanceOf(b.accountId, encodeStringToFr("uep-test/teur")), 100n);
+  // Replay is rejected.
+  assert.ok("error" in node.submit(wire));
 });
 
 test("zero-value transactions are rejected", async () => {

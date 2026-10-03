@@ -2,7 +2,9 @@
  * Spend proof boundary for UEP Crypto Core.
  *
  * DevelopmentSpendProofProvider: deterministic MAC over public inputs.
- * NOT a zero-knowledge proof.
+ * NOT a zero-knowledge proof. LOCAL / IN-PROCESS DEVELOPMENT ONLY: verifying
+ * it needs the sender's secret, so it must never be used on a remote path.
+ * Remote spends use SENDER_SIGNATURE_PROOF (v0.5.0).
  *
  * Public-input schema aligned with UEP-27 SpendCircuit (12 fields, SPEC §3):
  *   0 old_state_root
@@ -65,10 +67,20 @@ export type SpendWitness = {
 };
 
 export type SpendProof = {
-  kind: "development-mac" | "zk-spend";
+  kind: "development-mac" | "zk-spend" | "sender-signature";
   backend: string;
   payload: string;
 };
+
+/**
+ * v0.5.0 remote spend authorization. The client signs the transaction binding
+ * (`senderAuth`: Ed25519 over network, domain, txId, sender and transaction
+ * commitment) with the spend key its key-derived account commits to, and uses
+ * the publicly computable signedSpendNullifier(). The node verifies with the
+ * public key only; no secret leaves the client. The proof field only names
+ * the scheme (no payload).
+ */
+export const SENDER_SIGNATURE_PROOF: SpendProof = Object.freeze({ kind: "sender-signature", backend: "ed25519-key-derived-account", payload: "" }) as SpendProof;
 
 export interface SpendProofProvider {
   readonly name: string;

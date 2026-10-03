@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { Fr } from "../core/field.ts";
 import { hLeaf } from "../core/hash.ts";
 import { encodeStringToFr, u64ToFr } from "../core/encoding.ts";
-import { deriveNullifier } from "../core/nullifier.ts";
+import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
 import { deserializeNote, makeNote, serializeNote, type Note } from "../core/note.ts";
 import { computeTxCommitment, txIdFromCommitment, type UepTransaction } from "../core/transaction.ts";
 import { DevelopmentSpendProofProvider } from "../core/spend-proof.ts";
@@ -38,11 +38,13 @@ function reauthorize(l: UepLedger, secrets: IdentitySecrets, base: UepTransactio
   const outputs = change.outputs ?? base.outputNotes!.map(deserializeNote);
   const nonce = change.nonce ?? base.nonce;
   const recipientId = change.recipientId ?? base.recipientId;
-  const nullifier = deriveNullifier(secrets.secret, nonce);
+  // Keep the authorization scheme of `base` (v0.5.0 default: sender-signature).
+  const signed = base.spendProof.kind === "sender-signature";
+  const nullifier = signed ? signedSpendNullifier(base.senderId, nonce) : deriveNullifier(secrets.secret, nonce);
   const inputCommitments = inputs.map((n) => n.commitment);
   const outputCommitments = outputs.map((n) => n.commitment);
   const transactionCommitment = computeTxCommitment({ networkId: base.networkId, domainId: base.domainId, senderId: base.senderId, recipientId, assetId: base.assetId, amount: base.amount, fee: base.fee, nonce, nullifier, inputCommitments, outputCommitments });
-  const spendProof = DevelopmentSpendProofProvider.prove({
+  const spendProof = signed ? { ...base.spendProof } : DevelopmentSpendProofProvider.prove({
     oldStateRoot: l.stateRoot(), newStateRoot: l.stateRoot(), oldNullifierRoot: l.nullifierRoot(), newNullifierRoot: l.nullifierRoot(),
     senderId: base.senderId, recipientId, treasuryId: TREASURY_ID, assetId: base.assetId, nullifier,
     amount: u64ToFr(base.amount), fee: u64ToFr(base.fee), transactionCommitment,
