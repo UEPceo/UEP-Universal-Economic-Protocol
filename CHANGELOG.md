@@ -29,7 +29,7 @@ Version 0.5.0 bundles the research-labs integration and the Poseidon protocol ha
 
 ### Performance (v0.5.0)
 
-- **Compressed sparse Merkle tree** (`src/core/smt.ts`): only non-empty leaves and branch points are stored (2n − 1 nodes for n leaves) and empty subtrees use the precomputed default hashes; roots, paths and serialization are identical to the previous tree (root-equivalence tests against the previous implementation at depths 4, 8, 32 and 254). Memory benchmark: `npm run bench:smt` (@@BENCH@@).
+- **Compressed sparse Merkle tree** (`src/core/smt.ts`): only non-empty leaves and branch points are stored (2n − 1 nodes for n leaves) and empty subtrees use the precomputed default hashes; roots, paths and serialization are identical to the previous tree (root-equivalence tests against the previous implementation at depths 4, 8, 32 and 254). Memory benchmark: `npm run bench:smt` (depth 254, 10,000 accounts: 19,999 stored nodes and 2.05 MiB retained, against 2,358,302 nodes and 428.45 MiB for the previous tree, about 209 times less memory, same root; insertion time is dominated by Poseidon in TypeScript and did not improve).
 
 ### Labs (v0.5.0)
 

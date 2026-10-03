@@ -43,8 +43,8 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | Item | Status |
 |---|---|
 | Version | `0.5.0-public-iot-m2m` (unreleased): API authorization hardening, signed spends, paymaster caps, compressed Merkle tree, circuit v4 with pinned verifying keys, namespaced asset ids and the asset registry manifest, on top of the research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
-| Tests (testnet) | protocol **@@PROTO@@/@@PROTO@@**, Marketplace + IoT/M2M + HTTP authorization **@@MKT@@/@@MKT@@** (includes IoT **@@IOT@@/@@IOT@@** and scale **3/3**) |
-| Tests (research labs) | Rust **@@RUST@@**; labs **@@LABT@@** tests in @@LABF@@ files; 14 lab files with known issues run in a non-blocking job |
+| Tests (testnet) | protocol **96/96**, Marketplace + IoT/M2M + HTTP authorization **121/121** (includes IoT **23/23** and scale **3/3**) |
+| Tests (research labs) | Rust **115** (uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99); labs **455** tests in 96 files; 14 lab files with known issues run in a non-blocking job |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 6 |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
@@ -331,7 +331,7 @@ npm run test:all
 
 `npm run test:all` runs, in order and stopping at the first failure:
 
-1. `npm test`: protocol/testnet (@@PROTO@@), Marketplace + IoT/M2M + HTTP authorization (@@MKT@@, including the @@IOT@@ IoT and 3 scale tests);
+1. `npm test`: protocol/testnet (96), Marketplace + IoT/M2M + HTTP authorization (121, including the 23 IoT and 3 scale tests);
 2. `npm run smoke:testnet`: prints `SMOKE OK`;
 3. `npm run quickstart`: the first-transaction example;
 4. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`;

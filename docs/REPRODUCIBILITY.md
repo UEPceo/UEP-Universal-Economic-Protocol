@@ -22,16 +22,16 @@ Expected results for `0.5.0-public-iot-m2m` (unreleased; Node.js 22 and 24). Las
 
 | Command | Expected |
 |---|---|
-| `npm run test:protocol` | @@PROTO@@/@@PROTO@@ pass (about a minute: Poseidon in TypeScript) |
-| `npm run test:marketplace` | @@MKT@@/@@MKT@@ pass (includes the @@IOT@@ IoT/M2M, the 11 HTTP authorization and the 3 scale tests) |
+| `npm run test:protocol` | 96/96 pass (about a minute: Poseidon in TypeScript) |
+| `npm run test:marketplace` | 121/121 pass (includes the 23 IoT/M2M, the 11 HTTP authorization and the 3 scale tests) |
 | `npm run test:scale` | 3/3 pass |
-| `npm run test:iot` | @@IOT@@/@@IOT@@ pass |
+| `npm run test:iot` | 23/23 pass |
 | `npm run smoke:testnet` | `SMOKE OK` |
 | `npm run quickstart` | `PASS — local reference testnet` |
 | `npm run simulate:20k` | 20,000 settled, 0 errors, `valueConserved: true` |
-| `npm run test:rust` | @@RUST@@ |
+| `npm run test:rust` | 115 pass: uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99 |
 | `npm run build:uep-zk` | `uep-core/target/release/uep-zk` built from source |
-| `npm run test:lab` | @@LABLINE@@; 14 files with known issues skipped |
+| `npm run test:lab` | 96 files, 455 tests pass, 0 failures, 4 individual tests skipped with a note; 14 files with known issues skipped |
 | `npm run test:lab:known` | the 14 known-issue files; failures expected (non-blocking CI job) |
 
 Lab suites with known failures are listed in `scripts/lab-known-issues.json` and skipped (see [`LABS.md`](./LABS.md)). Run them with `node scripts/test-lab.mjs --include-known`. The `uep-zk` binary hash depends on the toolchain and platform, so the labs do not pin it.
