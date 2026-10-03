@@ -56,6 +56,11 @@ export const ALLOWLIST = [
     rule: "net-import",
     reason: "Test-only node:fs read of the committed, hash-pinned Poseidon vectors (uep-core/vectors); static repository data, not live data.",
   },
+  {
+    file: "src/testnet/snapshot-fixtures.test.ts",
+    rule: "net-import",
+    reason: "Test-only node:fs read of the committed golden snapshot fixtures (src/testnet/fixtures/snapshots, docs/COMPATIBILITY.md); static repository data, not live data.",
+  },
 ];
 
 /** Replace comments and string / template literal contents with spaces (keeps offsets and line numbers). */

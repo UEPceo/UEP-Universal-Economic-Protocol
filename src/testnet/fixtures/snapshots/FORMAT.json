@@ -1,0 +1,37 @@
+{
+  "formatVersion": 7,
+  "payloadKeys": [
+    "allowFaucet",
+    "balances",
+    "connected",
+    "domainId",
+    "formatVersion",
+    "height",
+    "lastReconcileAt",
+    "maxPendingTransactions",
+    "mints",
+    "networkId",
+    "noteCount",
+    "noteCounter",
+    "noteRoot",
+    "notes",
+    "nullifiers",
+    "pending",
+    "policy",
+    "prevSnapshotHash",
+    "sequence",
+    "state",
+    "txs"
+  ],
+  "policyKeys": [
+    "assetLimits",
+    "assetTier",
+    "blockedAccounts",
+    "maxTransferAmount",
+    "maxTransferPerWindow",
+    "maxTxPerWindow",
+    "minFee",
+    "paused",
+    "windowHeights"
+  ]
+}

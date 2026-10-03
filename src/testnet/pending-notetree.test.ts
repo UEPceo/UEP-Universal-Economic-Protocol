@@ -263,11 +263,15 @@ test("note tree: restore checks the signed root and every committed spend's memb
   const unsignedTx = structuredClone(snap) as any;
   delete unsignedTx.txs[0].senderAuth;
   assert.throws(() => UepLedger.restore(resign(unsignedTx), TRUST), /INVALID_SNAPSHOT_TX_SENDER/);
-  for (const v of [3, 4, 5, 6]) {
+  for (const v of [3, 4, 5]) {
     const old = structuredClone(snap) as any;
     old.formatVersion = v;
     assert.throws(() => UepLedger.restore(resign(old), TRUST), new RegExp(`INVALID_SNAPSHOT_VERSION: snapshot formatVersion ${v} is no longer supported`));
   }
+  // v0.5.0: format 6 is migrated (docs/COMPATIBILITY.md); a format 7 payload relabelled as 6 fails the 6 -> 7 step.
+  const relabelled = structuredClone(snap) as any;
+  relabelled.formatVersion = 6;
+  assert.throws(() => UepLedger.restore(resign(relabelled), TRUST), /INVALID_SNAPSHOT_MIGRATION: MIGRATION_6_7/);
 });
 
 test("submit: the sender signature is required, also when requireProof is disabled", async () => {

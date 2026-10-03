@@ -17,6 +17,7 @@
  *    working. Nothing in the transition code reads a real clock in this mode
  *    either: the caller supplies every value.
  */
+import { DEPRECATIONS, deprecate } from "./deprecation.ts";
 
 /** Reference block time used to convert durations into heights (5 s). */
 export const REFERENCE_BLOCK_TIME_MS = 5_000;
@@ -100,6 +101,7 @@ export class TransitionClock {
     }
     if (config.now !== undefined) {
       if (typeof config.now !== "function") throw new Error("CLOCK_CONFIG_INVALID");
+      deprecate(DEPRECATIONS.NOW_OPTION, "the millisecond `now` option is deprecated since v0.5.0 (test-only counter); pass `height` (e.g. () => ledger.height) instead");
       return new TransitionClock("legacy-ms", config.now);
     }
     const counter = new HeightCounter(0);
@@ -147,7 +149,24 @@ export class TransitionClock {
   window(name: string, heights: number | undefined, ms: number | undefined, defaultHeights: number): number {
     if (heights !== undefined && ms !== undefined) throw new Error(`CLOCK_CONFIG_CONFLICT: ${name} is given both in heights and in ms`);
     if (heights !== undefined) return this.fromHeights(heights);
-    if (ms !== undefined) return this.fromMs(ms);
+    if (ms !== undefined) {
+      deprecate(DEPRECATIONS.MS_OPTION, `${name}: millisecond options (*Ms) are deprecated since v0.5.0 and converted to heights (ceil, 5 s blocks); use the *Heights option`);
+      return this.fromMs(ms);
+    }
     return this.fromHeights(defaultHeights);
   }
+}
+
+/**
+ * v0.5.0 compatibility (docs/COMPATIBILITY.md): the height that corresponds
+ * to a legacy Unix-ms timestamp, given the current height and the current
+ * Unix-ms time of the caller. Pure: boundary adapters (service API, HTTP)
+ * pass their own wall-clock reading; transitions never call this.
+ * Past timestamps round their age up (older), future ones round down.
+ */
+export function legacyMsToHeight(timestampMs: number, currentHeight: number, wallNowMs: number): number {
+  assertHeight(currentHeight);
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(wallNowMs)) throw new Error("CLOCK_VALUE_INVALID");
+  const delta = wallNowMs - timestampMs;
+  return delta >= 0 ? currentHeight - Math.ceil(delta / REFERENCE_BLOCK_TIME_MS) : currentHeight + Math.floor(-delta / REFERENCE_BLOCK_TIME_MS);
 }

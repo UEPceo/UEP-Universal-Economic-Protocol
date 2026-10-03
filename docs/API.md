@@ -6,7 +6,7 @@ This page lists the public signatures that changed in `0.5.0-public-iot-m2m` (un
 
 ## HTTP adapter and service API: `src/service/uep-http-api.ts`, `uep-service-api.ts`, `uep-api-types.ts`
 
-- `UEP_HTTP_API_VERSION = "1.2.0"`.
+- `UEP_HTTP_API_VERSION = "1.3.0"` (1.3.0 adds `GET /v1/marketplace/height`; see "Compatibility" below).
 - Signed actor headers: `x-uep-actor-id`, `x-uep-signature` (hex Ed25519 signature over `actionMessage({ marketplaceId, action, actorId, target, details })`), `x-uep-issued-at` (Marketplace height since v0.5.0, see below; required for `read`). Exported as `ACTOR_ID_HEADER`, `ACTOR_SIGNATURE_HEADER`, `ACTOR_ISSUED_AT_HEADER`. `x-uep-caller-id` is ignored.
 - `ApiRequestMeta.auth?: { actorId, signature, issuedAt? }`; `callerId` is informational only.
 - Marketplace and IoT methods fail closed: no `auth` → `UNAUTHORIZED` (401); Marketplace errors map to `UNAUTHORIZED` (`ACTOR_SIGNATURE_*`, `IDENTITY_NOT_REGISTERED`, `RESERVATION_SIGNATURE_INVALID`, …), `FORBIDDEN` (`*_FORBIDDEN`, `*_NOT_AUTHORIZED`), `NOT_FOUND` or `INVALID_REQUEST`. `httpStatusOf(result, okStatus)` gives the HTTP status of a result.
@@ -48,7 +48,7 @@ Background: `docs/adr/0002-deterministic-transitions.md`, `docs/EVIDENCE.md`. Ev
   - `src/core/domain-profiles.ts`: `DomainProfileId = "EARTH" | "MOON" | "MARS"`, `DOMAIN_PROFILES` (delay 0, 1 and 602 heights), `domainProfile(id)`, `isDomainProfileId`, `delayHeightsFor(ms)`, `DEFAULT_DOMAIN_PROFILE = "EARTH"`.
   - `src/marketplace/evidence.ts`: `EvidenceStatement` (type only), `AttesterSetPolicy`, `ListingEvidencePolicy`, `EvidenceCapsConfig`, `EvidenceCaps`.
 - **Ledger** (`src/testnet/ledger.ts`): `height` getter and `advanceHeight(blocks = 1)` (`HEIGHT_ADVANCE_INVALID`). `prepareSpend()` / `preparePayment()` default `now` is the ledger height (it was `Date.now()`), so `createdAt` and `lastReconcileAt` are heights. Policy probes carry the height.
-- **Snapshots: format version 7.** The payload adds `height` (non-negative safe integer, `INVALID_SNAPSHOT_HEIGHT`; `lastReconcileAt` may not exceed it). Snapshots of format 6 or older are rejected.
+- **Snapshots: format version 7.** The payload adds `height` (non-negative safe integer, `INVALID_SNAPSHOT_HEIGHT`; `lastReconcileAt` may not exceed it). Format 6 snapshots are migrated (see "Compatibility" below); format 5 and older are refused.
 - **Security policy** (`src/core/security-policy.ts`): `windowHeights` (default 12) replaces `windowMs`. `windowMs` is still accepted as a legacy alias in the probes' own unit (`CLOCK_CONFIG_CONFLICT` if both are given). `SpendProbe.height` replaces `nowMs` (still read when `height` is absent). `windowVolume(account, asset, at?)` has no clock default.
 - **Marketplace** (`src/marketplace/marketplace.ts`):
   - Config `height?: () => number` (e.g. `() => ledger.height`). Without it the Marketplace keeps a local height counter at 0, advanced by `advanceHeight(blocks = 1)` (`HEIGHT_SOURCE_EXTERNAL` when a source is injected). `now?` is deprecated and test-only (an injected ms counter; windows are then in ms). `timeUnit`, `transitionClock` and `clock()` expose the time source.
@@ -62,9 +62,50 @@ Background: `docs/adr/0002-deterministic-transitions.md`, `docs/EVIDENCE.md`. Ev
   - A paymaster with another time unit than the Marketplace → `CLOCK_CONFIG_CONFLICT`.
 - **Paymaster** (`paymaster.ts`): `height?` / deprecated `now?`, `quoteTtlHeights` (default 120; `quoteTtlMs` converted). New `quoteTtl` (ticks) and `clock`; `quoteTtlMs` is a nominal getter.
 - **Treasury** (`economy.ts`): `MarketplaceTreasury({ height? })`; entry timestamps default to that height (the Marketplace passes its own), not `Date.now()`.
-- **Reputation** (`reputation.ts`): `MarketplaceReputation.score(sellerId, now, ticksPerDay = HEIGHTS_PER_DAY)` and `calculateBayesianReputation(…, now, prior, priorWeight, ticksPerDay)`. `now` is required (no clock default), and ages are measured in heights.
-- **IoT/M2M** (`src/service/iot-m2m.ts`): the default time source is the Marketplace clock. `now` is only allowed with a test-only ms Marketplace (`CLOCK_CONFIG_CONFLICT` otherwise). Config options: `telemetryMaxAgeHeights` (60) and `telemetryMaxFutureSkewHeights` (6), with the legacy `*Ms` forms converted. Readonly `telemetryMaxAge` and `telemetryMaxFutureSkew`. The telemetry age window of an order is the base window plus `order.windows.domainDelay` (MARS: 662 heights). `observedAt` is a height (`IOT_TELEMETRY_OBSERVED_AT_INVALID` if it is not a finite number). Exports `DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS` and `DEFAULT_TELEMETRY_MAX_FUTURE_SKEW_HEIGHTS`.
+- **Reputation** (`reputation.ts`): `MarketplaceReputation.score(sellerId, now?, ticksPerDay?)` and `calculateBayesianReputation(…, now?, prior, priorWeight, ticksPerDay?)`. Ages are measured in heights. Without `now` the default is the latest recorded event stamp, with no clock read (see "Compatibility" below).
+- **IoT/M2M** (`src/service/iot-m2m.ts`): the default time source is the Marketplace clock. `now` is only used with a test-only ms Marketplace; with a height-based Marketplace it is ignored with a deprecation warning (`UEP_DEP_IOT_NOW`). Config options: `telemetryMaxAgeHeights` (60) and `telemetryMaxFutureSkewHeights` (6), with the legacy `*Ms` forms converted. Readonly `telemetryMaxAge` and `telemetryMaxFutureSkew`. The telemetry age window of an order is the base window plus `order.windows.domainDelay` (MARS: 662 heights). `observedAt` is a height (`IOT_TELEMETRY_OBSERVED_AT_INVALID` if it is not a finite number, `IOT_TELEMETRY_OBSERVED_AT_UNIT` if it looks like Unix ms with a height-based Marketplace). Exports `DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS` and `DEFAULT_TELEMETRY_MAX_FUTURE_SKEW_HEIGHTS`.
 - **Scripts**: `npm run lint:determinism` (`scripts/check-deterministic-transitions.mjs`, exports `checkRepository`, `scanSource`, `RULES`, `ALLOWLIST`). It runs first in `npm run test:all`.
+
+## Compatibility: snapshot migrations, asset aliases and deprecated shims (ADR 0003)
+
+Policy: `docs/COMPATIBILITY.md`. Background: `docs/adr/0003-compatibility-and-migrations.md`.
+
+- **Snapshot migration registry** (`src/testnet/snapshot-migrations.ts`, new):
+  - `SNAPSHOT_MIGRATIONS` (append-only steps `{ from, to, title, derivation, fixtures, migrate }`) and `migrateSnapshotPayload(payload)` (pure; returns `{ payload, steps }`);
+  - `snapshotFormatSupport(formatVersion)` (`current`, `migratable`, `unmigratable` with a reason, or `unknown`);
+  - `OLDEST_MIGRATABLE_SNAPSHOT_FORMAT = 6`, `UNMIGRATABLE_SNAPSHOT_FORMATS`, `latestSnapshotFormat()`, `migrationRegistryProblems(current)`.
+- **Restore.** `restore()` / `restoreChain()` accept format 6 snapshots. Hash, signatures, chain link and checkpoint are checked on the snapshot as signed, then step 6 → 7 runs:
+  - `height = 0` and `lastReconcileAt = 0`;
+  - `policy.windowHeights = ceil(windowMs / 5000)`;
+  - policy asset keys are canonicalized.
+
+  A chain may mix formats 6 and 7. Errors:
+  - `INVALID_SNAPSHOT_MIGRATION: MIGRATION_6_7: …`: the step rejects its input;
+  - `INVALID_SNAPSHOT_VERSION`: format 5 or older (with the reason), or a newer format.
+- **Ledger** (`src/testnet/ledger.ts`):
+  - `restoredFrom?: { formatVersion, migrationSteps }`.
+  - `balanceOfAsset(account, assetId)`: the balance by asset id, adding up the canonical and the legacy encoding.
+  - `lastReconcileHeight` (getter, the same value as `lastReconcileAt`).
+  - `prepareSpend()` / `preparePayment()` with a Unix-ms `now` use the ledger height (`UEP_DEP_SPEND_NOW_MS`).
+  - A payment uses notes of one asset encoding.
+- **Snapshot JSON** (`src/testnet/snapshot-json.ts`, new): `snapshotToJSON(snapshot)`, `snapshotFromJSON(text)`, `reviveSnapshotBigints(value)`. Bigints are written as `"<digits>n"`, the form `snapshotHash` uses.
+- **Asset aliases** (`src/core/assets.ts`):
+  - `LEGACY_ASSET_ID_ALIASES`, `isLegacyAssetIdAlias(id)`, `resolveAssetIdAlias(id)` (`UEP_DEP_ASSET_ALIAS`), `legacyAliasesOf(id)`, `assetEncodings(canonicalId)`, `isLegacyAssetEncoding(assetFr)`.
+  - `findAsset`, `findAssetByFr` and `ledgerAssetIdToFr` accept aliases or legacy encodings. Ledger and Marketplace entry points resolve aliases.
+  - `publishListing()` and `creditAccount()` verify the signature over the asset id as signed and store the canonical id.
+- **Deprecations** (`src/core/deprecation.ts`, new): `DEPRECATIONS` (stable codes), `deprecate(code, message)` (one `DeprecationWarning` per code and process), `emittedDeprecations()`, `LEGACY_MS_THRESHOLD = 10^11`, `looksLikeLegacyMs(value)`. Warnings are emitted for `*Ms` options (`UEP_DEP_MS_OPTION`), the `now` counter (`UEP_DEP_NOW_OPTION`) and `SecurityPolicy({ windowMs })` (`UEP_DEP_POLICY_WINDOW_MS`).
+- **Height helpers** (`src/core/height.ts`): `legacyMsToHeight(timestampMs, currentHeight, wallNowMs)` (pure; for boundary adapters).
+- **Security policy**: `toPolicyBigint(value)` (bigint, safe integer, `"123"` or `"123n"`; else `INVALID_POLICY_AMOUNT`).
+- **Actor authorization** (`identity.ts`, `marketplace.ts`, `uep-service-api.ts`):
+  - `ActorAuth.issuedAtHeight?`: the height a boundary adapter derived from a legacy Unix-ms `issuedAt`. It is not signed; the signature still covers `issuedAt`.
+  - The service API and the HTTP adapter derive it with `legacyMsToHeight` and their own clock (`ServiceApiConfig.legacyWallClock`, default `Date.now`; `UEP_DEP_ISSUED_AT_MS`).
+  - In process, a Unix-ms `issuedAt` without `issuedAtHeight` on a height-based Marketplace fails with `ACTOR_AUTH_ISSUED_AT_UNIT`.
+- **Service API and HTTP**: `marketplaceHeight(meta?)` and `GET /v1/marketplace/height` → `{ height, unit, referenceBlockTimeMs }` (public). `UEP_HTTP_API_VERSION = "1.3.0"`.
+- **Block producer** (`src/service/block-producer.ts`, new): `startBlockProducer({ advance: () => number, intervalMs = 5000, onBlock?(height) })` → `{ stop(), running }`. Operator tooling that advances the height on a timer, outside the transitions.
+- **Scripts**:
+  - `npm run check:snapshot-compat` (`scripts/check-snapshot-compat.ts`, exports `checkSnapshotCompat(overrides?)` and `currentShape()`; `--write-lock`);
+  - `scripts/fixtures/generate-snapshot-fixture.ts`;
+  - golden fixtures in `src/testnet/fixtures/snapshots/` (`FORMAT.json` lock).
 
 # Unreleased: Poseidon protocol hash
 

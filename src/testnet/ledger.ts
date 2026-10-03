@@ -7,16 +7,18 @@ import { ACCOUNT_DEPTH } from "../core/smt.ts";
 import { NullifierSet } from "../core/nullifier.ts";
 import { SparseMerkleTree } from "../core/smt.ts";
 import { markConflicts, reconcile, settlementRoot } from "../core/reconciliation.ts";
-import { assetsForNetwork, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr } from "../core/assets.ts";
+import { assetEncodings, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr, resolveAssetIdAlias } from "../core/assets.ts";
+import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
+import { migrateSnapshotPayload, snapshotFormatSupport } from "./snapshot-migrations.ts";
 import { hAccount, hLeaf } from "../core/hash.ts";
 import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
 import { deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, type Note } from "../core/note.ts";
 import { computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
-import { encodeStringToFr, u64ToFr } from "../core/encoding.ts";
+import { u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
 import { TREASURY_ID } from "../network/profiles.ts";
-import { SecurityPolicy, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
+import { SecurityPolicy, toPolicyBigint, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
 import { DevelopmentSpendProofProvider, SENDER_SIGNATURE_PROOF, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
 import type { KeyObject } from "node:crypto";
@@ -283,6 +285,26 @@ export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Not
   return undefined;
 }
 
+/** v0.4.7 payment plan over notes of one encoding: one covering note, else largest first (at most MAX_PAYMENT_PARTS). */
+function planPayment(available: Note[], amount: bigint, minFee: bigint): { plan: Array<{ note: Note; part: bigint }> } | { error: SubmitError } {
+  const single = available.find((n) => n.amount >= amount + creatorFee(amount, minFee));
+  if (single) return { plan: [{ note: single, part: amount }] };
+  const plan: Array<{ note: Note; part: bigint }> = [];
+  let remaining = amount;
+  const byValue = [...available].sort((a, b) => (a.amount === b.amount ? 0 : a.amount > b.amount ? -1 : 1));
+  for (const note of byValue) {
+    if (remaining === 0n) break;
+    const cap = maxPayableFromNote(note.amount, minFee);
+    if (cap <= 0n) continue;
+    const part = cap < remaining ? cap : remaining;
+    plan.push({ note, part });
+    remaining -= part;
+  }
+  if (remaining > 0n) return { error: { code: "INSUFFICIENT", message: "Unspent notes do not cover the amount plus one protocol fee per note used." } };
+  if (plan.length > MAX_PAYMENT_PARTS) return { error: { code: "BATCH_INVALID", message: `Payment needs more than ${MAX_PAYMENT_PARTS} notes.` } };
+  return { plan };
+}
+
 export class UepLedger {
   /** Optional security policy gate (TESTNET). */
   policy: SecurityPolicyType = new SecurityPolicy();
@@ -322,8 +344,12 @@ export class UepLedger {
   txs: UepTransaction[] = [];
   pending: UepTransaction[] = [];
   noteCounter = 0n;
-  /** v0.5.0: height at the last reconcilePending() (was a wall-clock ms value before format 7). */
+  /** Height of the last reconcilePending() (v0.5.0; a wall-clock ms value before format 7, reset to 0 by the 6 -> 7 migration). */
   lastReconcileAt = 0;
+  /** v0.5.0: clearer name of `lastReconcileAt` (a block height). */
+  get lastReconcileHeight(): number {
+    return this.lastReconcileAt;
+  }
   /**
    * v0.5.0 (ADR 0002): block height of this single-node testnet. Starts at 0
    * and only moves through advanceHeight() (the local block producer); it is
@@ -331,6 +357,11 @@ export class UepLedger {
    * clock or a header timestamp.
    */
   private blockHeight = 0;
+  /**
+   * v0.5.0: snapshot format this ledger was restored from and the migration
+   * steps applied (empty for a current-format snapshot or a new ledger).
+   */
+  restoredFrom: { formatVersion: number; migrationSteps: string[] } | undefined;
   /** Total minted (faucet) value per asset (asset hex -> amount), derived from `mints`. */
   supply = new Map<string, bigint>();
   /** v0.4.4: append-only Merkle tree of every note commitment, in `notes` order. */
@@ -405,6 +436,19 @@ export class UepLedger {
 
   balanceOf(account: Fr, asset: Fr): bigint {
     return this.balances.get(ak(account, asset)) ?? 0n;
+  }
+
+  /**
+   * v0.5.0: balance of one asset by id (a legacy alias resolves), summed over
+   * the asset's accepted encodings: the namespaced id and, for state restored
+   * from before the v0.5.0 rename, the legacy alias encoding.
+   */
+  balanceOfAsset(account: Fr, assetIdStr: string): bigint {
+    const rec = findAsset(this.networkId, assetIdStr);
+    if (!rec) return 0n;
+    let total = 0n;
+    for (const enc of assetEncodings(rec.assetId)) total += this.balanceOf(account, enc);
+    return total;
   }
 
   notesOf(account: Fr, unspentOnly = true): Note[] {
@@ -527,6 +571,7 @@ export class UepLedger {
 
   faucet(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint): Note {
     if (!this.allowFaucet) throw new Error("Faucet is TESTNET-only");
+    assetIdStr = resolveAssetIdAlias(assetIdStr);
     let account: Fr;
     try { account = this.resolveAccount(accountOrAddress); } catch (e) { throw new Error(`FAUCET_ACCOUNT_INVALID: ${(e as Error).message}`); }
     if (!this.connected) throw new Error("Node is not connected");
@@ -555,7 +600,8 @@ export class UepLedger {
     const faucet = faucetKey === undefined ? undefined : toPrivateKey(faucetKey);
     if (faucet && hexes.includes(publicKeyHexOf(faucet))) throw new Error("FAUCET_KEY_NOT_DISTINCT");
     const issuers = new Map<string, KeyObject>();
-    for (const [assetIdStr, k] of Object.entries(issuerKeys ?? {})) {
+    for (const [rawAssetId, k] of Object.entries(issuerKeys ?? {})) {
+      const assetIdStr = resolveAssetIdAlias(rawAssetId);
       if (!isCanonicalLedgerAssetId(assetIdStr) || !findAsset(this.networkId, assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
       const key = toPrivateKey(k);
       if (hexes.includes(publicKeyHexOf(key))) throw new Error("ISSUER_KEY_NOT_DISTINCT");
@@ -572,6 +618,7 @@ export class UepLedger {
    * `revokedMintKeys` trust from the current mint index (`mints.length`).
    */
   setIssuerSigningKey(assetIdStr: string, key: PrivateKeyLike | null): void {
+    assetIdStr = resolveAssetIdAlias(assetIdStr);
     if (!isCanonicalLedgerAssetId(assetIdStr) || !findAsset(this.networkId, assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
     if (key === null) { this.issuerSigners.delete(assetIdStr); return; }
     const k = toPrivateKey(key);
@@ -617,13 +664,15 @@ export class UepLedger {
     now = this.blockHeight,
     opts: SpendBuildOptions = {},
   ): SubmitResult {
+    assetIdStr = resolveAssetIdAlias(assetIdStr);
+    now = this.spendHeight(now);
     const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
     if ("error" in pre) return pre;
-    const { recipient, assetId, minFee } = pre;
+    const { recipient, minFee } = pre;
     const senderId = secrets.accountId;
     const fee = creatorFee(amount, minFee);
     const required = amount + fee;
-    const available = this.spendableNotes(senderId, assetId);
+    const available = this.spendableNotes(senderId, pre.assetId);
     // v0.4 public testnet deliberately uses one input note per transaction.
     // This keeps the single-nullifier transaction format sound. Payments that
     // need several notes use preparePayment() + submitBatch() (v0.4.7): an
@@ -632,6 +681,8 @@ export class UepLedger {
     if (!spent) {
       return { error: { code: "INSUFFICIENT", message: "No single unspent note covers amount plus fee." } };
     }
+    // v0.5.0: a note from before the asset rename keeps its legacy encoding (inputs, outputs and fee).
+    const assetId = spent.assetId;
     const tr = transition(
       { sender: this.balanceOf(senderId, assetId), recipient: this.balanceOf(recipient, assetId), treasury: this.balanceOf(TREASURY_ID, assetId) },
       amount,
@@ -660,29 +711,22 @@ export class UepLedger {
     now = this.blockHeight,
     opts: SpendBuildOptions = {},
   ): BatchResult {
+    assetIdStr = resolveAssetIdAlias(assetIdStr);
+    now = this.spendHeight(now);
     const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
     if ("error" in pre) return pre;
-    const { recipient, assetId, minFee } = pre;
+    const { recipient, minFee } = pre;
     const senderId = secrets.accountId;
-    const available = this.spendableNotes(senderId, assetId);
-    const single = available.find((n) => n.amount >= amount + creatorFee(amount, minFee));
-    const plan: Array<{ note: Note; part: bigint }> = [];
-    if (single) {
-      plan.push({ note: single, part: amount });
-    } else {
-      let remaining = amount;
-      const byValue = [...available].sort((a, b) => (a.amount === b.amount ? 0 : a.amount > b.amount ? -1 : 1));
-      for (const note of byValue) {
-        if (remaining === 0n) break;
-        const cap = maxPayableFromNote(note.amount, minFee);
-        if (cap <= 0n) continue;
-        const part = cap < remaining ? cap : remaining;
-        plan.push({ note, part });
-        remaining -= part;
-      }
-      if (remaining > 0n) return { error: { code: "INSUFFICIENT", message: "Unspent notes do not cover the amount plus one protocol fee per note used." } };
-      if (plan.length > MAX_PAYMENT_PARTS) return { error: { code: "BATCH_INVALID", message: `Payment needs more than ${MAX_PAYMENT_PARTS} notes.` } };
+    // v0.5.0: one payment uses notes of one encoding (namespaced first, then a legacy alias encoding).
+    let plan: Array<{ note: Note; part: bigint }> = [];
+    let assetId = pre.assetId;
+    let planError: { error: SubmitError } | undefined;
+    for (const enc of assetEncodings(assetIdStr)) {
+      const r = planPayment(this.spendableNotes(senderId, enc).filter((n) => n.assetId.eq(enc)), amount, minFee);
+      if ("plan" in r) { plan = r.plan; assetId = enc; planError = undefined; break; }
+      planError ??= r;
     }
+    if (planError) return planError;
     const probes = plan.map(({ part }) => ({ accountHex: senderId.toHex(), assetId: assetIdStr, amount: part, fee: creatorFee(part, minFee), height: now }));
     const verdict = this.policy.checkSequence(probes);
     if (!verdict.ok) return { error: { code: "POLICY", message: `${verdict.code}: ${verdict.message}` } };
@@ -751,8 +795,24 @@ export class UepLedger {
     return { recipient, assetId, minFee };
   }
 
+  /** Unspent notes of `owner` in the asset of `assetId`, in every accepted encoding of that asset (namespaced first). */
   private spendableNotes(owner: Fr, assetId: Fr): Note[] {
-    return this.notesOf(owner).filter((n) => n.assetId.eq(assetId) && openNote(n));
+    const rec = findAssetByFr(this.networkId, assetId);
+    const encodings = rec ? assetEncodings(rec.assetId) : [assetId];
+    const notes = this.notesOf(owner).filter((n) => encodings.some((e) => e.eq(n.assetId)) && openNote(n));
+    const rank = (n: Note) => encodings.findIndex((e) => e.eq(n.assetId));
+    return notes.map((n, i) => ({ n, i })).sort((a, b) => rank(a.n) - rank(b.n) || a.i - b.i).map((x) => x.n);
+  }
+
+  /**
+   * v0.5.0: `now` of prepareSpend()/preparePayment() is a height. A legacy
+   * Unix-ms value (callers written before v0.5.0 passed Date.now()) is
+   * replaced by this ledger's height (deprecated, UEP_DEP_SPEND_NOW_MS).
+   */
+  private spendHeight(now: number): number {
+    if (!looksLikeLegacyMs(now)) return now;
+    deprecate(DEPRECATIONS.SPEND_NOW_MS, "prepareSpend()/preparePayment(): `now` is a block height since v0.5.0; a Unix-ms value is replaced by the ledger height");
+    return this.blockHeight;
   }
 
   /** Build and sign one single-input spend of `spent` (amount to recipient, change to sender). */
@@ -1293,9 +1353,13 @@ export class UepLedger {
   static restore(data: UepLedgerSnapshot, trust: SnapshotTrust, keys: LedgerSigningKeys = {}): UepLedger {
     const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
     if (!data || typeof data !== "object") fail("SHAPE");
-    if (data.formatVersion !== SNAPSHOT_FORMAT_VERSION) {
-      fail("VERSION", `snapshot formatVersion ${String((data as { formatVersion?: unknown }).formatVersion ?? 1)} is no longer supported; this release requires formatVersion ${SNAPSHOT_FORMAT_VERSION} (Poseidon BN254 protocol hash). Older testnet state uses other account ids, commitments and roots; re-create it.`);
-    }
+    // v0.5.0 (docs/COMPATIBILITY.md): older formats are migrated step by step
+    // (snapshot-migrations.ts) after their signatures and chain links are
+    // checked against the bytes that were signed. Formats behind a hash change
+    // cannot be migrated and are rejected with the reason.
+    const sourceFormat = (data as { formatVersion?: unknown }).formatVersion ?? 1;
+    const support = snapshotFormatSupport(sourceFormat);
+    if (support.kind !== "current" && support.kind !== "migratable") fail("VERSION", support.reason);
     if (data.networkId == null || data.domainId == null || !data.state || !data.nullifiers || !Array.isArray(data.nullifiers.seen) || !Array.isArray(data.balances) || !Array.isArray(data.notes) || !Array.isArray(data.txs) || !Array.isArray(data.pending) || !Array.isArray(data.mints) || !data.policy || !Array.isArray(data.signatures)) fail("SHAPE");
     if ((data as { spendKeys?: unknown }).spendKeys !== undefined) fail("SPEND_KEY", "v0.4.5 snapshots carry no spend-key registry; ownership is bound by key-derived account ids");
     if (typeof data.noteRoot !== "string" || !Number.isSafeInteger(data.noteCount) || !Number.isSafeInteger(data.maxPendingTransactions)) fail("SHAPE");
@@ -1316,10 +1380,11 @@ export class UepLedger {
       let hex = "";
       try { hex = publicKeyHexOf(e.publicKey); } catch { fail("TRUST", "issuer keys must be Ed25519 public keys"); }
       const from = e.fromMintIndex ?? 0;
-      if (!Array.isArray(e.assetIds) || e.assetIds.length === 0 || e.assetIds.some((a) => !isCanonicalLedgerAssetId(a) || !findAsset(data.networkId, a))) fail("TRUST", "issuer keys must list registered asset ids of the snapshot network");
+      const ids = Array.isArray(e.assetIds) ? e.assetIds.map((a) => resolveAssetIdAlias(a)) : [];
+      if (ids.length === 0 || ids.some((a) => !isCanonicalLedgerAssetId(a) || !findAsset(data.networkId, a))) fail("TRUST", "issuer keys must list registered asset ids of the snapshot network");
       if (!Number.isSafeInteger(from) || from < 0) fail("TRUST", "issuer fromMintIndex must be a non-negative integer");
       if (authorities.includes(hex)) fail("TRUST", "issuer keys must be distinct from snapshot authority keys");
-      issuerEntries.push({ hex, assetIds: [...e.assetIds], from });
+      issuerEntries.push({ hex, assetIds: ids, from });
     }
     const revocations: Array<{ hex: string; from: number }> = [];
     for (const r of trust.revokedMintKeys ?? []) {
@@ -1362,6 +1427,20 @@ export class UepLedger {
       if (data.mints.length < cp.mintCount || mintChainHash(data.mints, cp.mintCount) !== cp.mintChainHash) fail("HISTORY", "mint history diverges from the trusted checkpoint");
     }
 
+    // Migration to the current format (pure; transactions and mints are not
+    // rewritten). The chain keeps the hash of the snapshot as signed.
+    let migrationSteps: string[] = [];
+    if (support.kind === "migratable") {
+      try {
+        const migrated = migrateSnapshotPayload(payloadOf(data) as unknown as Record<string, unknown>);
+        migrationSteps = migrated.steps;
+        data = { ...(migrated.payload as unknown as UepLedgerSnapshotPayload), snapshotHash: data.snapshotHash, signatures: data.signatures };
+      } catch (e) {
+        fail("MIGRATION", (e as Error).message);
+      }
+      deprecate(DEPRECATIONS.SNAPSHOT_MIGRATED, `restored a format ${String(sourceFormat)} snapshot through the migration registry; the next snapshot of this ledger is written in format ${SNAPSHOT_FORMAT_VERSION}`);
+    }
+
     let l!: UepLedger;
     try {
       l = new UepLedger({
@@ -1380,7 +1459,8 @@ export class UepLedger {
     if (keys.snapshotSigningKeys?.some((k) => !authorities.includes(publicKeyHexOf(toPrivateKey(k))))) throw new Error("SNAPSHOT_SIGNING_KEY_NOT_TRUSTED");
     if (keys.faucetSigningKey !== undefined && !faucetKeys.includes(publicKeyHexOf(toPrivateKey(keys.faucetSigningKey)))) throw new Error("FAUCET_KEY_NOT_TRUSTED");
     if (keys.faucetSigningKey !== undefined && !notRevokedAt(publicKeyHexOf(toPrivateKey(keys.faucetSigningKey)), data.mints.length)) throw new Error("FAUCET_KEY_NOT_TRUSTED");
-    for (const [assetIdStr, k] of Object.entries(keys.issuerSigningKeys ?? {})) {
+    for (const [rawAssetId, k] of Object.entries(keys.issuerSigningKeys ?? {})) {
+      const assetIdStr = resolveAssetIdAlias(rawAssetId);
       if (!mintKeysFor(assetIdStr, data.mints.length).includes(publicKeyHexOf(toPrivateKey(k))) || !issuerEntries.some((e) => e.assetIds.includes(assetIdStr))) throw new Error("ISSUER_KEY_NOT_TRUSTED");
     }
     l.installSigningKeys(keys.snapshotSigningKeys ?? [], keys.faucetSigningKey, keys.issuerSigningKeys);
@@ -1393,7 +1473,9 @@ export class UepLedger {
     if (!Number.isSafeInteger(data.height) || data.height < 0 || !Number.isSafeInteger(data.lastReconcileAt) || data.lastReconcileAt < 0 || data.lastReconcileAt > data.height) fail("HEIGHT", "height must be a non-negative integer, at or above lastReconcileAt");
     l.lastReconcileAt = data.lastReconcileAt;
     l.blockHeight = data.height;
-    const p = data.policy as any;
+    const p = { ...(data.policy as any) };
+    // Policy amounts may arrive as "<digits>n" strings when a snapshot was read with plain JSON.parse (same hash).
+    for (const k of ["maxTransferAmount", "maxTransferPerWindow", "minFee"]) if (p[k] !== undefined) { try { p[k] = toPolicyBigint(p[k]); } catch { fail("POLICY", `${k} is not an amount`); } }
     l.policy = new SecurityPolicy({ ...p, blockedAccounts: new Set(p.blockedAccounts ?? []), assetTier: { ...(p.assetTier ?? {}) } });
 
     // 1. Account state root is re-derived from balances.
@@ -1423,7 +1505,6 @@ export class UepLedger {
     for (const n of l.notes) l.noteTree.append(n.commitment);
 
     // 3. Transactions replay in order under submit()'s rules.
-    const registeredAssets = assetsForNetwork(l.networkId).map((a) => encodeStringToFr(a.assetId));
     const outputCommitments = new Set<string>();
     for (const tx of l.txs) for (const c of tx.outputCommitments) outputCommitments.add(c.toHex());
     // Notes that are not the output of any transaction must be signed faucet mints.
@@ -1459,7 +1540,7 @@ export class UepLedger {
       if (!rebuiltNullifiers.insertOnce(tx.nullifier)) fail("NULLIFIER_SET");
       if (tx.spendProof?.kind === "sender-signature" && !signedSpendNullifier(tx.senderId, tx.nonce).eq(tx.nullifier)) fail("TX_NULLIFIER");
       if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount, protocolFeeFloor(l.networkId, tx.assetId))) fail("TX_VALUE");
-      if (!registeredAssets.some((a) => a.eq(tx.assetId))) fail("TX_ASSET");
+      if (!findAssetByFr(l.networkId, tx.assetId)) fail("TX_ASSET");
       if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) fail("TX_NOTES");
       const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
       if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) fail("TX_COMMITMENT");
@@ -1541,6 +1622,7 @@ export class UepLedger {
 
     l.snapshotSequence = data.sequence;
     l.lastSnapshotHash = hash;
+    l.restoredFrom = { formatVersion: sourceFormat as number, migrationSteps };
     return l;
   }
 

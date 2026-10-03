@@ -25,10 +25,11 @@ import type { Fr } from "../core/field.ts";
 import { TESTNET } from "../network/profiles.ts";
 import { DEFAULT_MARKETPLACE_ID, actionMessage, disputeReasonHash, listingTerms, reservationMessage, type ActorAuth, type MarketplaceAction } from "./identity.ts";
 import { NestedAmountMap, tupleKey } from "../core/composite-key.ts";
-import { findAsset } from "../core/assets.ts";
+import { findAsset, resolveAssetIdAlias } from "../core/assets.ts";
 import { HEIGHTS_PER_DAY, TransitionClock, type HeightSource, type TimeUnit } from "../core/height.ts";
 import { domainProfile, isDomainProfileId, DEFAULT_DOMAIN_PROFILE, type DomainProfileId } from "../core/domain-profiles.ts";
 import { EvidenceCaps, type EvidenceCapsConfig, type ListingEvidencePolicy } from "./evidence.ts";
+import { looksLikeLegacyMs } from "../core/deprecation.ts";
 
 export const MARKETPLACE_VERSION = "0.4" as const;
 
@@ -642,15 +643,16 @@ export class DigitalServicesMarketplace {
    * Testnet funding rail: credit external value to a registered identity's
    * marketplace account. Production custody / payment rails remain external.
    */
-  creditAccount(identityId: string, asset: string, amount: bigint, authorization?: { creditId: string; auth: ActorAuth }): bigint {
+  creditAccount(identityId: string, signedAsset: string, amount: bigint, authorization?: { creditId: string; auth: ActorAuth }): bigint {
     if (!this.identities.has(identityId)) throw new Error("IDENTITY_NOT_REGISTERED");
-    if (!asset) throw new Error("ASSET_REQUIRED");
+    if (!signedAsset) throw new Error("ASSET_REQUIRED");
+    const asset = resolveAssetIdAlias(signedAsset);
     this.assertAsset(asset);
     if (amount <= 0n) throw new Error("INVALID_CREDIT_AMOUNT");
     if (this.requireSignedCredits) {
       // v0.4.7: administrator-signed credits, each creditId accepted once (fail closed).
       if (!authorization || typeof authorization.creditId !== "string" || !authorization.creditId) throw new Error("CREDIT_AUTHORIZATION_REQUIRED");
-      const actor = this.authenticateActor(authorization.auth, "credit", identityId, { asset, amount, creditId: authorization.creditId });
+      const actor = this.authenticateActor(authorization.auth, "credit", identityId, { asset: signedAsset, amount, creditId: authorization.creditId });
       if (!this.isAdmin(actor)) throw new Error("CREDIT_NOT_AUTHORIZED");
       if (this.usedCreditIds.has(authorization.creditId)) throw new Error("CREDIT_REPLAY");
       this.usedCreditIds.add(authorization.creditId);
@@ -662,7 +664,7 @@ export class DigitalServicesMarketplace {
 
   /** Spendable marketplace balance (provider earnings, refunds and credits). */
   availableBalance(asset: string, identityId: string): bigint {
-    return this.accounts.get(asset, identityId);
+    return this.accounts.get(resolveAssetIdAlias(asset), identityId);
   }
 
   /** Reservation deposits currently locked for an identity. */
@@ -672,6 +674,7 @@ export class DigitalServicesMarketplace {
 
   /** Conservation check across every deposit / escrow path for one asset. */
   valueAccounting(asset: string): ValueAccounting {
+    asset = resolveAssetIdAlias(asset);
     this.reapExpiredReservations();
     const credited = this.credited.get(asset) ?? 0n;
     const available = this.accounts.total(asset);
@@ -688,6 +691,9 @@ export class DigitalServicesMarketplace {
    */
   publishListing(input: ListingInput, auth?: ActorAuth): ServiceListing {
     if (!input.providerId || !input.title || !input.asset) throw new Error("LISTING_METADATA_REQUIRED");
+    // v0.5.0 compatibility: a pre-v0.5.0 ledger asset id is stored under its namespaced id; the signature covers the terms as signed.
+    const signedTerms = listingTerms(input);
+    input = { ...input, asset: resolveAssetIdAlias(input.asset) };
     this.assertAsset(input.asset);
     // v0.5.0 (ADR 0002): the domain profile and the evidence terms are fixed here.
     if (input.domainProfile !== undefined && !isDomainProfileId(input.domainProfile)) throw new Error("DOMAIN_PROFILE_INVALID");
@@ -695,7 +701,7 @@ export class DigitalServicesMarketplace {
     const evidencePolicy = input.evidencePolicy !== undefined ? this.evidenceCaps.assertListingPolicy(input.evidencePolicy, input.asset) : undefined;
     if (this.isReservedIdentity(input.providerId)) throw new Error("RESERVED_IDENTITY");
     if (!this.identities.has(input.providerId)) throw new Error("IDENTITY_NOT_REGISTERED");
-    const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", listingTerms(input));
+    const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", signedTerms);
     if (actor !== input.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (input.unitPrice <= 0n || input.capacity <= 0n) throw new Error("INVALID_LISTING_ECONOMICS");
     const now = this.now();
@@ -750,6 +756,7 @@ export class DigitalServicesMarketplace {
   }
 
   searchListings(query?: { category?: ServiceCategory; asset?: string; providerId?: string; activeOnly?: boolean; offset?: number; limit?: number }): ServiceListing[] {
+    if (query?.asset !== undefined) query = { ...query, asset: resolveAssetIdAlias(query.asset) };
     this.reapExpiredReservations();
     const activeOnly = query?.activeOnly ?? true;
     const offset = Math.max(0, query?.offset ?? 0);
@@ -1359,11 +1366,11 @@ export class DigitalServicesMarketplace {
   }
 
   treasuryBalance(asset: string): TreasuryBalance {
-    return this.treasury.balanceOf(asset);
+    return this.treasury.balanceOf(resolveAssetIdAlias(asset));
   }
 
   treasurySnapshot(asset: string): TreasurySnapshot {
-    return this.treasury.snapshot(asset);
+    return this.treasury.snapshot(resolveAssetIdAlias(asset));
   }
 
   /**
@@ -1374,7 +1381,7 @@ export class DigitalServicesMarketplace {
   treasurySnapshotAuthorized(asset: string, auth: ActorAuth | undefined): TreasurySnapshot {
     const actor = this.authenticateRead(auth, "read", `treasury:${asset}`);
     if (!this.isAdmin(actor)) throw new Error("TREASURY_ACCESS_FORBIDDEN");
-    return this.treasury.snapshot(asset);
+    return this.treasury.snapshot(resolveAssetIdAlias(asset));
   }
 
   /**
@@ -1398,7 +1405,14 @@ export class DigitalServicesMarketplace {
   private authenticateRead(auth: ActorAuth | undefined, action: "read" | "list", target: string): string {
     const issuedAt = auth?.issuedAt;
     if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt)) throw new Error("ACTOR_AUTH_ISSUED_AT_REQUIRED");
-    if (Math.abs(this.now() - issuedAt) > this.baseWindows.readAuthorizationTtl) throw new Error("ACTOR_AUTH_EXPIRED");
+    // v0.5.0 compatibility: a Unix-ms issuedAt is checked against the height an adapter derived for it (docs/COMPATIBILITY.md).
+    let freshness = issuedAt;
+    if (this.transitionClock.unit === "height" && looksLikeLegacyMs(issuedAt)) {
+      const h = auth?.issuedAtHeight;
+      if (typeof h !== "number" || !Number.isSafeInteger(h)) throw new Error("ACTOR_AUTH_ISSUED_AT_UNIT: issuedAt looks like Unix ms; since v0.5.0 it is a Marketplace height (the service API converts legacy values)");
+      freshness = h;
+    }
+    if (Math.abs(this.now() - freshness) > this.baseWindows.readAuthorizationTtl) throw new Error("ACTOR_AUTH_EXPIRED");
     return this.authenticateActor(auth, action, target, { issuedAt });
   }
 

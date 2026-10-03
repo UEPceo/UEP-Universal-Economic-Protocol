@@ -7,7 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { UepServiceApi } from "./uep-service-api.ts";
 import { UEP_API_VERSION, httpStatusOf, type ApiRequestMeta } from "./uep-api-types.ts";
 
-export const UEP_HTTP_API_VERSION = "1.2.0";
+export const UEP_HTTP_API_VERSION = "1.3.0";
 
 export type EconomicReadModel = {
   tip: () => { stateRoot: string; height: number; treasury?: string };
@@ -198,6 +198,11 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
           capacity: BigInt(String(body.capacity ?? "0")),
         }, metaOf(req));
         send(res, httpStatusOf(result, 201), result);
+        return;
+      }
+      if (req.method === "GET" && path === "/v1/marketplace/height") {
+        const result = opts.api.marketplaceHeight(metaOf(req));
+        send(res, httpStatusOf(result), result);
         return;
       }
       if (req.method === "GET" && path === "/v1/marketplace/listings") {

@@ -17,7 +17,7 @@ A transition is a function of the previous state and the inputs of the transitio
   - The Marketplace takes a height source (`height: () => ledger.height`). Without one it keeps a local counter at 0, advanced only by `advanceHeight()`. Nothing expires until the height moves.
   - The IoT/M2M service and the paymaster use the Marketplace clock.
   - Durations are written in heights. The nominal conversion uses the 5 s reference block time (`REFERENCE_BLOCK_TIME_MS`, `HEIGHTS_PER_DAY = 17_280`), rounded up.
-- **Test-only clock.** Tests and experiments written before v0.5.0 may inject a millisecond counter (`now: () => number`). It is never a real clock, it is marked deprecated, and it cannot be combined with a height source (`CLOCK_CONFIG_CONFLICT`). In that mode the same windows are expressed in ms (heights × 5,000).
+- **Test-only clock.** Tests and experiments written before v0.5.0 may inject a millisecond counter (`now: () => number`). It is never a real clock, it is marked deprecated, and it cannot be combined with a height source (`CLOCK_CONFIG_CONFLICT`). In that mode the same windows are expressed in ms (heights × 5,000). Other legacy inputs (`*Ms` options, Unix-ms values, old asset ids) are converted by deprecated shims outside the transitions; see ADR 0003 and `docs/COMPATIBILITY.md`.
 - **Validators and guards.** Category validators, delivery validators and settlement guards run inside `settle()` and `deliver()`. They must be pure functions of their arguments. If one throws, the transition fails for every node in the same way. A hook supplied at run time cannot be checked statically, so this is a requirement on whoever registers it.
 
 ### Enforcement
@@ -32,6 +32,7 @@ Allowlist (each entry names a file, a rule and a justification; an entry that no
 |---|---|---|
 | `src/marketplace/listing-index.test.ts` | `performance-now` | Test-only timing of the listing index; it measures the test, not a transition. |
 | `src/core/poseidon.test.ts` | `net-import` (`node:fs`) | Test-only read of the committed Poseidon reference vectors in the repository; no live data. |
+| `src/testnet/snapshot-fixtures.test.ts` | `net-import` (`node:fs`) | Test-only read of the committed golden snapshot fixtures (ADR 0003); no live data. |
 
 `src/core/deterministic-transitions.test.ts` checks that the repository is clean and that an injected `Date.now()` in transition code is reported.
 
@@ -85,7 +86,7 @@ The checks are deterministic and use only state. The evidence records (hash, typ
 
 - Replicas that replay the same inputs reach the same state whether or not external services are reachable.
 - Real time between two heights depends on the block rate. Faster blocks than the reference shorten every window in real time. A minimum block spacing is an open item for the multi-node phase.
-- Snapshot format 7 adds the ledger height. `lastReconcileAt` and transaction `createdAt` are heights.
+- Snapshot format 7 adds the ledger height. `lastReconcileAt` and transaction `createdAt` are heights. Format 6 snapshots are migrated to format 7 (height 0; ADR 0003).
 
 ## Open items
 

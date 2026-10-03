@@ -23,6 +23,8 @@ import { SpendInbox, type LabCompute, type LabRelay, type LabOracle, type SpendS
 import { SpendQuorum, type Groth16SpendQueue } from "./groth16-spend-queue.ts";
 import type { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
 import type { ActorAuth } from "../marketplace/identity.ts";
+import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
+import { REFERENCE_BLOCK_TIME_MS, legacyMsToHeight } from "../core/height.ts";
 
 const UNAUTHENTICATED = /^(ACTOR_SIGNATURE_REQUIRED|ACTOR_SIGNATURE_INVALID|ACTOR_AUTH_ISSUED_AT_REQUIRED|ACTOR_AUTH_EXPIRED|IDENTITY_NOT_REGISTERED|LEGACY_ADMIN_ID_RESERVED|RESERVED_IDENTITY|ADMIN_NOT_CONFIGURED|RESERVATION_SIGNATURE_INVALID|SIGNATURE_REQUIRED)/;
 const FORBIDDEN = /(FORBIDDEN|NOT_AUTHORIZED)/;
@@ -50,6 +52,12 @@ export type ServiceApiConfig = {
   quorum?: SpendQuorum;
   marketplace?: DigitalServicesMarketplace;
   iotM2M?: IoTM2MService;
+  /**
+   * v0.5.0 compatibility: Unix-ms clock used only to map a deprecated Unix-ms
+   * `issuedAt` to a Marketplace height (boundary code, never a transition).
+   * Default: Date.now.
+   */
+  legacyWallClock?: () => number;
 };
 
 export class UepServiceApi {
@@ -65,6 +73,7 @@ export class UepServiceApi {
   quorum?: SpendQuorum;
   marketplace?: DigitalServicesMarketplace;
   iotM2M?: IoTM2MService;
+  private readonly legacyWallClock: () => number;
 
   constructor(cfg: ServiceApiConfig) {
     this.storage = cfg.storageProviders;
@@ -81,6 +90,7 @@ export class UepServiceApi {
     this.quorum = cfg.quorum;
     this.marketplace = cfg.marketplace;
     this.iotM2M = cfg.iotM2M;
+    this.legacyWallClock = cfg.legacyWallClock ?? (() => Date.now());
   }
 
   capabilities(): CapabilitiesDocument {
@@ -259,7 +269,14 @@ export class UepServiceApi {
     if (!a || typeof a !== "object" || typeof a.actorId !== "string" || !a.actorId || typeof a.signature !== "string" || !a.signature) {
       throw new UepApiError("UNAUTHORIZED", "signed actor authorization required", 401);
     }
-    return { actorId: a.actorId, signature: a.signature, ...(typeof a.issuedAt === "number" ? { issuedAt: a.issuedAt } : {}) };
+    const auth: ActorAuth = { actorId: a.actorId, signature: a.signature, ...(typeof a.issuedAt === "number" ? { issuedAt: a.issuedAt } : {}) };
+    // v0.5.0 compatibility: a legacy Unix-ms issuedAt (pre-v0.5.0 clients) is mapped to a Marketplace
+    // height here, at the boundary, with this adapter's clock; the Marketplace itself reads no clock.
+    if (auth.issuedAt !== undefined && looksLikeLegacyMs(auth.issuedAt) && this.marketplace?.timeUnit === "height") {
+      deprecate(DEPRECATIONS.ISSUED_AT_MS, "x-uep-issued-at / auth.issuedAt in Unix ms is deprecated since v0.5.0; sign the Marketplace height (GET /v1/marketplace/height)");
+      auth.issuedAtHeight = Math.max(0, legacyMsToHeight(auth.issuedAt, this.marketplace.clock(), this.legacyWallClock()));
+    }
+    return auth;
   }
 
   /** Run a marketplace / IoT call; authorization failures map to 401 / 403. */
@@ -275,6 +292,16 @@ export class UepServiceApi {
   marketplacePublishListing(input: Parameters<DigitalServicesMarketplace["publishListing"]>[0], meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
     const m = this.parseMeta(meta);
     return this.guarded(m, this.marketplace, "marketplace", () => this.marketplace!.publishListing(input, this.requireAuth(m)));
+  }
+
+  /**
+   * v0.5.0: current Marketplace time (public). Clients sign read / list
+   * authorizations with `issuedAt` = this height.
+   */
+  marketplaceHeight(meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    if (!this.marketplace) return fail(m.requestId, new UepApiError("PROVIDER_UNAVAILABLE", "marketplace not attached", 404));
+    return ok(m.requestId, { height: this.marketplace.clock(), unit: this.marketplace.timeUnit, referenceBlockTimeMs: REFERENCE_BLOCK_TIME_MS });
   }
 
   marketplaceListings(query?: Parameters<DigitalServicesMarketplace["searchListings"]>[0], meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {

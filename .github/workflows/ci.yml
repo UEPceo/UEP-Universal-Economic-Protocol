@@ -59,6 +59,10 @@ jobs:
       - name: Deterministic transitions lint
         run: npm run lint:determinism
 
+      # docs/COMPATIBILITY.md: a snapshot format change needs a migration step and golden fixtures.
+      - name: Snapshot compatibility check
+        run: npm run check:snapshot-compat
+
       - name: Full suite (npm run test:all)
         run: npm run test:all
 

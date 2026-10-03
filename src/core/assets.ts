@@ -15,6 +15,7 @@
  */
 import { Fr } from "./field.ts";
 import { encodeStringToFr } from "./encoding.ts";
+import { DEPRECATIONS, deprecate } from "./deprecation.ts";
 import {
   ASSET_ID_PATTERN,
   MAX_ASSET_DECIMALS,
@@ -60,9 +61,64 @@ export function isCanonicalLedgerAssetId(assetId: unknown): assetId is string {
   return isCanonicalAssetId(assetId);
 }
 
-/** Field encoding of a canonical ledger asset id. Throws ASSET_ID_INVALID otherwise. */
+/** Field encoding of a canonical ledger asset id (a legacy alias resolves first). Throws ASSET_ID_INVALID otherwise. */
 export function ledgerAssetIdToFr(assetId: string): Fr {
-  return assetIdToFr(assetId);
+  return assetIdToFr(resolveAssetIdAlias(assetId));
+}
+
+/**
+ * Compatibility (docs/COMPATIBILITY.md): asset ids used before v0.5.0, mapped
+ * to their `<namespace>/<symbol>` ids. Same asset, decimals and fee floor.
+ *  - API inputs: a legacy id is resolved to the namespaced id (deprecated,
+ *    warning `UEP_DEP_ASSET_ALIAS`). New notes always use the namespaced id.
+ *  - Ledger state: notes, mints and spends created before the rename keep
+ *    the field encoding of the legacy id (it is bound into commitments and
+ *    signatures). That encoding is accepted as an alias encoding of the
+ *    same asset; spends of such notes keep it (inputs, outputs and fee).
+ * The table is append-only.
+ */
+export const LEGACY_ASSET_ID_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  "asset:test:eur": "uep-test/teur",
+  "asset:test:btc": "uep-test/tbtc",
+  "asset:test:energy": "uep-test/tenergy",
+  "asset:test:data": "uep-test/tdata",
+  "asset:global:eur": "uep-global/eur",
+  "asset:ip:energy": "uep-sim/senergy",
+  "asset:ip:compute": "uep-sim/scompute",
+});
+
+export function isLegacyAssetIdAlias(assetId: unknown): assetId is string {
+  return typeof assetId === "string" && Object.prototype.hasOwnProperty.call(LEGACY_ASSET_ID_ALIASES, assetId);
+}
+
+/** Namespaced id of `assetId` (unchanged unless it is a legacy alias). */
+export function resolveAssetIdAlias<T>(assetId: T): T {
+  if (!isLegacyAssetIdAlias(assetId)) return assetId;
+  deprecate(DEPRECATIONS.ASSET_ALIAS, `asset id "${assetId}" is a pre-v0.5.0 alias of "${LEGACY_ASSET_ID_ALIASES[assetId]}"; use the namespaced id`);
+  return LEGACY_ASSET_ID_ALIASES[assetId] as T;
+}
+
+/** Legacy ids that alias `canonicalId`. */
+export function legacyAliasesOf(canonicalId: string): string[] {
+  return Object.keys(LEGACY_ASSET_ID_ALIASES).filter((k) => LEGACY_ASSET_ID_ALIASES[k] === canonicalId);
+}
+
+/** Field encodings accepted for an asset: the namespaced id first, then legacy aliases. */
+export function assetEncodings(canonicalId: string): readonly Fr[] {
+  let enc = encodingCache.get(canonicalId);
+  if (!enc) {
+    enc = Object.freeze([encodeStringToFr(canonicalId), ...legacyAliasesOf(canonicalId).map((a) => encodeStringToFr(a))]);
+    encodingCache.set(canonicalId, enc);
+  }
+  return enc;
+}
+const encodingCache = new Map<string, readonly Fr[]>();
+let legacyEncodingHexes: Set<string> | undefined;
+
+/** True if `assetId` is the field encoding of a legacy alias (not of a namespaced id). */
+export function isLegacyAssetEncoding(assetId: Fr): boolean {
+  legacyEncodingHexes ??= new Set(Object.keys(LEGACY_ASSET_ID_ALIASES).map((a) => encodeStringToFr(a).toHex()));
+  return legacyEncodingHexes.has(assetId.toHex());
 }
 
 /**
@@ -194,13 +250,15 @@ export function assetsForNetwork(networkId: string): readonly AssetRecord[] {
   return [];
 }
 
+/** Template asset of a network by id (a legacy alias resolves to its namespaced asset). */
 export function findAsset(networkId: string, assetId: string): AssetRecord | undefined {
-  return assetsForNetwork(networkId).find((a) => a.assetId === assetId);
+  const id = resolveAssetIdAlias(assetId);
+  return assetsForNetwork(networkId).find((a) => a.assetId === id);
 }
 
-/** Template asset of a network by its field encoding. */
+/** Template asset of a network by its field encoding (namespaced id or a legacy alias encoding). */
 export function findAssetByFr(networkId: string, assetId: Fr): AssetRecord | undefined {
-  return assetsForNetwork(networkId).find((a) => encodeStringToFr(a.assetId).eq(assetId));
+  return assetsForNetwork(networkId).find((a) => assetEncodings(a.assetId).some((e) => e.eq(assetId)));
 }
 
 /** Manifest templates (no keys) of a network's asset list. */

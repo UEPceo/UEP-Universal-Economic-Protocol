@@ -8,18 +8,40 @@ Version 0.5.0 bundles the research-labs integration and the Poseidon protocol ha
 
 See `docs/adr/0002-deterministic-transitions.md` and `docs/EVIDENCE.md`. No native token; fees unchanged.
 
-- **No external calls or wall clock in transitions.** The core, the testnet ledger, the Marketplace (including `settle()`, `deliver()`, settlement guards and category validators) and the IoT/M2M service no longer read `Date.now()` or `new Date()`. Time comes only from the block height, never from a header timestamp. `npm run lint:determinism` fails on `fetch`, `Date.now`, `new Date(`, `Date()`, `performance.now`, `process.hrtime`, timers and imports of network, file or process modules in those paths. Its allowlist has two test-only entries, each with a justification. It runs first in `npm run test:all` and as its own CI step.
+- **No external calls or wall clock in transitions.** The core, the testnet ledger, the Marketplace (including `settle()`, `deliver()`, settlement guards and category validators) and the IoT/M2M service no longer read `Date.now()` or `new Date()`. Time comes only from the block height, never from a header timestamp. `npm run lint:determinism` fails on `fetch`, `Date.now`, `new Date(`, `Date()`, `performance.now`, `process.hrtime`, timers and imports of network, file or process modules in those paths. Its allowlist has three test-only entries, each with a justification. It runs first in `npm run test:all` and as its own CI step.
 - **Deterministic height.** The single-node testnet ledger has `height` and `advanceHeight()`. The Marketplace takes a height source (`height: () => ledger.height`) or keeps a local counter. The paymaster and the IoT service use the Marketplace clock. The millisecond `now` option remains only as a deprecated test-only counter.
 - **Windows in heights.** Defaults at the 5 s reference block time: reservation TTL 120 heights (10 min), cancellation grace 24 (2 min), delivery dispute window 17,280 (24 h), dispute resolution 120,960 (7 days), read authorization TTL 60 (5 min), listing window 720 (1 h), paymaster quote TTL 120, IoT telemetry maximum age 60 (5 min) and future skew 6 (30 s), security-policy window 12 (60 s). The `*Ms` options are still accepted and are converted (rounded up).
 - **Domain profiles.** A listing declares `domainProfile` `EARTH` (default), `MOON` or `MARS` at publication. The profile is signed when it is not EARTH and cannot change. It adds a fixed delay to every counterparty window: one worst-case round trip plus 25%, i.e. 0, 1 and 602 heights (MARS: 50.17 min, from a maximum one-way light time of 20.06 min computed offline from the public JPL DE442s ephemeris). IoT telemetry from Mars that arrives 338.3 s or 1,203.6 s after observation now settles with the default configuration. EARTH behaviour is unchanged. Solar conjunctions and contact gaps are not covered.
 - **Evidence caps.** Listings may bind to a configured attester set (`evidencePolicy: { attesterSetId, maxValuePerContract }`). `reserve()` rejects an order above the per-contract cap or above the set's open-value cap for the asset, before any value moves. Settlement rechecks the per-contract cap. By default no attester sets are configured, and listings without an evidence policy are unchanged. Evidence records and attester selection are left for roadmap phase 2.3.
-- **Breaking changes:**
-  - Snapshot format 7 (adds `height`; format 6 and older are rejected).
-  - `lastReconcileAt`, spend `createdAt`, treasury entry timestamps, read `issuedAt` and telemetry `observedAt` are heights.
-  - `MarketplaceReputation.score()` requires `now`.
-  - `SecurityPolicy` uses `windowHeights` and probe `height` (the legacy names are still accepted).
-  - A Marketplace without a height source does not expire anything until `advanceHeight()`.
-  - Combining a height source with the legacy `now`, or giving both a `*Heights` and a `*Ms` option, throws `CLOCK_CONFIG_CONFLICT`.
+- **Changes and their compatibility** (details in `docs/COMPATIBILITY.md`):
+  - Snapshot format 7 adds `height`. Format 6 snapshots are migrated (height 0); format 5 and older are refused, with the reason.
+  - `lastReconcileAt`, spend `createdAt`, treasury entry timestamps, read `issuedAt` and telemetry `observedAt` are heights. Unix-ms values are converted by deprecated shims where a deterministic conversion exists.
+  - `MarketplaceReputation.score(sellerId)` works without `now` again (deterministic default, no clock).
+  - `SecurityPolicy` uses `windowHeights` and probe `height`; the legacy names are still accepted, with a deprecation warning.
+  - **Breaking:** a Marketplace without a height source does not expire anything until `advanceHeight()`. `startBlockProducer()` restores timer-driven expiry outside the transitions.
+  - **Breaking:** combining a height source with the legacy `now`, or giving both a `*Heights` and a `*Ms` option, throws `CLOCK_CONFIG_CONFLICT` (ambiguous configuration).
+
+### Compatibility policy, snapshot migrations and deprecated shims (unreleased, on top of v0.5.0)
+
+See `docs/COMPATIBILITY.md` and `docs/adr/0003-compatibility-and-migrations.md`. No native token; fees unchanged.
+
+- **Snapshot migration registry** (`src/testnet/snapshot-migrations.ts`): chained, append-only steps vN → vN+1, each pure and documented field by field. Restore checks the snapshot as signed, then migrates, then runs every invariant. Step 6 → 7 derives:
+  - `height = 0` and `lastReconcileAt = 0`;
+  - `windowHeights = ceil(windowMs / 5000)`;
+  - namespaced policy asset keys.
+
+  Format 6 snapshots of the Poseidon release (with the old asset ids) and of v0.5.0 restore, keep their balances and accept new spends. The next snapshot links to the signed one. Formats 1–5 are refused with the reason (hash change; signatures bind the old values).
+- **Golden fixtures** in `src/testnet/fixtures/snapshots/`: format 5 (v0.4.7, refusal), two format 6 fixtures and one format 7 fixture. They were generated by the historical code with ephemeral keys and hold public data only. `snapshot-fixtures.test.ts` loads every fixture on every run.
+- **CI check** `npm run check:snapshot-compat`: fails when the snapshot format or payload shape changes without a migration step, a fixture and an updated `FORMAT.json` lock. It runs in `npm run test:all` and as its own CI step.
+- **Asset id aliases:** the pre-release ids (`asset:test:eur`, …) map to `<namespace>/<symbol>` through `LEGACY_ASSET_ID_ALIASES`, in snapshots, the ledger API and the Marketplace. Old-encoded notes stay spendable, and `balanceOfAsset()` adds up both encodings.
+- **Deprecated shims with warnings** (stable `UEP_DEP_*` codes, kept for at least one minor version):
+  - `*Ms` options and the test-only `now`;
+  - `prepareSpend()` with a Unix-ms `now`;
+  - `SecurityPolicy({ windowMs })`;
+  - `x-uep-issued-at` / `auth.issuedAt` in Unix ms, mapped to a height in the service API and HTTP adapter (not in the Marketplace);
+  - IoT `now`, now ignored with a height-based Marketplace instead of throwing.
+- New `GET /v1/marketplace/height` (HTTP adapter 1.3.0), `ledger.restoredFrom` and `lastReconcileHeight`, and `snapshotToJSON` / `snapshotFromJSON`.
+- Not compatible, with explicit errors: IoT telemetry signed with a Unix-ms `observedAt` (`IOT_TELEMETRY_OBSERVED_AT_UNIT`), and an in-process Unix-ms `issuedAt` without a derived height (`ACTOR_AUTH_ISSUED_AT_UNIT`).
 
 ### Security hardening (v0.5.0)
 
@@ -58,7 +80,7 @@ See `docs/adr/0002-deterministic-transitions.md` and `docs/EVIDENCE.md`. No nati
 
 ### Compatibility (v0.5.0)
 
-- **Behaviour change:** asset ids are renamed (see above); pre-release format-6 snapshots with the old ids do not restore. The snapshot format number stays 6; snapshots may now contain `sender-signature` spends.
+- **Behaviour change:** asset ids are renamed (see above). The old ids are accepted as deprecated aliases, and pre-release format 6 snapshots with the old ids restore through the 6 → 7 migration (see "Compatibility policy" above). Snapshots may contain `sender-signature` spends.
 - **Behaviour change:** spends are `sender-signature` by default and their nullifiers differ from development-MAC spends. Code that relied on `submit(tx)` failing without secrets must build `{ authorization: "development-mac" }` spends.
 - **Behaviour change (HTTP/service API):** marketplace and IoT calls need signed actor authorization; `x-uep-caller-id` has no effect; `marketplaceDeliverOrder()` no longer takes a provider id.
 - **Behaviour change (labs):** proofs and keys of circuit v3 do not verify under v4; verifiers no longer take a verifying key from the message; `UEP_P4_VK_HEX` is no longer read.

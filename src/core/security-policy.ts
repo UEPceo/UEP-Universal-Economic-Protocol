@@ -16,6 +16,7 @@
  * (`windowHeights`, default 12 = 60 s at 5 s blocks) and probes carry the
  * height of the ledger (`height`). The policy never reads a clock.
  */
+import { DEPRECATIONS, deprecate } from "./deprecation.ts";
 
 export type RiskTier = "experimental" | "registered" | "restricted" | "halted";
 
@@ -87,6 +88,14 @@ type WindowBucket = {
   txCount: number;
 };
 
+/** bigint, safe integer, or decimal string with an optional trailing "n" (the snapshot JSON form). */
+export function toPolicyBigint(v: unknown): bigint {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number" && Number.isSafeInteger(v)) return BigInt(v);
+  if (typeof v === "string" && /^-?[0-9]+n?$/.test(v)) return BigInt(v.endsWith("n") ? v.slice(0, -1) : v);
+  throw new Error("INVALID_POLICY_AMOUNT");
+}
+
 function normalizeAssetLimits(input: Record<string, AssetLimits> | undefined): Record<string, AssetLimits> {
   const out: Record<string, AssetLimits> = {};
   for (const [asset, limits] of Object.entries(input ?? {})) {
@@ -94,7 +103,7 @@ function normalizeAssetLimits(input: Record<string, AssetLimits> | undefined): R
     for (const k of ["maxTransferAmount", "maxTransferPerWindow", "minTransferAmount"] as const) {
       const v = (limits as Record<string, unknown> | undefined)?.[k];
       if (v === undefined || v === null) continue;
-      const big = typeof v === "bigint" ? v : BigInt(v as string);
+      const big = toPolicyBigint(v);
       if (big < 0n) throw new Error("INVALID_ASSET_LIMITS");
       norm[k] = big;
     }
@@ -132,6 +141,7 @@ export class SecurityPolicy {
   constructor(config: Partial<SecurityPolicyConfig> & { windowMs?: number } = {}) {
     const { windowMs, ...rest } = config;
     if (windowMs !== undefined && rest.windowHeights !== undefined) throw new Error("CLOCK_CONFIG_CONFLICT: windowMs and windowHeights");
+    if (windowMs !== undefined) deprecate(DEPRECATIONS.POLICY_WINDOW_MS, "SecurityPolicy: windowMs is deprecated since v0.5.0; it is read as windowHeights in the probes' own unit (pass windowHeights and probe.height)");
     this.config = {
       ...DEFAULT_CONFIG,
       ...rest,

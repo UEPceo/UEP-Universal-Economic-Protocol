@@ -1,5 +1,6 @@
 /** Reputation and seller-integrity primitives for the UEP marketplace. */
 import { HEIGHTS_PER_DAY } from "../core/height.ts";
+import { looksLikeLegacyMs } from "../core/deprecation.ts";
 
 export type ReputationEvent = {
   sellerId: string;
@@ -20,18 +21,30 @@ export type SellerReputation = {
   accountAgeDays: number;
 };
 
+/** Latest `createdAt` of the events (0 without events): the deterministic default for `now`. */
+export function latestEventTick(events: readonly ReputationEvent[]): number {
+  return events.reduce((m, e) => (e.createdAt > m ? e.createdAt : m), 0);
+}
+
+/** Ticks per day for a set of events: Unix-ms stamps (pre-v0.5.0) use 86,400,000, heights HEIGHTS_PER_DAY. */
+export function defaultTicksPerDay(events: readonly ReputationEvent[], now?: number): number {
+  return looksLikeLegacyMs(now) || (now === undefined && events.some((e) => looksLikeLegacyMs(e.createdAt))) ? 86_400_000 : HEIGHTS_PER_DAY;
+}
+
 /**
  * Bayesian shrinkage prevents tiny, collusive samples from immediately reaching 5/5.
- * v0.5.0 (ADR 0002): `now` and `createdAt` are heights (no default clock);
- * `ticksPerDay` converts them to days (default HEIGHTS_PER_DAY at 5 s blocks).
+ * v0.5.0 (ADR 0002): `now` and `createdAt` are heights; `ticksPerDay` converts
+ * them to days. Compatibility defaults (no clock is read): `now` is the
+ * latest event stamp, and `ticksPerDay` is 86,400,000 for Unix-ms stamps
+ * (callers before v0.5.0), else HEIGHTS_PER_DAY.
  */
 export function calculateBayesianReputation(
   events: ReputationEvent[],
   sellerId: string,
-  now: number,
+  now: number = latestEventTick(events),
   priorMean = 3.5,
   priorWeight = 8,
-  ticksPerDay = HEIGHTS_PER_DAY,
+  ticksPerDay: number = defaultTicksPerDay(events, now),
 ): SellerReputation {
   const rows = events.filter((e) => e.sellerId === sellerId);
   const settledVolume = rows.reduce((n, e) => n + e.settledAmount, 0n);
@@ -65,9 +78,14 @@ export class MarketplaceReputation {
     this.ratedOrders.add(event.orderId);
   }
 
-  /** `now` is the current height (or tick); `ticksPerDay` its ticks per day. */
-  score(sellerId: string, now: number, ticksPerDay = HEIGHTS_PER_DAY): SellerReputation {
-    return calculateBayesianReputation(this.events, sellerId, now, 3.5, 8, ticksPerDay);
+  /**
+   * `now` is the current height (or tick); `ticksPerDay` its ticks per day.
+   * Without `now` (pre-v0.5.0 callers): the latest recorded event stamp, so
+   * the result is deterministic; see calculateBayesianReputation().
+   */
+  score(sellerId: string, now?: number, ticksPerDay?: number): SellerReputation {
+    const at = now ?? latestEventTick(this.events);
+    return calculateBayesianReputation(this.events, sellerId, at, 3.5, 8, ticksPerDay ?? defaultTicksPerDay(this.events, now));
   }
 
   listEvents(): readonly ReputationEvent[] { return [...this.events]; }

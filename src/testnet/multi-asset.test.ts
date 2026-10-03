@@ -71,10 +71,12 @@ test("asset ids: registries are canonical and their field encodings are distinct
   for (const reg of [TESTNET_ASSETS, GLOBAL_ASSETS, INTERPLANETARY_ASSETS]) assert.deepEqual(validateAssetRegistry(reg), []);
   const all = [...TESTNET_ASSETS, ...GLOBAL_ASSETS, ...INTERPLANETARY_ASSETS].map((a) => ledgerAssetIdToFr(a.assetId).toHex());
   assert.equal(new Set(all).size, all.length);
-  for (const bad of ["\u0000uep-test/teur", "uep-test/teur\u0000", "Uep-test/teur", "uep-test/tést", "asset:test:eur", "uep-test", "uep-test/", "/teur", "a/b/c", "a".repeat(16) + "/x", "x/" + "a".repeat(16), "", "uep test/x", "uep|test/x"]) {
+  for (const bad of ["\u0000uep-test/teur", "uep-test/teur\u0000", "Uep-test/teur", "uep-test/tést", "asset:test:usd", "uep-test", "uep-test/", "/teur", "a/b/c", "a".repeat(16) + "/x", "x/" + "a".repeat(16), "", "uep test/x", "uep|test/x"]) {
     assert.throws(() => ledgerAssetIdToFr(bad), /ASSET_ID_INVALID/, JSON.stringify(bad));
   }
   assert.ok(ledgerAssetIdToFr("a".repeat(15) + "/" + "b".repeat(15)));
+  // v0.5.0 compatibility: a pre-v0.5.0 id is an alias of its namespaced id (docs/COMPATIBILITY.md).
+  assert.ok(ledgerAssetIdToFr("asset:test:eur").eq(ledgerAssetIdToFr("uep-test/teur")));
   assert.ok(validateAssetRegistry([{ ...TESTNET_ASSETS[0]!, decimals: 9 }]).some((p) => /decimals/.test(p)));
   assert.ok(validateAssetRegistry([...TESTNET_ASSETS, { ...TESTNET_ASSETS[0]! }]).some((p) => /duplicate/.test(p)));
   assert.ok(validateAssetRegistry([{ ...TESTNET_ASSETS[0]!, decimals: 19 }]).some((p) => /decimals/.test(p)));

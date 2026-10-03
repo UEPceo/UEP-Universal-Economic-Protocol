@@ -56,7 +56,19 @@ export function signReservation(a: ReservationAuthorization, privateKey: Private
 }
 
 /** Signed proof that `actorId` requested one action (v0.4.4). `issuedAt` is required for read / list. */
-export type ActorAuth = { actorId: string; signature: string; issuedAt?: number };
+export type ActorAuth = {
+  actorId: string;
+  signature: string;
+  /** Signed. Read / list: a Marketplace height (v0.5.0); a Unix-ms value is the deprecated pre-v0.5.0 form. */
+  issuedAt?: number;
+  /**
+   * v0.5.0 compatibility, not signed: the height a boundary adapter (service
+   * API, HTTP) derived from a legacy Unix-ms `issuedAt` with its own clock,
+   * outside the Marketplace. Used only for the read-authorization freshness
+   * check; the signature still covers `issuedAt`.
+   */
+  issuedAtHeight?: number;
+};
 
 export type MarketplaceAction =
   | "publish" | "fund" | "deliver" | "settle" | "cancel" | "expire" | "read" | "list"

@@ -36,6 +36,7 @@ import { tupleKey } from "../core/composite-key.ts";
 import type { CategoryServiceAccess, DigitalServicesMarketplace, ServiceOrder } from "../marketplace/marketplace.ts";
 import type { ActorAuth } from "../marketplace/identity.ts";
 import type { TransitionClock } from "../core/height.ts";
+import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 
 /** Default telemetry age window, in heights (60 = 5 min at 5 s blocks). */
 export const DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS = 60;
@@ -227,6 +228,7 @@ const telemetryPayload = iotTelemetryPayload;
 export class IoTM2MService {
   readonly version = IOT_M2M_VERSION;
   private readonly now: () => number;
+  private readonly heightMode: boolean;
   /** Base telemetry age window and future skew, in Marketplace ticks (heights; ms with the test-only clock). */
   readonly telemetryMaxAge: number;
   readonly telemetryMaxFutureSkew: number;
@@ -250,8 +252,11 @@ export class IoTM2MService {
   constructor(marketplace: DigitalServicesMarketplace, config: IoTM2MConfig = {}) {
     this.marketplace = marketplace;
     const clock: TransitionClock = marketplace.transitionClock;
-    if (config.now !== undefined && clock.unit !== "legacy-ms") throw new Error("CLOCK_CONFIG_CONFLICT: the IoT service uses the Marketplace height; `now` is only allowed with the test-only legacy clock");
-    this.now = config.now ?? (() => marketplace.clock());
+    // v0.5.0 compatibility: with a height-based Marketplace a legacy `now` is ignored (deprecated); time is the Marketplace height.
+    const legacyNow = config.now !== undefined && clock.unit === "legacy-ms" ? config.now : undefined;
+    if (config.now !== undefined && clock.unit !== "legacy-ms") deprecate(DEPRECATIONS.IOT_NOW_IGNORED, "IoTM2MService: `now` is ignored with a height-based Marketplace since v0.5.0; the service uses the Marketplace height");
+    this.heightMode = clock.unit === "height";
+    this.now = legacyNow ?? (() => marketplace.clock());
     this.telemetryMaxAge = clock.window("telemetryMaxAge", config.telemetryMaxAgeHeights, config.telemetryMaxAgeMs, DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS);
     this.telemetryMaxFutureSkew = clock.window("telemetryMaxFutureSkew", config.telemetryMaxFutureSkewHeights, config.telemetryMaxFutureSkewMs, DEFAULT_TELEMETRY_MAX_FUTURE_SKEW_HEIGHTS);
     if (!Number.isSafeInteger(this.telemetryMaxAge) || this.telemetryMaxAge <= 0 || !Number.isSafeInteger(this.telemetryMaxFutureSkew) || this.telemetryMaxFutureSkew < 0) throw new Error("IOT_TELEMETRY_WINDOW_INVALID");
@@ -469,6 +474,8 @@ export class IoTM2MService {
     // v0.5.0 (ADR 0002): heights; the window includes the fixed delay of the order's domain profile.
     const order = this.orders.readOrder(contract.orderId);
     if (typeof telemetry.observedAt !== "number" || !Number.isFinite(telemetry.observedAt)) throw new Error("IOT_TELEMETRY_OBSERVED_AT_INVALID");
+    // A Unix-ms observedAt (pre-v0.5.0 machines) is signed by the machine and cannot be converted inside the transition.
+    if (this.heightMode && looksLikeLegacyMs(telemetry.observedAt)) throw new Error("IOT_TELEMETRY_OBSERVED_AT_UNIT: observedAt looks like Unix ms; since v0.5.0 it is the Marketplace height at observation (docs/COMPATIBILITY.md)");
     if (this.now() - telemetry.observedAt > this.telemetryMaxAgeFor(order)) throw new Error("IOT_TELEMETRY_STALE");
     if (telemetry.observedAt > this.now() + this.telemetryMaxFutureSkew) throw new Error("IOT_TELEMETRY_FUTURE_TIMESTAMP");
     if (!verifyIoTTelemetrySignature(telemetry, machine.publicKeyHex)) throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");

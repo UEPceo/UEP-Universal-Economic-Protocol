@@ -16,16 +16,18 @@ npm ci
 npm run test:all
 ```
 
-`npm run test:all` runs `npm test` (protocol, Marketplace, IoT/M2M and scale suites), the smoke test, the quickstart and the 20k simulation, then the research labs: `test:rust`, `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 5–10 minutes more, including the first Rust build. A clean run on a typical machine takes roughly 10 minutes in total. CI runs the same command on Node.js 22.x and 24.x with Rust 1.85.1 as a blocking job, plus a non-blocking job for the known-issue lab files.
+`npm run test:all` runs `npm run lint:determinism`, `npm run check:snapshot-compat`, `npm test` (protocol, Marketplace, IoT/M2M and scale suites), the smoke test, the quickstart and the 20k simulation, then the research labs: `test:rust`, `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 5–10 minutes more, including the first Rust build. A clean run on a typical machine takes roughly 10 minutes in total. CI runs the same command on Node.js 22.x and 24.x with Rust 1.85.1 as a blocking job, plus a non-blocking job for the known-issue lab files.
 
 Expected results for `0.5.0-public-iot-m2m` (unreleased; Node.js 22 and 24). Last re-checked with `npm run test:all` on Node.js 22.23 and 24.21 with Rust 1.85.1 on 2026-10-03:
 
 | Command | Expected |
 |---|---|
-| `npm run test:protocol` | 96/96 pass (about a minute: Poseidon in TypeScript) |
-| `npm run test:marketplace` | 121/121 pass (includes the 23 IoT/M2M, the 11 HTTP authorization and the 3 scale tests) |
+| `npm run lint:determinism` | `0 violation(s), 4 allowlisted, 0 stale allowlist entries` |
+| `npm run check:snapshot-compat` | `format 7, 1 migration step(s) from format 6, fixtures and FORMAT.json consistent` |
+| `npm run test:protocol` | 126/126 pass, including every golden snapshot fixture (about a minute: Poseidon in TypeScript) |
+| `npm run test:marketplace` | 145/145 pass (includes the 29 IoT/M2M, the HTTP authorization, the 8 compatibility-shim and the 3 scale tests) |
 | `npm run test:scale` | 3/3 pass |
-| `npm run test:iot` | 23/23 pass |
+| `npm run test:iot` | 29/29 pass |
 | `npm run smoke:testnet` | `SMOKE OK` |
 | `npm run quickstart` | `PASS — local reference testnet` |
 | `npm run simulate:20k` | 20,000 settled, 0 errors, `valueConserved: true` |

@@ -101,10 +101,12 @@ describe("IoT telemetry with Earth-Mars light-time delay (in heights)", () => {
     assert.equal(runLegacyMs(undefined, LT_MAX_S), "REJECTED RESERVATION_EXPIRED");
   });
 
-  it("the IoT service follows the Marketplace height; a separate counter is refused in height mode", () => {
+  it("the IoT service follows the Marketplace height; a legacy `now` is ignored in height mode", () => {
     const marketplace = new DigitalServicesMarketplace();
-    assert.throws(() => new IoTM2MService(marketplace, { now: () => 0 }), /CLOCK_CONFIG_CONFLICT/);
-    const iot = new IoTM2MService(marketplace, { telemetryMaxAgeHeights: 10 });
+    marketplace.advanceHeight(7);
+    const legacy = new IoTM2MService(marketplace, { now: () => 1_800_000_000_000 });
+    assert.equal(registerProviderAs(legacy, { providerId: "p-legacy", displayName: "legacy" }).registeredAt, 7);
+    const iot = new IoTM2MService(new DigitalServicesMarketplace(), { telemetryMaxAgeHeights: 10 });
     assert.equal(iot.telemetryMaxAge, 10);
     assert.throws(() => new IoTM2MService(new DigitalServicesMarketplace(), { telemetryMaxAgeHeights: 1, telemetryMaxAgeMs: 1 }), /CLOCK_CONFIG_CONFLICT/);
   });
