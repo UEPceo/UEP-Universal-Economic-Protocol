@@ -26,7 +26,7 @@ import {
 } from "./uep37-smt-economic-state.ts";
 import { parallelSafeScheduleApply } from "./uep36-parallel-exec.ts";
 import { MultiNodeCluster } from "./uep35-multinode.ts";
-import { hLeaf } from "../core/hash.ts";
+import { hAccount, hLeaf } from "../core/hash.ts";
 
 describe("UEP-37.1 leaf encoding + SMT semantics", () => {
   it("versions pinned", () => {
@@ -60,10 +60,13 @@ describe("UEP-37.1 leaf encoding + SMT semantics", () => {
     assert.notEqual(a.toHex(), c.toHex());
   });
 
-  it("account index is lowBits(owner, depth)", () => {
+  it("state index is lowBits(H_ACCOUNT(owner, asset), depth)", () => {
     const id = Fr.from(0x1_0000_00ffn);
-    assert.equal(accountIndex(id, 8), 0xffn);
-    assert.equal(accountIndex(id, 32), id.lowBits(32));
+    const key = hAccount(id, CANONICAL_ASSET_ID);
+    assert.equal(accountIndex(id, 8), key.lowBits(8));
+    assert.equal(accountIndex(id, 32), key.lowBits(32));
+    // The asset is part of the key: the same account has a different slot per asset.
+    assert.notEqual(accountIndex(id, 32, Fr.from(2n)), accountIndex(id, 32, Fr.from(3n)));
   });
 
   it("production genesis defaults to depth 32", () => {

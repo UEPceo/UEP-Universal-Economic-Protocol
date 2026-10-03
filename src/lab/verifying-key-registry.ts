@@ -5,7 +5,9 @@
  * Arbitrary vkHex in the wire must match the pin or be rejected.
  */
 
+import { createHash } from "node:crypto";
 import type { NetworkProfile } from "./network-profile.ts";
+import { loadVkPins } from "./zk-vk-pins.ts";
 
 export type PinnedVerifyingKey = {
   vkId: string;
@@ -23,9 +25,18 @@ function key(networkId: string, vkId: string): string {
 export class VerifyingKeyRegistry {
   private pins = new Map<string, PinnedVerifyingKey>();
 
-  pin(entry: PinnedVerifyingKey): void {
+  /**
+   * Add a key. The key must hash to an entry of the circuit pin file
+   * (zk-vk-pins.ts): a registry can only hold keys pinned per circuit version.
+   * `testOnlyUnpinned` admits placeholder keys in unit tests of the lookup logic.
+   */
+  pin(entry: PinnedVerifyingKey, opts?: { testOnlyUnpinned?: boolean }): void {
     if (!entry.vkId || !entry.vkHex || !entry.networkId) {
       throw new Error("VK_PIN_INCOMPLETE");
+    }
+    if (!opts?.testOnlyUnpinned) {
+      const sha = createHash("sha256").update(Buffer.from(entry.vkHex.replace(/^0x/i, ""), "hex")).digest("hex");
+      if (!loadVkPins().some((p) => p.vkSha256 === sha)) throw new Error("VK_PIN_MISMATCH: key is not in the circuit pin file");
     }
     this.pins.set(key(entry.networkId, entry.vkId), { ...entry });
   }

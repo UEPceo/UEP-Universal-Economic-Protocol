@@ -77,8 +77,8 @@ describe("UEP-37.2 Poseidon golden (uep-zk)", () => {
     requireZk();
     const r = runUepZk(["circuit-id"]);
     assert.equal(r.status, 0, r.stderr || r.stdout);
-    assert.match(r.stdout, /UEP-27-SPEND-POSEIDON-D32-v3-feefloor/); // v3: 13 publics, domain_id, fee floor
-    assert.match(r.stdout, /constraints=153956/);
+    assert.match(r.stdout, /UEP-27-SPEND-POSEIDON-D32-v4-assetkey/); // v4: 13 publics, domain_id, fee floor, (account, asset) state key
+    assert.match(r.stdout, /constraints=155393/);
   });
 
   it("every note-commit golden matches live uep-zk", () => {

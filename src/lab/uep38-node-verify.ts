@@ -1,7 +1,7 @@
 /**
  * UEP-38.2 — replica verifies Groth16 before applying the SMT transition.
  */
-import { zkVerifyHex } from "./zk-bridge.ts";
+import { pinnedVk, zkVerifyPinned } from "./zk-vk-pins.ts";
 import { canonicalFieldHex } from "./uep38-p4-spend-cert.ts";
 import type { SmtEconomicState } from "./uep37-smt-economic-state.ts";
 import {
@@ -18,27 +18,24 @@ function norm(h: string): string {
   return h.replace(/^0x/i, "").toLowerCase();
 }
 
-/** DEV VK pin. Set from the bundled prover; a proof under another VK is rejected. */
-let pinnedVkHex: string | null = process.env.UEP_P4_VK_HEX?.replace(/^0x/i, "").toLowerCase() || null;
-
-export function pinP4Vk(vkHex: string): void {
-  pinnedVkHex = vkHex.replace(/^0x/i, "").toLowerCase();
+/** Hex of the pinned development verifying key for `depth` (see zk-vk-pins.ts). */
+export function p4PinnedVk(depth: 4 | 32 = 4): string {
+  return pinnedVk(depth, 1n).vkHex;
 }
 
-export function p4PinnedVk(): string | null {
-  return pinnedVkHex;
-}
-
+/**
+ * Check a spend artifact against the replica's roots and verify it under the
+ * pinned verifying key for (circuit version, depth, domain 1). The key carried
+ * by the artifact is never used for verification.
+ */
 export function verifyArtifactAgainstRoots(
   art: SpendProofArtifact,
   oldRoot: string,
   expectedNewRoot?: string,
+  depth: 4 | 32 = 4,
 ): NodeVerifyResult {
-  if (!art.ok || !art.vkHex || !art.proofHex || art.publicInputsHex.length !== 13) {
+  if (!art.ok || !art.proofHex || art.publicInputsHex.length !== 13) {
     return { ok: false, reason: "ARTIFACT_INCOMPLETE" };
-  }
-  if (pinnedVkHex && norm(art.vkHex) !== pinnedVkHex) {
-    return { ok: false, reason: "VK_NOT_PINNED" };
   }
   for (const input of art.publicInputsHex) {
     const c = canonicalFieldHex(input);
@@ -53,8 +50,11 @@ export function verifyArtifactAgainstRoots(
   if (expectedNewRoot && norm(art.publicInputsHex[1]!) !== norm(expectedNewRoot)) {
     return { ok: false, reason: "NEW_ROOT_MISMATCH" };
   }
-  const v = zkVerifyHex(art.vkHex, art.proofHex, art.publicInputsHex);
-  if (!v.ok) return { ok: false, reason: "GROTH16_VERIFY_FAIL" };
+  const v = zkVerifyPinned(depth, 1n, art.proofHex, art.publicInputsHex, art.vkHex);
+  if (!v.ok) {
+    if (v.code === "VK_NOT_PINNED" || v.code === "VK_PIN_MISMATCH") return { ok: false, reason: "VK_NOT_PINNED" };
+    return { ok: false, reason: "GROTH16_VERIFY_FAIL" };
+  }
   return { ok: true, newRoot: norm(art.publicInputsHex[1]!) };
 }
 
@@ -68,7 +68,7 @@ export function nodeApplyVerifiedTransfer(
   art: SpendProofArtifact,
 ): NodeVerifyResult {
   const old = node.stateRoot();
-  const chk = verifyArtifactAgainstRoots(art, old);
+  const chk = verifyArtifactAgainstRoots(art, old, undefined, node.depth as 4 | 32);
   if (!chk.ok) return chk;
   const applied = applyTransfer(node, ids, amount);
   if (!applied.ok) return { ok: false, reason: applied.reason ?? "APPLY_FAIL" };

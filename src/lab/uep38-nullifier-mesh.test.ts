@@ -13,7 +13,6 @@ describe("nullifier replay on four processes", () => {
     );
     const art = proveWithoutApply(st, ids, 1000n);
     assert.equal(art.ok, true, art.stderr);
-    process.env.UEP_P4_VK_HEX = art.vkHex;
     const c = new P4ProcessCluster();
     try {
       await c.start(4, 4);

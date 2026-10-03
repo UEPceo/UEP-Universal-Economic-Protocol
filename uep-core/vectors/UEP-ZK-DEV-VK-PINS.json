@@ -1,0 +1,20 @@
+{
+  "format": "uep-zk-vk-pins",
+  "formatVersion": 1,
+  "keys": "DEV-TEST-KEYS",
+  "note": "SHA-256 of the serialized Groth16 verifying key for each (circuit version, depth, domain). Verifiers load the key from the pinned development setup and check it against this hash; a key supplied alongside a proof is never used. A ceremony key set would ship its own pin file (UEP_ZK_VK_PINS_FILE).",
+  "pins": [
+    {
+      "circuitTag": "UEP-27-SPEND-POSEIDON-D32-v4-assetkey",
+      "depth": 4,
+      "domainId": "1",
+      "vkSha256": "816858fe7172113d55f794bb183627e1d2cdc9fdddf3848bba23aad905c0f2d6"
+    },
+    {
+      "circuitTag": "UEP-27-SPEND-POSEIDON-D32-v4-assetkey",
+      "depth": 32,
+      "domainId": "1",
+      "vkSha256": "9ec23ecdef4e37c29c2f08def4d77cb976cc8c5a49e9f73a8169aeabd7fd60f7"
+    }
+  ]
+}

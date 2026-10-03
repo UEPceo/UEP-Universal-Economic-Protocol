@@ -14,7 +14,7 @@ export type NetworkProfile = {
   domainNumber: number;
   depth: 32;
   hash: "BN254-Poseidon-t3-alpha5";
-  circuitId: "UEP-27-SPEND-POSEIDON-D32-v3-feefloor";
+  circuitId: "UEP-27-SPEND-POSEIDON-D32-v4-assetkey";
   keys: "DEV-TEST-KEYS";
   ceremony: false;
   testnetAllowed: false;
@@ -30,7 +30,7 @@ export const LAB_PROFILE: NetworkProfile = {
   domainNumber: 1,
   depth: 32,
   hash: "BN254-Poseidon-t3-alpha5",
-  circuitId: "UEP-27-SPEND-POSEIDON-D32-v3-feefloor",
+  circuitId: "UEP-27-SPEND-POSEIDON-D32-v4-assetkey",
   keys: "DEV-TEST-KEYS",
   ceremony: false,
   testnetAllowed: false,

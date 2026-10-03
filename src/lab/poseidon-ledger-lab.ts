@@ -188,7 +188,9 @@ export function labVerify(
     fee: bigint;
     nullifier: Fr;
   },
+  depth: 4 | 32 = 4,
 ): boolean {
   if (!assertProofBindsTxFields(proof, economic).ok) return false;
-  return verifyZkSpendProofAgainstExpected(proof, proof.publicInputs, LAB_ZK_DOMAIN_ID);
+  // Verified under the pinned verifying key for `depth` (the proof's key is not used).
+  return verifyZkSpendProofAgainstExpected(proof, proof.publicInputs, LAB_ZK_DOMAIN_ID, depth);
 }

@@ -3,6 +3,7 @@
  * LAB. Not consensus. A dead provider returns an error and does not halt the node.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import type { UepServiceApi } from "./uep-service-api.ts";
 import { UEP_API_VERSION } from "./uep-api-types.ts";
 
@@ -18,7 +19,26 @@ export type HttpApiOptions = {
   economic?: EconomicReadModel;
   host?: string;
   port?: number;
+  /**
+   * Bearer token for the object routes (/v1/objects). Without a token the
+   * object routes only answer on a loopback host; on any other host they
+   * return 401 OBJECTS_AUTH_REQUIRED.
+   */
+  objectsToken?: string;
 };
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+
+function objectsAuthorized(opts: HttpApiOptions, host: string, req: IncomingMessage): boolean {
+  if (opts.objectsToken) {
+    const got = String(req.headers.authorization ?? "");
+    const want = `Bearer ${opts.objectsToken}`;
+    const a = Buffer.from(got);
+    const b = Buffer.from(want);
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+  return LOOPBACK_HOSTS.has(host);
+}
 
 function send(res: ServerResponse, status: number, body: unknown): void {
   const raw = JSON.stringify(body, (_key, value) => typeof value === "bigint" ? value.toString() : value);
@@ -74,6 +94,10 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         return;
       }
       const obj = path.match(/^\/v1\/objects\/([^/]+)$/);
+      if ((obj || path === "/v1/objects") && !objectsAuthorized(opts, host, req)) {
+        send(res, 401, { ok: false, error: { code: "OBJECTS_AUTH_REQUIRED", message: "object routes need a bearer token on this host" } });
+        return;
+      }
       if (obj && req.method === "PUT") {
         const body = await readBody(req);
         const result = await opts.api.putObject({

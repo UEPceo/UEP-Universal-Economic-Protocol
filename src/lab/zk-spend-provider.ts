@@ -18,7 +18,6 @@ import {
   findUepZkBinary,
   zkProveExportD4,
   zkProveSpendJson,
-  zkVerifyHex,
   type UepZkDemoResult,
 } from "./zk-bridge.ts";
 import { buildPoseidonSpendRequest } from "./poseidon-spend-request.ts";
@@ -31,6 +30,8 @@ import {
   assertProofBindsTxFields,
   type TxFieldBinding,
 } from "./zk-public-inputs.ts";
+
+import { zkVerifyPinned } from "./zk-vk-pins.ts";
 
 export type ZkSpendProof = {
   kind: "zk-spend";
@@ -168,7 +169,7 @@ export class PoseidonWalletProvider implements ZkSpendProofProvider {
   }
 
   async verify(proof: ZkSpendProof, expected: SpendPublicInputs): Promise<boolean> {
-    return verifyZkSpendProofAgainstExpected(proof, expected, LAB_ZK_DOMAIN_ID);
+    return verifyZkSpendProofAgainstExpected(proof, expected, LAB_ZK_DOMAIN_ID, this.depth);
   }
 }
 
@@ -179,15 +180,17 @@ export const LAB_ZK_DOMAIN_ID = 1n;
  * Independent SNARK verify with external expected publics.
  * 1) expected hex must equal proof.publicInputsHex[0..11] (economic publics)
  * 2) proof.publicInputsHex[12] (domain_id) must equal the verifier's expected domain
- * 3) Groth16 verify(vk, proof, those publics)
+ * 3) Groth16 verify under the PINNED verifying key for (circuit version, depth, domain);
+ *    see zk-vk-pins.ts. A key carried by the proof object is never used.
  */
 export function verifyZkSpendProofAgainstExpected(
   proof: ZkSpendProof,
   expected: SpendPublicInputs,
   expectedDomainId: bigint,
+  depth: 4 | 32 = 4,
 ): boolean {
   if (proof.kind !== "zk-spend") return false;
-  if (!proof.proofHex || !proof.vkHex || !proof.publicInputsHex) return false;
+  if (!proof.proofHex || !proof.publicInputsHex) return false;
   if (proof.publicInputsHex.length !== 13) return false;
   if (typeof expectedDomainId !== "bigint" || expectedDomainId < 0n) return false;
   const expHex = publicInputsToHex(expected);
@@ -201,13 +204,13 @@ export function verifyZkSpendProofAgainstExpected(
     return false;
   }
   if (domain !== expectedDomainId) return false;
-  return zkVerifyHex(proof.vkHex, proof.proofHex, proof.publicInputsHex.map(normalizeFrHex)).ok;
+  return zkVerifyPinned(depth, expectedDomainId, proof.proofHex, proof.publicInputsHex.map(normalizeFrHex), proof.vkHex).ok;
 }
 
 /** @deprecated use verifyZkSpendProofAgainstExpected with explicit publics and domain */
 export function verifyZkSpendProofIndependent(proof: ZkSpendProof, expectedDomainId: bigint): boolean {
   const rec = reconcileProofPublicInputs(proof);
-  if (!rec.proofHex || !rec.vkHex || !rec.publicInputsHex) return false;
+  if (!rec.proofHex || !rec.publicInputsHex) return false;
   return verifyZkSpendProofAgainstExpected(rec, rec.publicInputs, expectedDomainId);
 }
 

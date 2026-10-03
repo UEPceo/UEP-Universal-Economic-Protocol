@@ -4,7 +4,11 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import type { ProviderHealth } from "./provider-model.ts";
-import { canonicalSpendId } from "../lab/uep38-node-verify.ts";
+
+/** Canonical spend id (same format as the lab replica: domain|sender|nonce). */
+export function canonicalSpendId(domainId: string, sender: string, nonceOrNullifier: string): string {
+  return `${domainId}|${sender}|${nonceOrNullifier}`;
+}
 
 export type SpendSubmitInput = {
   sender: string;

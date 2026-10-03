@@ -5,7 +5,7 @@ use ark_ff::{BigInteger, PrimeField};
 use rand::{rngs::StdRng, SeedableRng};
 use uep_26_spend_circuit::circuit_id::{
     artifact_bundle_id, circuit_metadata_id, public_schema_id, vk_id, CIRCUIT_CONSTRAINTS,
-    CIRCUIT_TAG, NUM_PUBLIC_INPUTS, PUBLIC_INPUT_NAMES,
+    CIRCUIT_TAG, DEV_SETUP_SEED, NUM_PUBLIC_INPUTS, PUBLIC_INPUT_NAMES,
 };
 use uep_26_spend_circuit::groth16_spend::{
     deserialize_proof, deserialize_vk, prove, public_inputs_from_circuit, serialize_pk,
@@ -13,7 +13,9 @@ use uep_26_spend_circuit::groth16_spend::{
 };
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
 use uep_26_spend_circuit::poseidon_suite::honest_spend_fixture_poseidon;
-use uep_26_spend_circuit::prove_request::{circuit_from_request, fr_hex, PoseidonSpendRequest};
+use uep_26_spend_circuit::prove_request::{
+    circuit_from_request, fr_hex, parse_canonical_fr, parse_canonical_fr_hex, PoseidonSpendRequest,
+};
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -36,29 +38,17 @@ fn fr_to_hex(f: &Fr) -> String {
 }
 
 fn fr_from_hex_or_dec(s: &str) -> Result<Fr, String> {
-    let s = s.trim();
-    if s.starts_with("0x") || s.starts_with("0X") || (s.len() >= 32 && s.chars().all(|c| c.is_ascii_hexdigit())) {
-        return fr_from_hex(s);
-    }
-    let n: u128 = s.parse().map_err(|e| format!("{e}"))?;
-    Ok(Fr::from(n as u64))
+    parse_canonical_fr(s)
 }
 
 fn fr_from_hex(s: &str) -> Result<Fr, String> {
-    let mut bytes = hex_decode(s)?;
-    if bytes.len() > 32 {
-        return Err("fr hex too long".into());
-    }
-    while bytes.len() < 32 {
-        bytes.insert(0, 0);
-    }
-    Ok(Fr::from_be_bytes_mod_order(&bytes))
+    parse_canonical_fr_hex(s)
 }
 
 fn main() {
     let cmd = std::env::args().nth(1).unwrap_or_else(|| {
         eprintln!(
-            "uep-zk circuit-id|count-constraints|...|note-commit|low-bits|h-account|h-merkle|smt-root|smt-path"
+            "uep-zk circuit-id|count-constraints|dev-vk|state-index|...|note-commit|low-bits|h-account|h-merkle|smt-root|smt-path"
         );
         std::process::exit(2);
     });
@@ -123,8 +113,52 @@ fn main() {
             println!("vk_id={}", vk_id(&vk_b));
             println!("artifact_bundle_id={}", artifact_bundle_id(&vk_b));
         }
+        "dev-vk" => {
+            // Prints the development verifying key for a depth (fixed dev setup).
+            let d: u32 = std::env::args().nth(2).and_then(|x| x.parse().ok()).unwrap_or(4);
+            let mut rng = StdRng::seed_from_u64(DEV_SETUP_SEED);
+            let vk_b = match d {
+                4 => {
+                    let c = honest_spend_fixture_poseidon::<4>(1_000, 10_000);
+                    let (_pk, vk) = setup(c, &mut rng).expect("setup");
+                    serialize_vk(&vk).expect("ser vk")
+                }
+                32 => {
+                    let c = honest_spend_fixture_poseidon::<32>(1_000, 10_000);
+                    let (_pk, vk) = setup(c, &mut rng).expect("setup");
+                    serialize_vk(&vk).expect("ser vk")
+                }
+                _ => {
+                    eprintln!("unsupported depth {d}; use 4 or 32");
+                    std::process::exit(2);
+                }
+            };
+            println!("depth={d}");
+            println!("tag={CIRCUIT_TAG}");
+            println!("keys=DEV-TEST-KEYS");
+            println!("vk_id={}", vk_id(&vk_b));
+            println!("vk_hex={}", hex_encode(&vk_b));
+        }
+        "state-index" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            if args.len() != 3 {
+                eprintln!("usage: uep-zk state-index <account_id> <asset_id> <depth>");
+                std::process::exit(2);
+            }
+            use uep_26_spend_circuit::hash_gadget::{state_key, UepPoseidon};
+            let account = fr_from_hex_or_dec(&args[0]).expect("account");
+            let asset = fr_from_hex_or_dec(&args[1]).expect("asset");
+            let d: usize = args[2].parse().expect("depth");
+            if d == 0 || d > 64 {
+                eprintln!("depth must be 1..=64");
+                std::process::exit(2);
+            }
+            let key = state_key::<UepPoseidon>(account, asset);
+            println!("state_key={}", fr_to_hex(&key));
+            println!("index={}", uep_26_spend_circuit::smt_gadget::low_bits_u64(key, d));
+        }
         "prove-export-d4" => {
-            let mut rng = StdRng::seed_from_u64(42);
+            let mut rng = StdRng::seed_from_u64(DEV_SETUP_SEED);
             let c = honest_spend_fixture_poseidon::<4>(1_000, 10_000);
             let publics = public_inputs_from_circuit(&c);
             let (pk, vk) = setup(c.clone(), &mut rng).expect("setup");
@@ -195,6 +229,10 @@ fn main() {
             };
             let depth = req.depth;
             let seed = req.seed;
+            // Keys come from the fixed dev setup (same VK for every request at a
+            // depth, so verifiers can pin it); the request seed only drives
+            // proving randomness.
+            let mut setup_rng = StdRng::seed_from_u64(DEV_SETUP_SEED);
             let mut rng = StdRng::seed_from_u64(seed);
 
             let mut run = |depth: u32| -> Result<(), String> {
@@ -212,7 +250,7 @@ fn main() {
                             println!("leaf_treasury_new={}", fr_to_hex(&c.treasury_new_leaf));
                             println!("leaf_nullifier_index={}", c.nullifier_index);
                             println!("leaf_nullifier={}", fr_to_hex(&c.nullifier_leaf));
-                            let (pk, vk) = setup(c.clone(), &mut rng).map_err(|e| format!("{e:?}"))?;
+                            let (pk, vk) = setup(c.clone(), &mut setup_rng).map_err(|e| format!("{e:?}"))?;
                             let setup_ms = t0.elapsed().as_millis();
                             let t1 = Instant::now();
                             let proof = prove(&pk, c, &mut rng).map_err(|e| format!("{e:?}"))?;
@@ -238,7 +276,7 @@ fn main() {
                             println!("leaf_treasury_new={}", fr_to_hex(&c.treasury_new_leaf));
                             println!("leaf_nullifier_index={}", c.nullifier_index);
                             println!("leaf_nullifier={}", fr_to_hex(&c.nullifier_leaf));
-                            let (pk, vk) = setup(c.clone(), &mut rng).map_err(|e| format!("{e:?}"))?;
+                            let (pk, vk) = setup(c.clone(), &mut setup_rng).map_err(|e| format!("{e:?}"))?;
                             let setup_ms = t0.elapsed().as_millis();
                             let t1 = Instant::now();
                             let proof = prove(&pk, c, &mut rng).map_err(|e| format!("{e:?}"))?;
@@ -322,6 +360,11 @@ fn main() {
             let owner = fr_from_hex_or_dec(&args[0]).expect("owner");
             let asset = fr_from_hex_or_dec(&args[1]).expect("asset");
             let amount = fr_from_hex_or_dec(&args[2]).expect("amount");
+            // Amounts are u64 in the smallest unit: reject anything wider (no truncation).
+            if amount.into_repr().to_bytes_be()[..24].iter().any(|b| *b != 0) {
+                eprintln!("amount exceeds u64");
+                std::process::exit(2);
+            }
             let blinding = fr_from_hex_or_dec(&args[3]).expect("blinding");
             let leaf = note_commitment::<UepPoseidon>(owner, asset, amount, blinding);
             println!("leaf={}", fr_to_hex(&leaf));

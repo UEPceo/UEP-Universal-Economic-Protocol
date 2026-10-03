@@ -1,10 +1,22 @@
 /**
- * Run prebuilt uep-zk from an executable path (/tmp).
- * Some mounted filesystems do not allow executing binaries in place.
+ * Run the uep-zk helper built from source.
+ *
+ * The binary is executed in place. Only when the filesystem forbids exec
+ * (EACCES/EPERM) is it copied, once per process, into a private directory
+ * created with mkdtemp (mode 0700, unpredictable name) and removed on exit.
  */
-import { copyFileSync, chmodSync, existsSync, unlinkSync, readFileSync } from "node:fs";
+import {
+  copyFileSync,
+  chmodSync,
+  existsSync,
+  readFileSync,
+  mkdtempSync,
+  rmSync,
+  constants as fsConstants,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +38,45 @@ export function findBundledUepZk(): string | null {
   return null;
 }
 
+const runnableCache = new Map<string, string>();
+let privateDirs: string[] = [];
+let exitHookInstalled = false;
+
+/** Copy `src` into a fresh private directory (mkdtemp, 0700) and return the copy's path. */
+export function privateExecutableCopy(src: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "uep-zk-"));
+  chmodSync(dir, 0o700);
+  const dest = join(dir, "uep-zk");
+  copyFileSync(src, dest, fsConstants.COPYFILE_EXCL);
+  chmodSync(dest, 0o700);
+  privateDirs.push(dir);
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once("exit", () => {
+      for (const d of privateDirs) {
+        try {
+          rmSync(d, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+      privateDirs = [];
+    });
+  }
+  return dest;
+}
+
+/** Path to execute for `src`: in place when possible, else a private copy (V47-07). */
+export function runnableUepZk(src: string): string {
+  const hit = runnableCache.get(src);
+  if (hit) return hit;
+  const probe = spawnSync(src, ["circuit-id"], { encoding: "utf8", timeout: 15_000 });
+  const code = (probe.error as NodeJS.ErrnoException | undefined)?.code;
+  const path = code === "EACCES" || code === "EPERM" ? privateExecutableCopy(src) : src;
+  runnableCache.set(src, path);
+  return path;
+}
+
 export function runUepZk(
   args: string[],
   opts?: { timeoutMs?: number; stdin?: string },
@@ -34,29 +85,18 @@ export function runUepZk(
   if (!src) {
     return { ok: false, stdout: "", stderr: "uep-zk binary not found", status: 127 };
   }
-  const runPath = `/tmp/uep-zk-node-${process.pid}`;
-  try {
-    copyFileSync(src, runPath);
-    chmodSync(runPath, 0o755);
-    const r = spawnSync(runPath, args, {
-      encoding: "utf8",
-      input: opts?.stdin,
-      timeout: opts?.timeoutMs ?? 60_000,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return {
-      ok: r.status === 0,
-      stdout: r.stdout ?? "",
-      stderr: r.stderr ?? "",
-      status: r.status,
-    };
-  } finally {
-    try {
-      unlinkSync(runPath);
-    } catch {
-      /* ignore */
-    }
-  }
+  const r = spawnSync(runnableUepZk(src), args, {
+    encoding: "utf8",
+    input: opts?.stdin,
+    timeout: opts?.timeoutMs ?? 60_000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return {
+    ok: r.status === 0,
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? "",
+    status: r.status,
+  };
 }
 
 export function padFrHex(hex: string): string {
@@ -179,9 +219,7 @@ export function zkProveSpendJsonAsync(
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const src = findBundledUepZk();
   if (!src) return Promise.resolve({ ok: false, stdout: "", stderr: "uep-zk binary not found" });
-  const runPath = `/tmp/uep-zk-node-${process.pid}-${randomBytes(4).toString("hex")}`;
-  copyFileSync(src, runPath);
-  chmodSync(runPath, 0o755);
+  const runPath = runnableUepZk(src);
   return new Promise((resolve) => {
     const child = spawn(runPath, ["prove-spend-json"], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -193,7 +231,6 @@ export function zkProveSpendJsonAsync(
     child.stderr.on("data", (c) => { stderr += c.toString(); });
     child.on("close", (code) => {
       clearTimeout(timer);
-      try { unlinkSync(runPath); } catch { /* ignore */ }
       resolve({ ok: code === 0, stdout, stderr });
     });
     child.stdin.write(json);

@@ -71,7 +71,7 @@ export type SmtEconomicStateOpts = {
   /** Default structural. poseidon-zk requires uep-zk. */
   leafMode?: LeafMode;
   /**
-   * Lab only: assign owner ids 1..n so lowBits(depth) cannot collide.
+   * Lab only: assign small owner ids whose state indices are distinct at this depth.
    * Does not change production label hashing.
    */
   labDistinctIndices?: boolean;
@@ -122,12 +122,22 @@ export class SmtEconomicState {
     this.holdTree = new SparseMerkleTree(this.depth);
     this.obligationTree = new SparseMerkleTree(this.depth);
     if (opts?.labDistinctIndices && initial) {
+      // Smallest owner ids 1, 2, ... whose (account, asset) state indices are distinct.
+      const used = new Set<string>();
       let slot = 1n;
-      for (const k of Object.keys(initial)) {
-        this.accountIdOverrides.set(canonicalAccountId(k), new Fr(slot));
-        slot += 1n;
-      }
-      this.accountIdOverrides.set(canonicalAccountId(SMT_TREASURY_LABEL), new Fr(slot));
+      const next = (): Fr => {
+        for (;;) {
+          const id = new Fr(slot);
+          slot += 1n;
+          const idx = accountIndex(id, this.depth).toString();
+          if (!used.has(idx)) {
+            used.add(idx);
+            return id;
+          }
+        }
+      };
+      for (const k of Object.keys(initial)) this.accountIdOverrides.set(canonicalAccountId(k), next());
+      this.accountIdOverrides.set(canonicalAccountId(SMT_TREASURY_LABEL), next());
     }
     if (initial) {
       for (const [k, v] of Object.entries(initial)) {
@@ -215,6 +225,15 @@ export class SmtEconomicState {
 
   private syncTreasuryLeaf(): void {
     const owner = this.ownerFr(SMT_TREASURY_LABEL);
+    {
+      const idx = accountIndex(owner, this.depth).toString();
+      const who = canonicalAccountId(SMT_TREASURY_LABEL);
+      for (const m of [this.structuralIndexOwner, this.poseidonIndexOwner]) {
+        const prev = m.get(idx);
+        if (prev && prev !== who) throw new Error(`SMT_INDEX_COLLISION index=${idx} ${prev} vs ${who}`);
+        m.set(idx, who);
+      }
+    }
     const leaf = this.leafFrFor(SMT_TREASURY_LABEL, this.treasury);
     // leafFrFor uses accounts map for non-treasury; force treasury amount
     if (this.leafMode === "poseidon-zk") {

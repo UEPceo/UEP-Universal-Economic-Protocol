@@ -10,7 +10,7 @@ use crate::hash_gadget::{
     h_account, h_nullifier, note_commitment, note_nonce, tx_commitment, UepPoseidon,
 };
 use crate::native_smt::PoseidonSmt;
-use crate::smt_gadget::low_bits_u64;
+use crate::smt_gadget::{low_bits_u64, state_index};
 use crate::spend_circuit::SpendCircuit;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,32 +120,78 @@ pub struct PoseidonSpendResponse {
     pub error: Option<String>,
 }
 
-fn parse_fr(s: &str) -> Result<Fr, String> {
-    let s = s.trim();
-    let hex_body = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .or_else(|| {
-            // bare 64-char hex (nullifier/root fingerprints)
-            if s.len() >= 32 && s.chars().all(|c| c.is_ascii_hexdigit()) {
-                Some(s)
-            } else {
-                None
-            }
-        });
-    if let Some(hex) = hex_body {
-        let mut bytes = hex::decode(hex).map_err(|e| e.to_string())?;
-        if bytes.len() > 32 {
-            return Err("fr hex too long".into());
-        }
-        while bytes.len() < 32 {
-            bytes.insert(0, 0);
-        }
-        return Ok(Fr::from_be_bytes_mod_order(&bytes));
+/// Big-endian bytes (exactly 32) to a field element, rejecting values >= p (V47-08).
+pub fn fr_from_be32_canonical(bytes: &[u8]) -> Result<Fr, String> {
+    if bytes.len() != 32 {
+        return Err("field element must be 32 bytes".into());
     }
-    // decimal
-    let n: u128 = s.parse().map_err(|e| format!("parse int: {e}"))?;
-    Ok(Fr::from(n as u64))
+    let f = Fr::from_be_bytes_mod_order(bytes);
+    if f.into_repr().to_bytes_be() != bytes {
+        return Err("NON_CANONICAL_FIELD: value is not below the BN254 scalar modulus".into());
+    }
+    Ok(f)
+}
+
+/// Hex (with or without 0x, at most 32 bytes) to a canonical field element.
+pub fn parse_canonical_fr_hex(s: &str) -> Result<Fr, String> {
+    let s = s.trim();
+    let body = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    let mut bytes = hex::decode(body).map_err(|e| e.to_string())?;
+    if bytes.len() > 32 {
+        return Err("fr hex too long".into());
+    }
+    while bytes.len() < 32 {
+        bytes.insert(0, 0);
+    }
+    fr_from_be32_canonical(&bytes)
+}
+
+/// Decimal string of any length to a canonical field element (no truncation, V47-08).
+pub fn parse_canonical_fr_dec(s: &str) -> Result<Fr, String> {
+    let s = s.trim();
+    if s.is_empty() || !s.bytes().all(|c| c.is_ascii_digit()) {
+        return Err("parse int: invalid decimal".into());
+    }
+    // Base-10 to base-256, big-endian.
+    let mut out: Vec<u8> = vec![0];
+    for c in s.bytes() {
+        let mut carry = (c - b'0') as u32;
+        for b in out.iter_mut().rev() {
+            let v = (*b as u32) * 10 + carry;
+            *b = (v & 0xff) as u8;
+            carry = v >> 8;
+        }
+        while carry > 0 {
+            out.insert(0, (carry & 0xff) as u8);
+            carry >>= 8;
+        }
+        if out.len() > 33 {
+            return Err("decimal value too large for a field element".into());
+        }
+    }
+    while out.len() > 1 && out[0] == 0 {
+        out.remove(0);
+    }
+    if out.len() > 32 {
+        return Err("decimal value too large for a field element".into());
+    }
+    while out.len() < 32 {
+        out.insert(0, 0);
+    }
+    fr_from_be32_canonical(&out)
+}
+
+/// Decimal or hex (0x-prefixed, or bare hex of at least 32 digits) to a canonical field element.
+pub fn parse_canonical_fr(s: &str) -> Result<Fr, String> {
+    let s = s.trim();
+    if s.starts_with("0x") || s.starts_with("0X") || (s.len() >= 32 && s.chars().all(|c| c.is_ascii_hexdigit())) {
+        return parse_canonical_fr_hex(s);
+    }
+    parse_canonical_fr_dec(s)
+}
+
+fn parse_fr(s: &str) -> Result<Fr, String> {
+    parse_canonical_fr(s)
 }
 
 pub fn fr_hex(f: &Fr) -> String {
@@ -189,9 +235,17 @@ pub fn circuit_from_request<const D: usize>(req: &PoseidonSpendRequest) -> Resul
     let sender_old_amount = Fr::from(req.sender_old_balance);
     let sender_new_amount = Fr::from(req.sender_old_balance - req.amount - req.fee);
     let recipient_old_amount = Fr::from(req.recipient_old_balance);
-    let recipient_new_amount = Fr::from(req.recipient_old_balance + req.amount);
+    let recipient_new_amount = Fr::from(
+        req.recipient_old_balance
+            .checked_add(req.amount)
+            .ok_or("AMOUNT_OVERFLOW: recipient balance exceeds u64")?,
+    );
     let treasury_old_amount = Fr::from(req.treasury_old_balance);
-    let treasury_new_amount = Fr::from(req.treasury_old_balance + req.fee);
+    let treasury_new_amount = Fr::from(
+        req.treasury_old_balance
+            .checked_add(req.fee)
+            .ok_or("AMOUNT_OVERFLOW: treasury balance exceeds u64")?,
+    );
 
     let s_old = note_commitment::<UepPoseidon>(sender_id, asset, sender_old_amount, s_blind);
     let s_new = note_commitment::<UepPoseidon>(sender_id, asset, sender_new_amount, s_blind);
@@ -203,12 +257,13 @@ pub fn circuit_from_request<const D: usize>(req: &PoseidonSpendRequest) -> Resul
     let nonce = note_nonce::<UepPoseidon>(s_old, s_blind);
     let nullifier = h_nullifier::<UepPoseidon>(secret, nonce);
 
-    let s_idx = low_bits_u64(sender_id, D);
-    let r_idx = low_bits_u64(recipient_id, D);
-    let t_idx = low_bits_u64(treasury_id, D);
+    // V47-02: one leaf per (account, asset): index = lowBits(H_ACCOUNT(id, asset), D).
+    let s_idx = state_index::<UepPoseidon>(sender_id, asset, D);
+    let r_idx = state_index::<UepPoseidon>(recipient_id, asset, D);
+    let t_idx = state_index::<UepPoseidon>(treasury_id, asset, D);
     let nf_idx = low_bits_u64(nullifier, D);
     if s_idx == r_idx || r_idx == t_idx || s_idx == t_idx {
-        return Err("canonical index collision among sender/recipient/treasury".into());
+        return Err("SMT_INDEX_COLLISION: sender/recipient/treasury map to the same state slot".into());
     }
 
     // Canonical multi-leaf Poseidon state: extra leaves first, then spend parties.
@@ -216,7 +271,15 @@ pub fn circuit_from_request<const D: usize>(req: &PoseidonSpendRequest) -> Resul
     for (idx, leaf_s) in &req.extra_state_leaves {
         pre.push((*idx, parse_fr(leaf_s)?));
     }
-    // Apply spend-related leaves (override any extra at same index)
+    // A spend party's slot must be empty or hold that party's own old leaf:
+    // another (account, asset) leaf at the same truncated index is a collision.
+    for (idx, leaf) in &pre {
+        for (party_idx, party_old) in [(s_idx, s_old), (r_idx, r_old), (t_idx, t_old)] {
+            if *idx == party_idx && *leaf != party_old {
+                return Err("SMT_INDEX_COLLISION: a state slot of this spend holds another leaf".into());
+            }
+        }
+    }
     pre.push((s_idx, s_old));
     pre.push((r_idx, r_old));
     pre.push((t_idx, t_old));
@@ -330,3 +393,57 @@ pub fn circuit_from_request<const D: usize>(req: &PoseidonSpendRequest) -> Resul
     })
 }
 
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    const P_DEC: &str =
+        "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+    const P_HEX: &str = "0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001";
+
+    #[test]
+    fn modulus_and_above_rejected() {
+        assert!(parse_canonical_fr(P_DEC).is_err());
+        assert!(parse_canonical_fr(P_HEX).is_err());
+        assert!(parse_canonical_fr(&format!("{P_DEC}0")).is_err());
+        assert!(parse_canonical_fr("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000000").is_ok());
+    }
+
+    #[test]
+    fn wide_decimal_is_not_truncated() {
+        // 2^64 must stay 2^64 (it used to be truncated to 64 bits).
+        let f = parse_canonical_fr("18446744073709551616").unwrap();
+        assert_eq!(f, Fr::from(u64::MAX) + Fr::from(1u64));
+        assert_eq!(parse_canonical_fr("42").unwrap(), Fr::from(42u64));
+        assert!(parse_canonical_fr("-1").is_err());
+        assert!(parse_canonical_fr("").is_err());
+    }
+
+    fn base_request() -> PoseidonSpendRequest {
+        serde_json::from_str(
+            r#"{"sender_secret":"7","sender_salt":"11","recipient_id":"0x1234","treasury_id":"0x5678",
+                "asset_id":"1","amount":1000,"fee":1,"sender_old_balance":10000,
+                "note_blinding":"3","recipient_blinding":"5","treasury_blinding":"9"}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn other_leaf_in_party_slot_rejected() {
+        let req = base_request();
+        let c = circuit_from_request::<32>(&req).unwrap();
+        let mut bad = req.clone();
+        bad.extra_state_leaves = vec![(c.recipient_index, "0x01".into())];
+        let err = circuit_from_request::<32>(&bad).err().expect("must fail");
+        assert!(err.contains("SMT_INDEX_COLLISION"), "{err}");
+    }
+
+    #[test]
+    fn recipient_overflow_rejected() {
+        let mut req = base_request();
+        req.recipient_old_balance = u64::MAX;
+        let err = circuit_from_request::<32>(&req).err().expect("must fail");
+        assert!(err.contains("AMOUNT_OVERFLOW"), "{err}");
+    }
+}

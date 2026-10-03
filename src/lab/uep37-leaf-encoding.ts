@@ -9,7 +9,11 @@
  *   note_nonce(commitment, blinding) = H_LEAF(commitment, blinding)
  *   nullifier(secret, nonce)         = H_NULLIFIER(secret, nonce)
  *
- *   account index = lowBits(ownerId, DEPTH)   // DEPTH canonical = 32
+ *   state key     = H_ACCOUNT(ownerId, assetId)   // one leaf per (account, asset)
+ *   state index   = lowBits(state key, DEPTH)     // DEPTH canonical = 32
+ *
+ * The truncated index can collide (birthday bound at D=32); a collision is
+ * rejected (SMT_INDEX_COLLISION), never resolved by overwriting a leaf.
  *
  * Hash permutation:
  *   - Circuit: Poseidon BN254 t=3 α=5 (UepPoseidon / uep-zk)
@@ -18,7 +22,7 @@
  */
 
 import { Fr } from "../core/field.ts";
-import { hLeaf, hNullifier, getHashBackend } from "../core/hash.ts";
+import { hAccount, hLeaf, hNullifier, getHashBackend } from "../core/hash.ts";
 
 /** Production SMT depth (SpendCircuit / StateWitness). */
 export const CANONICAL_SMT_DEPTH = 32 as const;
@@ -85,9 +89,14 @@ export function nullifierFrom(secret: Fr, nonce: Fr): Fr {
   return hNullifier(secret, nonce);
 }
 
-/** SMT index of an account / note owner id. */
-export function accountIndex(ownerId: Fr, depth: number = CANONICAL_SMT_DEPTH): bigint {
-  return ownerId.lowBits(depth);
+/** State-tree key of the (account, asset) balance leaf: H_ACCOUNT(owner, asset). Same as uep-zk `state-index`. */
+export function stateKey(ownerId: Fr, asset: Fr = CANONICAL_ASSET_ID): Fr {
+  return hAccount(ownerId, asset);
+}
+
+/** SMT index of the (account, asset) balance leaf: lowBits(H_ACCOUNT(owner, asset), depth). */
+export function accountIndex(ownerId: Fr, depth: number = CANONICAL_SMT_DEPTH, asset: Fr = CANONICAL_ASSET_ID): bigint {
+  return stateKey(ownerId, asset).lowBits(depth);
 }
 
 /** Nullifier tree index. */

@@ -7,24 +7,7 @@ import { chmodSync, copyFileSync, mkdirSync, writeFileSync, existsSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateP4Bootstrap, type P4Bootstrap } from "./uep38-p4-process-node.ts";
-import { SmtEconomicState } from "./uep37-smt-economic-state.ts";
-import { labParty, proveWithoutApply } from "./uep38-zk-state-transition.ts";
 import { findBundledUepZk } from "./uep-zk-runner.ts";
-
-/**
- * Process nodes only apply proofs under a pinned verifying key (UEP_P4_VK_HEX).
- * When the caller has not pinned one, pin the development key of the local
- * uep-zk prover for this tree depth (fixed-seed dev setup, no ceremony).
- */
-function ensureDevVkPinned(depth: 4 | 32): void {
-  if (process.env.UEP_P4_VK_HEX) return;
-  const st = SmtEconomicState.genesis(
-    { alice: 10000n, bob: 0n },
-    { testOnlyDepth: depth, isTestFixture: true, leafMode: "poseidon-zk" },
-  );
-  const art = proveWithoutApply(st, labParty("alice"), 1000n);
-  if (art.ok && art.vkHex) process.env.UEP_P4_VK_HEX = art.vkHex;
-}
 
 export type P4Proc = {
   id: string;
@@ -86,7 +69,6 @@ export class P4ProcessCluster {
         }
       }
     }
-    ensureDevVkPinned(depth);
     for (const bn of this.boot.nodes) {
       writeFileSync(join(this.dir, `boot-${bn.id}.json`), JSON.stringify(this.boot));
       this.nodes.push(this.spawnNode(bn.id));
@@ -130,7 +112,6 @@ export class P4ProcessCluster {
           UEP_P4_CAROL: process.env.UEP_P4_CAROL ?? "",
           UEP_P4_ERIN: process.env.UEP_P4_ERIN ?? "",
           UEP_ZK_BIN: process.env.UEP_ZK_BIN ?? "",
-          UEP_P4_VK_HEX: process.env.UEP_P4_VK_HEX ?? "",
         },
         stdio: ["pipe", "pipe", "pipe"],
       },

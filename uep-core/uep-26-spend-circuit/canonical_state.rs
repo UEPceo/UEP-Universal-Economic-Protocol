@@ -101,16 +101,7 @@ fn fr_hex(f: &Fr) -> String {
 }
 
 pub fn parse_fr_hex(s: &str) -> Result<Fr, String> {
-    use ark_ff::PrimeField;
-    let s = s.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let mut bytes = hex::decode(s).map_err(|e| e.to_string())?;
-    if bytes.len() > 32 {
-        return Err("fr hex too long".into());
-    }
-    while bytes.len() < 32 {
-        bytes.insert(0, 0);
-    }
-    Ok(Fr::from_be_bytes_mod_order(&bytes))
+    crate::prove_request::parse_canonical_fr_hex(s)
 }
 
 /// Deterministic multi-leaf Poseidon state: same set of (index, leaf) → same root

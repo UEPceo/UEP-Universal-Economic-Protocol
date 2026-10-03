@@ -67,7 +67,7 @@ export class P4QuorumLab {
     }
     const p = JSON.parse(env.payload) as P4ProposalExtra;
     const art = deserializeStagingArtifact(p.zkSpend);
-    const v = verifyArtifactAgainstRoots(art, replica.state.stateRoot(), p.stateRoot);
+    const v = verifyArtifactAgainstRoots(art, replica.state.stateRoot(), p.stateRoot, replica.state.depth as 4 | 32);
     if (!v.ok) return { ok: false, reason: v.reason };
     return { ok: true };
   }
@@ -168,7 +168,7 @@ export class P4QuorumLab {
     let p: P4ProposalExtra;
     try { p = JSON.parse(env.payload) as P4ProposalExtra; } catch { return { ok: false, reason: "BAD_PAYLOAD" }; }
     const art = deserializeStagingArtifact(p.zkSpend);
-    const v = verifyArtifactAgainstRoots(art, replica.state.stateRoot(), p.stateRoot);
+    const v = verifyArtifactAgainstRoots(art, replica.state.stateRoot(), p.stateRoot, replica.state.depth as 4 | 32);
     if (!v.ok) return { ok: false, reason: v.reason };
     const want = art.newRootProof.replace(/^0x/i, "").toLowerCase();
     const have = replica.state.stateRoot().replace(/^0x/i, "").toLowerCase();

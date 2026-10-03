@@ -6,10 +6,10 @@
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PoseidonSpendRequestJson } from "./poseidon-spend-request.ts";
+import { privateExecutableCopy } from "./uep-zk-runner.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -62,12 +62,10 @@ function isExecutable(c: string): boolean {
   return true;
 }
 
-/** Copy binary to /tmp and return runnable path. */
+/** Private executable copy (mkdtemp dir, 0700) for mounts that forbid exec. */
 function materializeUepZk(src: string): string | null {
-  const dest = path.join(os.tmpdir(), `uep-zk-${process.pid}`);
   try {
-    fs.copyFileSync(src, dest);
-    fs.chmodSync(dest, 0o755);
+    const dest = privateExecutableCopy(src);
     const probe = spawnSync(dest, ["circuit-id"], { encoding: "utf8", timeout: 15_000 });
     if (probe.error) return null;
     return dest;
@@ -78,7 +76,7 @@ function materializeUepZk(src: string): string | null {
 
 /**
  * Prefer an already-executable path; if the only copy lives on a mount that forbids exec
- * (artifacts), materialize to /tmp/uep-zk so the kernel can exec it.
+ * (artifacts), copy it into a private temporary directory so the kernel can exec it.
  */
 export function findUepZkBinary(): string | null {
   for (const c of candidateBinaries()) {
@@ -358,6 +356,15 @@ export function zkLowBits(value: string, depth: number): number {
   const raw = (r.stdout + r.stderr).trim();
   const m = raw.match(/^index=(\d+)/m);
   if (!m) throw new Error("low-bits failed: " + raw.slice(0, 200));
+  return Number(m[1]);
+}
+
+/** State-tree index of the (account, asset) balance leaf (uep-zk `state-index`). */
+export function zkStateIndex(account: string, asset: string, depth: number): number {
+  const r = runUepZk(["state-index", account, asset, String(depth)]);
+  const raw = (r.stdout + r.stderr).trim();
+  const m = raw.match(/^index=(\d+)/m);
+  if (!m) throw new Error("state-index failed: " + raw.slice(0, 200));
   return Number(m[1]);
 }
 

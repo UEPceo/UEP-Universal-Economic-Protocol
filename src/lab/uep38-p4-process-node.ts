@@ -30,7 +30,7 @@ import {
   labParty,
 } from "./uep38-zk-state-transition.ts";
 import { SmtEconomicState } from "./uep37-smt-economic-state.ts";
-import { canonicalSpendId, claimFreshNullifier, nodeApplyVerifiedTransfer, verifyArtifactAgainstRoots } from "./uep38-node-verify.ts";
+import { canonicalSpendId, claimFreshNullifier, nodeApplyVerifiedTransfer, p4PinnedVk, verifyArtifactAgainstRoots } from "./uep38-node-verify.ts";
 import {
   deserializeStagingArtifact,
   serializeStagingArtifact,
@@ -214,7 +214,7 @@ export class P4ProcessRuntime {
       let root = this.state.stateRoot();
       for (const item of p.batch) {
         const art = deserializeStagingArtifact(item.zkSpend);
-        const v = verifyArtifactAgainstRoots(art, root, art.newRootProof);
+        const v = verifyArtifactAgainstRoots(art, root, art.newRootProof, this.state.depth as 4 | 32);
         if (!v.ok) {
           this.lastError = v.reason;
           return false;
@@ -233,7 +233,7 @@ export class P4ProcessRuntime {
       this.lastError = "NULLIFIER_REPLAY";
       return false;
     }
-    const v = verifyArtifactAgainstRoots(art, this.state.stateRoot(), p.stateRoot);
+    const v = verifyArtifactAgainstRoots(art, this.state.stateRoot(), p.stateRoot, this.state.depth as 4 | 32);
     if (!v.ok) {
       this.lastError = v.reason;
       return false;
@@ -398,13 +398,16 @@ export class P4ProcessRuntime {
       }
     } else {
     const art = deserializeStagingArtifact(p.zkSpend);
-    const pinned = process.env.UEP_P4_VK_HEX;
-    if (!pinned) {
-      this.lastError = "VK_PIN_REQUIRED";
+    // Only the pinned verifying key for this circuit version and depth is accepted.
+    let pinned: string;
+    try {
+      pinned = p4PinnedVk(this.state.depth as 4 | 32);
+    } catch {
+      this.lastError = "VK_NOT_PINNED";
       this.emit({ event: "apply_fail", reason: this.lastError });
       return;
     }
-    const vkOk = assertPinnedVk(art, pinned);
+    const vkOk = art.vkHex ? assertPinnedVk(art, pinned) : { ok: true as const, reason: undefined };
     if (!vkOk.ok) {
       this.lastError = vkOk.reason ?? "VK_NOT_PINNED";
       this.emit({ event: "apply_fail", reason: this.lastError });

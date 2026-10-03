@@ -1146,7 +1146,7 @@ class ProcessNodeRuntime {
       try {
         const art = deserializeStagingArtifact(p.zkSpend);
         const oldRoot = this.economic.stateRoot();
-        const chk = verifyArtifactAgainstRoots(art, oldRoot, p.stateRoot);
+        const chk = verifyArtifactAgainstRoots(art, oldRoot, p.stateRoot, ((this.economic as SmtEconomicState).depth ?? 4) as 4 | 32);
         if (!chk.ok) return;
       } catch {
         return;

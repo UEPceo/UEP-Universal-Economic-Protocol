@@ -10,6 +10,7 @@
 import type { NodeIdentity } from "./node-identity.ts";
 import { signBytes, verifyBytes } from "./node-identity.ts";
 import { zkVerifyHex } from "./zk-bridge.ts";
+import { pinnedVk } from "./zk-vk-pins.ts";
 import { assertEnvelopeMatchesPublicInputs } from "./envelope-public-bind.ts";
 import {
   proposalFromEnvelope,
@@ -137,7 +138,7 @@ export class LabNode {
    * Structural lab sets false; DEV-ZK / TESTNET-ZK set true.
    */
   requireZkVerify = false;
-  /** Optional static VK if envelopes omit vkHex (lab, no registry). */
+  /** Operator-configured VK for the lab profile without registry (default: pinned dev key). */
   defaultVkHex?: string;
   /**
    * Pinned VK registry. When set with requireZkVerify, envelope.vkId must resolve;
@@ -320,9 +321,16 @@ export class LabNode {
       } else if (this.requirePinnedVkId) {
         return { ok: false, error: "VK_REGISTRY_REQUIRED" };
       } else {
-        // Lab fallback without registry
-        vk = env.vkHex ?? this.defaultVkHex;
-        if (!vk) return { ok: false, error: "ZK_PROOF_REQUIRED" };
+        // Lab profile without registry: operator-configured key, else the
+        // pinned development key. A key carried by the envelope is never used.
+        try {
+          vk = this.defaultVkHex ?? pinnedVk(4, BigInt(this.domainId)).vkHex;
+        } catch {
+          return { ok: false, error: "VK_NOT_PINNED" };
+        }
+        if (env.vkHex && env.vkHex.replace(/^0x/i, "").toLowerCase() !== vk.replace(/^0x/i, "").toLowerCase()) {
+          return { ok: false, error: "VK_HEX_PIN_MISMATCH" };
+        }
       }
 
       const bind = assertEnvelopeMatchesPublicInputs(env, {

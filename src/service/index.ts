@@ -13,4 +13,5 @@ export * from "./capabilities.ts";
 export * from "./uep-service-api.ts";
 export * from "./uep-http-api.ts";
 export * from "./uep-service-backends.ts";
-export * from "./groth16-spend-queue.ts";
+// The Groth16 spend queue depends on the research labs and is not re-exported
+// here; import it from "./groth16-spend-queue.ts" explicitly (lab only).

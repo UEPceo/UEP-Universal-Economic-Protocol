@@ -8,9 +8,10 @@
  * Canonical economic identity: transitionId from 12 public inputs.
  */
 
+import { zkVerifyPinned } from "./zk-vk-pins.ts";
 import { Fr } from "../core/field.ts";
 import { creatorFee } from "../core/fee.ts";
-import { findUepZkBinary, zkProveSpendJson, zkVerifyHex } from "./zk-bridge.ts";
+import { findUepZkBinary, zkProveSpendJson } from "./zk-bridge.ts";
 import { buildPoseidonSpendRequest } from "./poseidon-spend-request.ts";
 import { normalizeFrHex } from "./zk-public-inputs.ts";
 import { transitionIdFromPublics } from "./poseidon-ledger-lab.ts";
@@ -168,7 +169,7 @@ export class PoseidonLabEngine {
 
     const tApply = performance.now();
     // Independent verify-hex
-    const v = zkVerifyHex(art.vkHex!, art.proofHex!, art.publicInputsHex);
+    const v = zkVerifyPinned(this.config.depth, 1n, art.proofHex!, art.publicInputsHex, art.vkHex);
     if (!v.ok) {
       return { ok: false, error: "independent verify-hex failed", totalMs: performance.now() - tAll };
     }

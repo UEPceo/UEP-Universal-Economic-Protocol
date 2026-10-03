@@ -10,9 +10,10 @@
  * Does not change SpendCircuit / Poseidon params / fee.
  */
 
+import { zkVerifyPinned } from "./zk-vk-pins.ts";
 import { Fr } from "../core/field.ts";
 import { creatorFee } from "../core/fee.ts";
-import { findUepZkBinary, zkProveSpendJson, zkVerifyHex, zkNoteCommit, zkLowBits, zkHAccount } from "./zk-bridge.ts";
+import { findUepZkBinary, zkProveSpendJson, zkNoteCommit, zkStateIndex, zkHAccount } from "./zk-bridge.ts";
 import { buildPoseidonSpendRequest } from "./poseidon-spend-request.ts";
 import { normalizeFrHex } from "./zk-public-inputs.ts";
 import { transitionIdFromPublics } from "./poseidon-ledger-lab.ts";
@@ -271,22 +272,26 @@ export class ExecutionEngine {
     if (!this.config.requireProof) return;
     if (!findUepZkBinary()) throw new Error("uep-zk required for bootstrapZeroNotes");
     const asset = this.assetId.toString();
+    // State index = lowBits(H_ACCOUNT(owner, asset), D). Two different owners in
+    // one slot are rejected (SMT_INDEX_COLLISION), never overwritten.
+    const slotOwner = new Map<number, string>();
+    const place = (owner: string, idx: number, leaf: string) => {
+      const prev = slotOwner.get(idx);
+      if (prev !== undefined && prev !== owner) throw new Error(`SMT_INDEX_COLLISION index=${idx}`);
+      slotOwner.set(idx, owner);
+      this.stateLeaves.set(idx, normalizeFrHex(leaf));
+    };
     for (const [, acc] of this.accounts) {
-      // Sender index uses h_account(secret,salt); recipient index uses id
+      // Sender leaf is keyed by h_account(secret,salt); recipient leaf by id
       const senderId = zkHAccount(acc.secret.toString(), acc.salt.toString());
-      const sIdx = zkLowBits(senderId, this.config.depth);
       // Leaf amounts must match engine balances (circuit uses note_commitment, not empty).
       const bal = acc.balance.toString();
-      const sLeaf = zkNoteCommit(senderId, asset, bal, acc.blinding.toString());
-      this.stateLeaves.set(sIdx, normalizeFrHex(sLeaf));
-
-      const rIdx = zkLowBits(acc.id.toString(), this.config.depth);
-      const rLeaf = zkNoteCommit(acc.id.toString(), asset, bal, acc.blinding.toString());
-      this.stateLeaves.set(rIdx, normalizeFrHex(rLeaf));
+      place(normalizeFrHex(senderId), zkStateIndex(senderId, asset, this.config.depth), zkNoteCommit(senderId, asset, bal, acc.blinding.toString()));
+      const rid = acc.id.toString();
+      place(normalizeFrHex(rid), zkStateIndex(rid, asset, this.config.depth), zkNoteCommit(rid, asset, bal, acc.blinding.toString()));
     }
-    const tIdx = zkLowBits(this.treasuryId.toString(), this.config.depth);
-    const tLeaf = zkNoteCommit(this.treasuryId.toString(), asset, "0", "5");
-    this.stateLeaves.set(tIdx, normalizeFrHex(tLeaf));
+    const tid = this.treasuryId.toString();
+    place(normalizeFrHex(tid), zkStateIndex(tid, asset, this.config.depth), zkNoteCommit(tid, asset, "0", "5"));
     // Root unknown until first prove; leave stateRoot null so expected is unset until first commit
     this.stateRoot = null;
   }
@@ -416,7 +421,7 @@ export class ExecutionEngine {
             error: "prover did not return leaf updates",
           };
         }
-        const v = zkVerifyHex(art.vkHex!, art.proofHex!, art.publicInputsHex);
+        const v = zkVerifyPinned(this.config.depth, 1n, art.proofHex!, art.publicInputsHex, art.vkHex);
         if (!v.ok) {
           this.releaseReservation(job.intent.from, job.intent.amount, job.fee);
           return { kind: "fail" as const, intentId: job.intent.id, error: "verify-hex failed" };

@@ -41,7 +41,8 @@ pub const MIN_PROTOCOL_FEE: u64 = 1;
 
 /// Proportional part of the protocol fee: floor(amount * 10 / 10_000) (0.1%).
 pub fn proportional_fee(amount: u64) -> u64 {
-    amount.saturating_mul(10) / 10_000
+    // Computed in u128 so the result matches the core for every u64 amount (V47-03).
+    ((amount as u128) * 10 / 10_000) as u64
 }
 
 /// Fee policy, identical to the public core `creatorFee`:
@@ -247,6 +248,34 @@ mod arithmetic_tests {
         let cs = ConstraintSystem::<Fr>::new_ref();
         c.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn fee_rule_matches_core_for_large_amounts() {
+        // Same values as the TypeScript core creatorFee() (bigint arithmetic).
+        assert_eq!(expected_fee(u64::MAX), 18_446_744_073_709_551);
+        assert_eq!(expected_fee(1_844_674_407_370_955_162), 1_844_674_407_370_955);
+        assert_eq!(expected_fee(999), 1);
+        assert_eq!(expected_fee(2_000), 2);
+    }
+
+    #[test]
+    fn large_amount_fee_is_provable() {
+        let amount = u64::MAX / 2;
+        let fee = expected_fee(amount);
+        let c = SpendArithmeticCircuit {
+            amount: Fr::from(amount),
+            fee: Fr::from(fee),
+            sender_old: Fr::from(amount + fee),
+            sender_new: Fr::from(0u64),
+            recipient_old: Fr::from(0u64),
+            recipient_new: Fr::from(amount),
+            treasury_old: Fr::from(0u64),
+            treasury_new: Fr::from(fee),
+        };
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        c.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
     }
 
     #[test]

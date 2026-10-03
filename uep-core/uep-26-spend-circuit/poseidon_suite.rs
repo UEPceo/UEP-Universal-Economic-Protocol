@@ -9,7 +9,7 @@ use crate::hash_gadget::{
 };
 use crate::native_smt::PoseidonSmt;
 use crate::spend_circuit::SpendCircuit;
-use crate::smt_gadget::low_bits_u64;
+use crate::smt_gadget::{low_bits_u64, state_index};
 use crate::expected_fee;
 
 fn to_arr<const D: usize>(v: &[Fr]) -> [Fr; D] {
@@ -57,9 +57,9 @@ pub fn honest_spend_fixture_poseidon<const D: usize>(
     let nonce = note_nonce::<UepPoseidon>(s_old, s_blind);
     let nullifier = h_nullifier::<UepPoseidon>(secret, nonce);
 
-    let s_idx = low_bits_u64(sender_id, D);
-    let r_idx = low_bits_u64(recipient_id, D);
-    let t_idx = low_bits_u64(treasury_id, D);
+    let s_idx = state_index::<UepPoseidon>(sender_id, asset, D);
+    let r_idx = state_index::<UepPoseidon>(recipient_id, asset, D);
+    let t_idx = state_index::<UepPoseidon>(treasury_id, asset, D);
     let nf_idx = low_bits_u64(nullifier, D);
     assert!(
         s_idx != r_idx && r_idx != t_idx && s_idx != t_idx,

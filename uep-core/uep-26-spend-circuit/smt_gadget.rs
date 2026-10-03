@@ -88,6 +88,30 @@ pub fn enforce_low_bits_index(
     Ok(())
 }
 
+/// Constrain `a != b` (both field elements): there is an inverse of `a - b`.
+pub fn enforce_not_equal(
+    cs: ConstraintSystemRef<Fr>,
+    a: &FpVar<Fr>,
+    b: &FpVar<Fr>,
+) -> Result<(), SynthesisError> {
+    use ark_ff::Field;
+    use ark_r1cs_std::R1CSVar;
+    let diff = a - b;
+    let inv = FpVar::new_witness(cs, || {
+        let d = diff.value()?;
+        // Equal inputs have no inverse: assign 0 so the system is unsatisfied
+        // (same failure mode as the other checks) instead of aborting synthesis.
+        Ok(d.inverse().unwrap_or_else(|| Fr::from(0u64)))
+    })?;
+    (diff * inv).enforce_equal(&FpVar::one())
+}
+
+/// Native state-tree index of an (account, asset) balance leaf at depth `depth`:
+/// the low bits of `state_key(account, asset)`.
+pub fn state_index<H: crate::hash_gadget::Hash2>(account: Fr, asset: Fr, depth: usize) -> u64 {
+    low_bits_u64(crate::hash_gadget::state_key::<H>(account, asset), depth)
+}
+
 /// Native helper: low `depth` bits of a field element as u64 (depth <= 64).
 pub fn low_bits_u64(value: Fr, depth: usize) -> u64 {
     use ark_ff::{BigInteger, PrimeField};

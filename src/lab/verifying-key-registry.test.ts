@@ -16,7 +16,7 @@ describe("UEP-32.5b pinned vk_id", () => {
       networkId: "local",
       vkId: "UEP-D4-VK-001",
       vkHex: "aa".repeat(32),
-    });
+    }, { testOnlyUnpinned: true });
     const node = new LabNode(id, "local", 1, id.publicKeyHex, id.nodeId, {
       requireZkVerify: true,
       vkRegistry: reg,
@@ -46,7 +46,7 @@ describe("UEP-32.5b pinned vk_id", () => {
       networkId: "local",
       vkId: "UEP-D4-VK-001",
       vkHex: "aa".repeat(32),
-    });
+    }, { testOnlyUnpinned: true });
     const node = new LabNode(id, "local", 1, id.publicKeyHex, id.nodeId, {
       requireZkVerify: true,
       vkRegistry: reg,
@@ -76,7 +76,7 @@ describe("UEP-32.5b pinned vk_id", () => {
       networkId: "local",
       vkId: "UEP-D4-VK-001",
       vkHex: "aa".repeat(32),
-    });
+    }, { testOnlyUnpinned: true });
     const node = new LabNode(id, "local", 1, id.publicKeyHex, id.nodeId, {
       requireZkVerify: true,
       vkRegistry: reg,

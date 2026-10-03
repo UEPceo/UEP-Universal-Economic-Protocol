@@ -54,6 +54,13 @@ pub fn h_account<H: Hash2>(secret: Fr, salt: Fr) -> Fr {
     domain_hash::<H>(D_ACCOUNT, secret, salt)
 }
 
+/// State-tree key of a balance leaf: H_ACCOUNT(account_id, asset_id).
+/// The same key the public ledger uses for its SMT (`hAccount(account, asset)`),
+/// so every (account, asset) pair has its own leaf (V47-02).
+pub fn state_key<H: Hash2>(account: Fr, asset: Fr) -> Fr {
+    domain_hash::<H>(D_ACCOUNT, account, asset)
+}
+
 pub fn h_nullifier<H: Hash2>(secret: Fr, nonce: Fr) -> Fr {
     domain_hash::<H>(D_NULLIFIER, secret, nonce)
 }

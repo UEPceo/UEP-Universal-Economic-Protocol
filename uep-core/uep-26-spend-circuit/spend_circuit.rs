@@ -25,8 +25,8 @@ use crate::hash_gadget::{
     UepPoseidon, D_ACCOUNT, D_LEAF, D_NULLIFIER, ENCODING_VERSION,
 };
 use crate::smt_gadget::{
-    enforce_low_bits_index, enforce_nullifier_insert, enforce_update, index_to_direction_bits,
-    low_bits_u64, SMT_DEPTH,
+    enforce_low_bits_index, enforce_not_equal, enforce_nullifier_insert, enforce_update,
+    index_to_direction_bits, low_bits_u64, state_index,
 };
 use crate::{enforce_fee_policy, enforce_u64, expected_fee};
 
@@ -268,9 +268,22 @@ impl<const D: usize> SpendCircuit<D> {
         let mid1 = FpVar::new_witness(cs.clone(), || Ok(self.mid_root_after_sender))?;
         let mid2 = FpVar::new_witness(cs.clone(), || Ok(self.mid_root_after_recipient))?;
 
+        // Canonical SMT address (V47-02): index = lowBits(H_ACCOUNT(account_id, asset_id), D),
+        // one leaf per (account, asset) pair, the same key as the public ledger's SMT.
+        let s_key = domain_hash_gadget::<G>(cs.clone(), D_ACCOUNT, &sender_id, &asset_id)?;
+        let r_key = domain_hash_gadget::<G>(cs.clone(), D_ACCOUNT, &recipient_id, &asset_id)?;
+        let t_key = domain_hash_gadget::<G>(cs.clone(), D_ACCOUNT, &treasury_id, &asset_id)?;
         let s_idx = FpVar::new_witness(cs.clone(), || Ok(Fr::from(self.sender_index)))?;
-        // Canonical SMT address: index = lowBits(account_id, D)
-        enforce_low_bits_index(cs.clone(), &sender_id, &s_idx, D)?;
+        let r_idx = FpVar::new_witness(cs.clone(), || Ok(Fr::from(self.recipient_index)))?;
+        let t_idx = FpVar::new_witness(cs.clone(), || Ok(Fr::from(self.treasury_index)))?;
+        enforce_low_bits_index(cs.clone(), &s_key, &s_idx, D)?;
+        enforce_low_bits_index(cs.clone(), &r_key, &r_idx, D)?;
+        enforce_low_bits_index(cs.clone(), &t_key, &t_idx, D)?;
+        // The three leaves must sit in distinct slots: a truncated-key collision
+        // between the parties is rejected instead of overwriting a leaf.
+        enforce_not_equal(cs.clone(), &s_idx, &r_idx)?;
+        enforce_not_equal(cs.clone(), &s_idx, &t_idx)?;
+        enforce_not_equal(cs.clone(), &r_idx, &t_idx)?;
         let s_sibs: Vec<_> = self
             .sender_siblings
             .iter()
@@ -287,8 +300,6 @@ impl<const D: usize> SpendCircuit<D> {
             Some(&self.sender_index_bits),
         )?;
 
-        let r_idx = FpVar::new_witness(cs.clone(), || Ok(Fr::from(self.recipient_index)))?;
-        enforce_low_bits_index(cs.clone(), &recipient_id, &r_idx, D)?;
         let r_sibs: Vec<_> = self
             .recipient_siblings
             .iter()
@@ -305,8 +316,6 @@ impl<const D: usize> SpendCircuit<D> {
             Some(&self.recipient_index_bits),
         )?;
 
-        let t_idx = FpVar::new_witness(cs.clone(), || Ok(Fr::from(self.treasury_index)))?;
-        enforce_low_bits_index(cs.clone(), &treasury_id, &t_idx, D)?;
         let t_sibs: Vec<_> = self
             .treasury_siblings
             .iter()
@@ -418,10 +427,10 @@ pub fn honest_spend_fixture_structural<const D: usize>(
     let nonce = note_nonce::<StructuralTestHash>(s_old, s_blind);
     let nullifier = h_nullifier::<StructuralTestHash>(secret, nonce);
 
-    // Canonical SMT indices = lowBits(id, D)
-    let s_idx = low_bits_u64(sender_id, D);
-    let r_idx = low_bits_u64(recipient_id, D);
-    let t_idx = low_bits_u64(treasury_id, D);
+    // Canonical SMT indices = lowBits(H_ACCOUNT(id, asset), D)
+    let s_idx = state_index::<StructuralTestHash>(sender_id, asset, D);
+    let r_idx = state_index::<StructuralTestHash>(recipient_id, asset, D);
+    let t_idx = state_index::<StructuralTestHash>(treasury_id, asset, D);
     let nf_idx = low_bits_u64(nullifier, D);
     // Collision guard for unit tests (distinct accounts)
     assert!(s_idx != r_idx && r_idx != t_idx && s_idx != t_idx, "index collision in fixture");
@@ -670,6 +679,27 @@ mod tests {
         let cs = ConstraintSystem::<Fr>::new_ref();
         c.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn distinct_party_slots_required() {
+        // Placing two parties in the same state slot (even with otherwise
+        // consistent witnesses) is unsatisfiable: collisions are rejected.
+        let mut c = honest_spend_fixture_structural::<3>(1_000, 10_000);
+        c.treasury_index = c.recipient_index;
+        c.treasury_index_bits = c.recipient_index_bits;
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        c.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn state_index_depends_on_asset() {
+        use crate::hash_gadget::UepPoseidon;
+        let acct = Fr::from(123_456_789u64);
+        let a = state_index::<UepPoseidon>(acct, Fr::from(1u64), 32);
+        let b = state_index::<UepPoseidon>(acct, Fr::from(2u64), 32);
+        assert_ne!(a, b);
     }
 
     #[test]
