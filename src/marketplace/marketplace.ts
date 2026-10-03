@@ -641,7 +641,8 @@ export class DigitalServicesMarketplace {
     this.enqueueReservation(order);
     if (input.gasQuote && this.paymaster) {
       try {
-        this.paymaster.sponsor(orderId, input.gasQuote, this.now());
+        // Charged to the buyer's caps; released automatically when the reservation lapses.
+        this.paymaster.sponsor(orderId, input.gasQuote, this.now(), { actorId: input.buyerId, holdUntil: order.reservationExpiresAt });
       } catch (error) {
         listing.available += input.quantity;
         this.locked.add(listing.asset, input.buyerId, -deposit);
@@ -721,6 +722,8 @@ export class DigitalServicesMarketplace {
       const validation = this.deliveryValidator(order, bytes);
       if (!validation.ok) throw new Error(`DELIVERY_VALIDATION_FAILED:${validation.reason ?? "INVALID_DELIVERY"}`);
     }
+    // A delivered order settles or refunds through capture() / release(): keep its sponsorship.
+    if (order.gasFee && order.gasFee > 0n && order.gasQuoteId && this.paymaster) this.paymaster.pin(order.orderId, order.gasQuoteId);
     order.deliveryHash = hash;
     order.status = "DELIVERED";
     order.deliveredAt = this.now();
@@ -1278,8 +1281,8 @@ export class DigitalServicesMarketplace {
 
   private releasePaymaster(order: ServiceOrder): void {
     if (order.gasFee && order.gasFee > 0n && order.gasQuoteId && this.paymaster) {
-      const quote = this.paymaster.sponsoredQuote(order.orderId, order.gasQuoteId);
-      this.paymaster.release(order.orderId, quote);
+      // Idempotent: a sponsorship already swept at reservation expiry is a no-op.
+      this.paymaster.release(order.orderId, { quoteId: order.gasQuoteId });
     }
   }
 
