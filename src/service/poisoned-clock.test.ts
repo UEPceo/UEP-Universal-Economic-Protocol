@@ -17,6 +17,13 @@ import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
 import { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
 import { act, createTestAuthority, deliver, fund, publishAs, reserveAs, settle } from "../marketplace/testkit.ts";
 import { IoTM2MService, IOT_M2M_CATEGORY } from "./iot-m2m.ts";
+import nodeCrypto from "node:crypto";
+import os from "node:os";
+import fs from "node:fs";
+import childProcess from "node:child_process";
+import tls from "node:tls";
+import dgram from "node:dgram";
+import timers from "node:timers";
 import { deliverTelemetryAs, holdAs, registerMachineAs, registerProviderAs, requestAs, settleIoTAs, simulateAs } from "./iot-testkit.ts";
 
 let handle: { violations: string[]; uninstall(): void };
@@ -28,7 +35,7 @@ after(() => handle.uninstall());
 describe("poisoned clock", () => {
   it("a full ledger, Marketplace and IoT flow touches no clock, timer, network or randomness inside a transition", async () => {
     const F = generateEd25519KeyPair();
-    const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, faucetSigningKey: F.privateKey });
+    const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, faucetSigningKey: F.privateKey, testOnlyUnboundedHeightAdvance: true });
     const a = await identityFromMnemonic(await generateMnemonic(128)); // in memory only
     const b = await identityFromMnemonic(await generateMnemonic(128));
     ledger.faucet(ledger.addressOf(a.accountId), "uep-test/teur", 100_000n);
@@ -76,6 +83,26 @@ describe("poisoned clock", () => {
       ["performance.now()", () => performance.now()],
       ["setTimeout()", () => setTimeout(() => undefined, 0)],
       ["key generation", () => generateEd25519KeyPair()],
+      // Second review: Date through its prototype chain or called as a function, other clocks,
+      // host state, key agreement, files, processes, network and async continuations.
+      ["Date(0) as a function", () => (Date as unknown as (x: number) => string)(0)],
+      ["Date.prototype.constructor.now()", () => (Date.prototype.constructor as DateConstructor).now()],
+      ["new (Date.prototype.constructor)()", () => new (Date.prototype.constructor as DateConstructor)()],
+      ["new Date(0).constructor.now()", () => (new Date(0).constructor as DateConstructor).now()],
+      ["Intl.DateTimeFormat().format()", () => new Intl.DateTimeFormat("en").format()],
+      ["performance.timeOrigin", () => performance.timeOrigin],
+      ["node:timers setTimeout", () => timers.setTimeout(() => undefined, 0)],
+      ["os.uptime()", () => os.uptime()],
+      ["process.memoryUsage()", () => process.memoryUsage()],
+      ["process.cpuUsage()", () => process.cpuUsage()],
+      ["process.env", () => process.env.HOME],
+      ["createECDH().generateKeys()", () => nodeCrypto.createECDH("prime256v1").generateKeys()],
+      ["createDiffieHellman(512)", () => nodeCrypto.createDiffieHellman(512)],
+      ["fs.readFileSync", () => fs.readFileSync("/etc/hostname")],
+      ["child_process.execSync", () => childProcess.execSync("true")],
+      ["tls.connect", () => tls.connect(1, "127.0.0.1")],
+      ["dgram.createSocket", () => dgram.createSocket("udp4")],
+      ["Promise.then (async continuation)", () => Promise.resolve().then(() => Date.now())],
     ];
     for (const [label, read] of attempts) {
       const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
@@ -89,7 +116,10 @@ describe("poisoned clock", () => {
       assert.equal(v.length, 1, `${label}: ${v.join("; ")}`);
       assert.match(v[0]!, /inside DigitalServicesMarketplace\./);
     }
+    // Object.getPrototypeOf(Date) no longer leads back to an unpatched Date (it is Function.prototype, as for the real Date).
+    assert.equal(Object.getPrototypeOf(Date), Function.prototype);
     // Outside a transition the same calls work normally.
-    assert.ok(Date.now() > 0 && Math.random() >= 0);
+    assert.ok(Date.now() > 0 && Math.random() >= 0 && new Date(0).constructor === Date && typeof process.env.PATH === "string");
+    assert.ok(performance.timeOrigin > 0 && new Intl.DateTimeFormat("en").format().length > 0);
   });
 });

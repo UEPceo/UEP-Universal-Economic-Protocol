@@ -8,6 +8,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { UepLedger } from "./ledger.ts";
+import { canonicalSerializedNote } from "../core/transaction.ts";
+import { BN254_FR_MODULUS } from "../core/field.ts";
 import { TESTNET } from "../network/profiles.ts";
 import { generateEd25519KeyPair, stableStringify } from "../core/ed25519.ts";
 import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
@@ -54,4 +56,15 @@ test("snapshot: a JSON-codec round trip restores, and repeated restarts keep the
   const after = current.prepareSpend(a, current.addressOf(b.accountId), "uep-test/teur", 10n);
   assert.ok("tx" in after);
   assert.ok("tx" in current.submit(after.tx));
+});
+
+test("canonical notes: non-canonical field elements and a non-boolean `spent` are refused, not reduced", () => {
+  const ok = { assetId: "0x05", amount: "7", owner: "0x01", blinding: "0x02", commitment: "0x03", nonce: "0x04", spent: false };
+  assert.equal(canonicalSerializedNote(ok).assetId, canonicalSerializedNote({ ...ok, assetId: 5n }).assetId);
+  const rPlus5 = "0x" + (BN254_FR_MODULUS + 5n).toString(16);
+  assert.throws(() => canonicalSerializedNote({ ...ok, assetId: rPlus5 }), /TX_NOTE_INVALID: field element is not canonical/);
+  assert.throws(() => canonicalSerializedNote({ ...ok, owner: BN254_FR_MODULUS }), /TX_NOTE_INVALID/);
+  assert.throws(() => canonicalSerializedNote({ ...ok, blinding: "0xzz" }), /TX_NOTE_INVALID/);
+  assert.throws(() => canonicalSerializedNote({ ...ok, spent: "no" }), /TX_NOTE_INVALID: spent is a boolean/);
+  assert.equal(canonicalSerializedNote({ ...ok, spent: undefined }).spent, undefined);
 });

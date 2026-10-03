@@ -99,8 +99,10 @@ async function main() {
     return;
   }
   const restored = CL.UepLedger.restoreChain(chain, trust);
-  const aliceNow = await CI.identityFromMnemonic(mnemonics[0]);
-  const bobNow = await CI.identityFromMnemonic(mnemonics[1]);
+  // An account created by a release with v2 ids keeps its v2 id (current code derives v3 for new ones).
+  const asHistorical = (now: any, then: any) => (CI.withAccountIdV2 && now.accountIdV2?.eq(then.accountId) ? CI.withAccountIdV2(now) : now);
+  const aliceNow = asHistorical(await CI.identityFromMnemonic(mnemonics[0]), alice);
+  const bobNow = asHistorical(await CI.identityFromMnemonic(mnemonics[1]), bob);
   const prepared = restored.prepareSpend(aliceNow, bobNow.accountId, "uep-test/teur", 10_000n);
   if (!("tx" in prepared)) throw new Error(`post-migration prepare: ${JSON.stringify(prepared.error)}`);
   const postMigrationSpend = JSON.parse(JSON.stringify(CT.serializeTx(prepared.tx)));

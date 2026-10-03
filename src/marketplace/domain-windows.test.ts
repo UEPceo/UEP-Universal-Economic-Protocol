@@ -122,7 +122,7 @@ test("windows: dispute and provider-claim windows are heights plus the domain de
 });
 
 test("windows: the Marketplace can take its height from the testnet ledger", () => {
-  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
+  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, testOnlyUnboundedHeightAdvance: true });
   const m = setup({ height: () => ledger.height });
   assert.throws(() => m.advanceHeight(), /HEIGHT_SOURCE_EXTERNAL/);
   const earth = publishAs(m, { ...base, title: "Earth compute" });

@@ -43,7 +43,7 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | Item | Status |
 |---|---|
 | Version | `0.5.0-public-iot-m2m` (unreleased): API authorization hardening, signed spends, paymaster caps, compressed Merkle tree, circuit v4 with pinned verifying keys, namespaced asset ids and the asset registry manifest, on top of the research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
-| Tests (testnet) | protocol **96/96**, Marketplace + IoT/M2M + HTTP authorization **121/121** (includes IoT **23/23** and scale **3/3**) |
+| Tests (testnet) | protocol **135/135**, Marketplace + IoT/M2M + HTTP authorization + height producer **170/170** (includes IoT **30/30** and scale **3/3**); the same suites under the poisoned clock **272/272** |
 | Tests (research labs) | Rust **115** (uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99); labs **455** tests in 96 files; 14 lab files with known issues run in a non-blocking job |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 7, format 6 migrated ([compatibility policy](docs/COMPATIBILITY.md)) |
@@ -223,19 +223,21 @@ These public testnet releases harden the ledger, the IoT/M2M service layer and M
 
 ### Address format and migration (v0.4.5)
 
-Accounts are identified by **v2 addresses** (UEP-ADDR-002):
+Accounts are identified by **v3 addresses** (since v0.5.0; v2 addresses from v0.4.5 still decode and keep working):
 
 ```text
-address    = Bech32m(hrp = "uep", version ‖ networkTag ‖ keyHash)   e.g. uep1qgkqzr27…  (68 characters)
-version    = 0x02
+address    = Bech32m(hrp = "uep", version ‖ networkTag ‖ keyHash ‖ check)   (68 characters)
+version    = 0x03
 networkTag = SHA-256("UEP-ADDR-NETWORK-v2\n" ‖ networkId)[0..4]
-keyHash    = SHA-256("UEP-ACCOUNT-KEY-v2\n" ‖ raw Ed25519 spend public key)[0..31]
-accountId  = 0x02 ‖ keyHash   (the ledger's note owner / sender / recipient id)
+keyHash    = SHA-256("UEP-ACCOUNT-KEY-v3\n" ‖ raw Ed25519 spend public key)[0..23]
+check      = SHA-256("UEP-ACCOUNT-CHECK-v3\n" ‖ 0x03 ‖ keyHash)[0..8]
+accountId  = 0x03 ‖ keyHash ‖ check   (the ledger's note owner / sender / recipient id)
 ```
 
 - The **Bech32m** checksum (BIP-350) detects typos.
-- The **version byte** allows future formats.
+- The **version byte** allows future formats, and the 64-bit **id check** keeps an account id that does not commit to a key from being taken for a key-derived one (probability 2^-64 or less; a v2 id was recognized by its version byte alone).
 - The **network tag** stops an address for one network from decoding on another.
+- v2 ids (`0x02 ‖ SHA-256("UEP-ACCOUNT-KEY-v2\n" ‖ key)[0..31]`) stay valid: their notes are spent with `withAccountIdV2(secrets)`, and a v2 id is accepted as a recipient once it has made a spend (see [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
 `encodeAccountAddress`, `decodeAccountAddress` / `parseAccountAddress` (errors `ADDRESS_CHECKSUM`, `ADDRESS_VERSION`, `ADDRESS_NETWORK`, `ADDRESS_HRP`, `ADDRESS_LENGTH`, `ADDRESS_FORMAT`, `ADDRESS_LEGACY_V1`), `ledger.addressOf()`, and `faucet()` / `prepareSpend()` accept addresses.
 

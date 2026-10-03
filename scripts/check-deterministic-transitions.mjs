@@ -12,10 +12,18 @@
  * of network / file / process / timer / loader modules (http, https, http2,
  * net, tls, dgram, dns, fs, child_process, worker_threads, perf_hooks,
  * readline, inspector, timers, os, module, vm, cluster, repl, undici).
- * Transition code may only import files on the scanned paths (import
- * closure). Comments and string literals are ignored. Regular expressions
- * catch accidents, not adversaries: src/service/poisoned-clock.test.ts runs the
- * transitions with a poisoned clock, network and randomness.
+ * Transition code may only import files on the scanned paths and the node
+ * builtins in ALLOWED_NODE_MODULES (import closure, checked per statement):
+ * npm (bare) specifiers, file: URLs, absolute paths, #subpath imports and
+ * template-literal specifiers are violations. Comments and string literals
+ * are ignored.
+ *
+ * This lint is a GUARD, NOT A SANDBOX. It is a set of regular expressions
+ * over source text: it catches accidents and the evasions we know of, not a
+ * determined contributor (code reached through a value captured before the
+ * check, through eval-free reflection, or in a dependency it cannot see). The
+ * runtime poisoned-clock suite (src/service/poisoned-clock.test.ts,
+ * npm run test:poisoned-clock) is the second guard; neither is a proof.
  *
  * Scanned paths: src/core, src/testnet, src/marketplace (including tests and
  * testkits), src/network and the IoT / M2M service files. Exceptions are the
@@ -41,7 +49,12 @@ const FORBIDDEN_MODULES = [
   "timers", "timers/promises", "os", "module", "vm", "cluster", "repl", "undici",
 ];
 const moduleAlternation = FORBIDDEN_MODULES.map((m) => m.replace("/", "\\/")).join("|");
-const RANDOM_APIS = ["randomBytes", "randomUUID", "randomInt", "randomFill", "randomFillSync", "getRandomValues", "generateKeyPair", "generateKeyPairSync", "generateKey", "generateKeySync", "generatePrime", "generatePrimeSync"];
+const RANDOM_APIS = ["randomBytes", "randomUUID", "randomInt", "randomFill", "randomFillSync", "getRandomValues", "generateKeyPair", "generateKeyPairSync", "generateKey", "generateKeySync", "generatePrime", "generatePrimeSync",
+  // Key agreement objects generate random keys.
+  "createECDH", "createDiffieHellman", "createDiffieHellmanGroup", "getDiffieHellman"];
+/** Node builtins transition code (non-test files) may import. Tests may also import node:test, node:assert and node:path. */
+export const ALLOWED_NODE_MODULES = ["crypto"];
+const ALLOWED_TEST_NODE_MODULES = ["crypto", "test", "assert", "assert/strict", "path", "url", "util", "buffer", "fs", "fs/promises", "http", "net", "module", "timers/promises"];
 const GLOBAL_MEMBERS = ["fetch", "Date", "performance", "setTimeout", "setInterval", "setImmediate", "queueMicrotask", "crypto", "process", "Math", "XMLHttpRequest", "WebSocket", "EventSource", "require", "eval", "Function", "Intl", "Reflect"];
 
 /**
@@ -61,7 +74,9 @@ export const RULES = [
   { id: "performance-now", re: /\bperformance\s*\.\s*now\b/g, message: "wall clock (performance.now)" },
   { id: "performance-ref", re: /(?<![\w$.])performance\b(?!\s*\.\s*now\b)/g, message: "wall clock (reference to performance)" },
   { id: "hrtime", re: /\bprocess\s*\.\s*hrtime\b/g, message: "wall clock (process.hrtime)" },
-  { id: "process-state", re: /\bprocess\s*(?:\[|\.\s*(?:uptime|getBuiltinModule|binding|_linkedBinding|dlopen|env|cpuUsage|resourceUsage)\b)/g, message: "process clock, environment or module loader (process.uptime / env / getBuiltinModule / process[...])" },
+  { id: "process-state", re: /\bprocess\s*(?:\[|\.\s*(?:uptime|getBuiltinModule|binding|_linkedBinding|dlopen|env|cpuUsage|resourceUsage|memoryUsage|availableMemory|constrainedMemory)\b)/g, message: "process clock, environment, resources or module loader (process.uptime / env / memoryUsage / getBuiltinModule / process[...])" },
+  // Scheduling- and GC-dependent behaviour: blocking waits with a timeout, weak references, finalizers.
+  { id: "nondeterministic-runtime", re: /(?<![\w$.])(?:Atomics\s*\.\s*wait(?:Async)?|WeakRef|FinalizationRegistry)\b/g, message: "scheduling- or GC-dependent API (Atomics.wait / WeakRef / FinalizationRegistry)" },
   { id: "timer", re: /(?<![\w$.])(setTimeout|setInterval|setImmediate|queueMicrotask)\b/g, message: "timer (setTimeout / setInterval / setImmediate / queueMicrotask)" },
   { id: "randomness", re: new RegExp(`\\bMath\\s*(?:\\.\\s*random\\b|\\[)|(?<![\\w$])(?:${RANDOM_APIS.join("|")})\\b`, "g"), message: "randomness (Math.random, crypto random / key generation)" },
   { id: "global-object", re: new RegExp(`\\b(?:globalThis|self|window|global)\\s*(?:\\[|\\.\\s*(?:${GLOBAL_MEMBERS.join("|")})\\b)`, "g"), message: "clock, network or randomness through the global object" },
@@ -100,6 +115,17 @@ export const ALLOWLIST = [
     reason: "createIoTMachineIdentity() creates a machine key on the machine side; no IoT transition calls it (checked at run time by src/service/poisoned-clock.test.ts).",
   },
   {
+    file: "src/core/test-only.ts",
+    rule: "process-state",
+    match: ['process.env.NODE_ENV === "production"'],
+    reason: "Configuration-time guard: rejects testOnly* options under NODE_ENV=production. Called from constructors and factories when such an option is passed, never from a transition (constructors are not transitions; checked at run time by the poisoned-clock suite).",
+  },
+  {
+    file: "src/testnet/key-derived-accounts.test.ts",
+    rule: "net-import",
+    reason: "Test-only node:fs read of a committed golden snapshot fixture (v2 account ids); static repository data, not live data.",
+  },
+  {
     file: "src/testnet/snapshot-fixtures.test.ts",
     rule: "net-import",
     reason: "Test-only node:fs read of the committed golden snapshot fixtures (src/testnet/fixtures/snapshots, docs/COMPATIBILITY.md); static repository data, not live data.",
@@ -133,7 +159,8 @@ export function blankCommentsAndStrings(src) {
         j++;
       }
       const literal = src.slice(i, Math.min(j + 1, n));
-      const before = src.slice(Math.max(0, i - 40), i);
+      // Look back in the already blanked output, so a comment ending in "import" does not count.
+      const before = out.slice(Math.max(0, out.length - 40));
       const isSpecifier = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*$/.test(before);
       out += isSpecifier ? literal : c + keepNewlines(literal.slice(1, -1)) + (literal.length > 1 ? c : "");
       i = j + 1;
@@ -143,6 +170,47 @@ export function blankCommentsAndStrings(src) {
     }
   }
   return out;
+}
+
+/**
+ * Import / export-from / dynamic import() / require() statements of a source,
+ * one entry per statement (several statements on one line are separate):
+ * [{ index, specifier, quote, typeOnly, dynamic }]. Comments are blanked
+ * first; specifier literals are kept by blankCommentsAndStrings.
+ */
+export function importStatements(src) {
+  const code = blankCommentsAndStrings(src);
+  const out = [];
+  // Static: `import ... from "x"`, `import "x"`, `export ... from "x"`; the statement starts at import/export.
+  const stat = /(?<![\w$.])(import|export)\b(?!\s*[.(])([^;"'`]*?)(?:\bfrom\s*)?(["'`])([^"'`]*)\3/g;
+  let m;
+  while ((m = stat.exec(code)) !== null) {
+    const head = m[2];
+    if (m[1] === "export" && !/\bfrom\s*$/.test(code.slice(m.index, m.index + m[0].length - m[4].length - 2))) continue; // `export const s = "x"` is not an import
+    const typeOnly = /^\s*type\b(?!\s*,)/.test(head) && !/^\s*type\s+from\b/.test(head);
+    out.push({ index: m.index, specifier: m[4], quote: m[3], typeOnly, dynamic: false });
+  }
+  const dyn = /(?<![\w$.])(import|require)\s*\(\s*(["'`])([^"'`]*)\2/g;
+  while ((m = dyn.exec(code)) !== null) out.push({ index: m.index, specifier: m[3], quote: m[2], typeOnly: false, dynamic: true });
+  return out.sort((a, b) => a.index - b.index);
+}
+
+function specifierProblem(imp, file, root, scanned, isTest) {
+  const spec = imp.specifier;
+  if (imp.quote === "`") return `template-literal specifier \`${spec}\``;
+  if (spec.startsWith("./") || spec.startsWith("../")) {
+    if (isTest) return undefined;
+    const target = relative(root, join(root, dirname(file), spec)).split(sep).join("/");
+    return scanned.has(target) ? undefined : `imports ${target}, which is outside the scanned paths`;
+  }
+  if (spec.startsWith("node:")) {
+    const mod = spec.slice(5);
+    return (isTest ? ALLOWED_TEST_NODE_MODULES : ALLOWED_NODE_MODULES).includes(mod) ? undefined : `imports ${spec}, which is not an allowed node builtin`;
+  }
+  if (spec.startsWith("file:")) return `file: URL specifier ${spec}`;
+  if (spec.startsWith("/")) return `absolute path specifier ${spec}`;
+  if (spec.startsWith("#")) return `#subpath import ${spec}`;
+  return `non-relative specifier ${spec} (npm package or bare builtin)`;
 }
 
 /** Violations of one source text: [{ rule, line, text, message }]. */
@@ -199,22 +267,21 @@ export function checkRepository(root = ROOT, overrides = {}) {
       }
     }
   }
-  // Import closure: transition code (non-test files) may only import scanned files, so a
-  // clock read cannot hide in a helper outside the scanned paths.
+  // Import closure, per statement: transition code (non-test files) may only import scanned
+  // files and ALLOWED_NODE_MODULES, so a clock read cannot hide in a helper outside the
+  // scanned paths. Tests may import relative helpers anywhere, but no npm, file:, absolute,
+  // #subpath or template-literal specifier either.
   const scanned = new Set(files);
   for (const file of files) {
-    if (/\.test\.[cm]?[jt]s$/.test(file)) continue;
+    const isTest = /\.test\.[cm]?[jt]s$/.test(file);
     const src = overrides[file] ?? readFileSync(join(root, file), "utf8");
-    const re = /\b(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g;
-    let m;
-    while ((m = re.exec(src)) !== null) {
-      const target = relative(root, join(root, dirname(file), m[1])).split(sep).join("/");
-      const line = src.slice(0, m.index).split("\n").length;
-      const text = (src.split("\n")[line - 1] ?? "").trim();
-      if (/^(?:import|export)\s+type\b/.test(text)) continue; // erased at run time
-      if (!scanned.has(target)) {
-        violations.push({ file, rule: "import-closure", line, text, message: `imports ${target}, which is outside the scanned paths` });
-      }
+    const lines = src.split("\n");
+    for (const imp of importStatements(src)) {
+      const line = src.slice(0, imp.index).split("\n").length;
+      const text = (lines[line - 1] ?? "").trim();
+      if (imp.typeOnly) continue; // erased at run time
+      const problem = specifierProblem(imp, file, root, scanned, isTest);
+      if (problem) violations.push({ file, rule: "import-closure", line, text, message: problem });
     }
   }
   const staleAllowlist = ALLOWLIST.filter((_, i) => !used.has(i));

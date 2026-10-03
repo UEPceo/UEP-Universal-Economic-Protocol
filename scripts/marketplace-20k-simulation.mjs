@@ -3,15 +3,17 @@ import { createMarketplaceIdentity, listingTerms, signAction, signReservation } 
 import { contentHash } from '../src/service/content-hash.ts';
 import { performance } from 'node:perf_hooks';
 import { HeightProducer, ProducedHeight } from '../src/service/height-producer.ts';
+import { heightOf } from '../src/core/height.ts';
 
 const regions=['EU','NA','LATAM','APAC','AFRICA','MENA'];
 // v0.5.0 (ADR 0002): the Marketplace reads the height of a chain advanced by the height producer.
-// The simulation drives the producer with a simulated wall clock (50 ms per checkout), so it is deterministic.
+// The simulation drives the producer with a simulated monotonic clock (50 ms per checkout), so it is deterministic.
+// Like start(), the producer ticks at least once per block time (one tick seals at most 12 blocks).
 const chain=new ProducedHeight();
 const sim={t:0};
 const producer=new HeightProducer({ledger:chain,clock:()=>sim.t});
-const step=(ms)=>{sim.t+=ms; producer.tick();};
-const m=new DigitalServicesMarketplace({height:()=>chain.height});
+const step=(ms)=>{while(ms>0){const d=Math.min(ms,producer.blockTimeMs); sim.t+=d; ms-=d; producer.tick();}};
+const m=new DigitalServicesMarketplace({height:heightOf(chain)});
 const start=performance.now();
 const listings=[];
 let listingFailures=0;

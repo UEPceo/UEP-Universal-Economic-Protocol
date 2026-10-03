@@ -4,49 +4,80 @@
  * Since v0.5.0 no state transition reads a clock: every window is a number of
  * block heights. This producer is the one place that turns real time into
  * heights. It runs OUTSIDE the state machine (it is node tooling, not a
- * transition), reads the wall clock and seals one block every
- * `blockTimeMs` (default REFERENCE_BLOCK_TIME_MS = 5 s):
+ * transition), measures elapsed time with a MONOTONIC clock and seals one
+ * block every `blockTimeMs` (default REFERENCE_BLOCK_TIME_MS = 5 s):
  *
  *   const producer = new HeightProducer({ ledger }).start();
- *   const m = new DigitalServicesMarketplace({ height: () => ledger.height });
+ *   const height = heightOf(ledger);
+ *   const m = new DigitalServicesMarketplace({ height });
  *   ...
  *   producer.stop();
  *
  * Rules (each one is tested in height-producer.test.ts):
- *  - Real-time bound: after `t` ms of wall-clock time since the producer was
+ *  - Monotonic time: elapsed time comes from `performance.now()` (or an
+ *    injected monotonic `clock`), never from the wall clock. A step of the
+ *    system clock (NTP, a manual change) does not seal blocks; it is only
+ *    logged (`wall-clock-jump`, compared against `wallClock`, default
+ *    Date.now).
+ *  - Real-time bound: after `t` ms of monotonic time since the producer was
  *    anchored, the height it allows is anchorHeight + floor(t / blockTimeMs).
- *    It seals blocks only up to that height. After a pause (a slow event
- *    loop, a suspended process) it catches up n blocks only when n x
- *    blockTimeMs have really passed; it never runs ahead of the clock.
+ *    It never runs ahead of that.
+ *  - Catch-up cap: one tick seals at most `maxBlocksPerTick` blocks
+ *    (MAX_BLOCKS_PER_TICK = 12, one minute). After a longer gap (a stalled
+ *    event loop, a suspended process) the rest of the gap is dropped and
+ *    logged (`catch-up-capped`): windows freeze for that time instead of
+ *    expiring at once.
+ *  - Restart: a new producer anchors at the restored height and the current
+ *    time. Downtime does not count: operator downtime extends every deadline
+ *    in real time and never expires a party (docs/THREAT-MODEL.md).
  *  - Minimum block spacing: `blockTimeMs` may not be shorter than
  *    MIN_BLOCK_SPACING_MS (= the 5 s reference). Faster blocks would shorten
- *    every window in real time (the MARS round trip needs blocks of at least
- *    3.34 s; telemetry alone 1.82 s). Slower blocks only lengthen windows.
- *  - A wall clock that goes backwards seals nothing until it has caught up.
+ *    every window in real time.
+ *  - An injected clock that goes backwards seals nothing until it has caught up.
  *  - Height that was advanced by someone else (an operator calling
  *    `ledger.advanceHeight()` directly) is not added to: the producer waits
- *    until real time reaches it, and reports the lead (`aheadBy`).
+ *    until real time reaches it (the chain stands still for that long) and
+ *    reports the lead (`aheadBy`).
+ *  - Restore: `rebind(restoredLedger)` moves the producer to the restored
+ *    ledger. A producer whose ledger was retired by a restore
+ *    (`UepLedger.restore(..., { replaces })`) stops at its next tick.
  *
  * Trust: the single-node operator is the time authority. The producer
  * makes the honest path safe; it cannot stop the operator from calling
- * `advanceHeight()` on the ledger object. See docs/THREAT-MODEL.md.
+ * `advanceHeight()` on the ledger object (bounded to 12 blocks per call
+ * outside test mode). See docs/THREAT-MODEL.md.
  */
-import { REFERENCE_BLOCK_TIME_MS, assertHeight } from "../core/height.ts";
+import { MAX_BLOCKS_PER_TICK, REFERENCE_BLOCK_TIME_MS, assertHeight } from "../core/height.ts";
+import { testOnlyOption } from "../core/test-only.ts";
 
 /** Shortest block time the producer accepts (the reference block time). */
 export const MIN_BLOCK_SPACING_MS = REFERENCE_BLOCK_TIME_MS;
+export { MAX_BLOCKS_PER_TICK };
 
 export type HeightProducerTarget = { readonly height: number; advanceHeight(blocks?: number): number };
+
+export type HeightProducerEvent =
+  | { kind: "catch-up-capped"; due: number; sealed: number; dropped: number; height: number }
+  | { kind: "wall-clock-jump"; jumpMs: number; wallElapsedMs: number; monotonicElapsedMs: number }
+  | { kind: "stopped"; reason: string };
 
 export type HeightProducerConfig = {
   /** The ledger (or any target with `height` and `advanceHeight(n)`). */
   ledger: HeightProducerTarget;
   /** Block time in ms (default REFERENCE_BLOCK_TIME_MS); at least MIN_BLOCK_SPACING_MS. */
   blockTimeMs?: number;
-  /** Wall clock in Unix ms (default Date.now). Simulations inject a simulated clock. */
+  /** Monotonic clock in ms (default performance.now). Simulations inject a simulated clock. */
   clock?: () => number;
+  /** Wall clock in Unix ms, only to detect and log jumps (default Date.now; none when `clock` is injected and this is not). Never used for heights. */
+  wallClock?: () => number;
+  /** Difference between wall and monotonic elapsed time that counts as a jump (default one block time). */
+  wallClockJumpToleranceMs?: number;
+  /** Most blocks one tick seals (1 to MAX_BLOCKS_PER_TICK; default MAX_BLOCKS_PER_TICK). */
+  maxBlocksPerTick?: number;
   /** Called after each tick that sealed blocks. */
   onBlocks?: (event: { height: number; sealed: number }) => void;
+  /** Log sink for capped catch-ups, wall-clock jumps and stops (default console.warn). */
+  log?: (event: HeightProducerEvent) => void;
 };
 
 export type HeightProducerStatus = {
@@ -56,16 +87,33 @@ export type HeightProducerStatus = {
   /** Heights the target is ahead of real time (advanced outside the producer). */
   aheadBy: number;
   blockTimeMs: number;
+  maxBlocksPerTick: number;
   running: boolean;
+  /** Blocks not sealed because a gap exceeded the per-tick cap (frozen time). */
+  droppedBlocks: number;
+  /** Wall-clock jumps seen so far (logged, never sealed). */
+  wallClockJumps: number;
 };
+
+const defaultLog = (e: HeightProducerEvent) => console.warn(`[uep height-producer] ${JSON.stringify(e)}`);
+const defaultMonotonic = () => performance.now();
+const defaultWall = () => Date.now();
 
 export class HeightProducer {
   readonly blockTimeMs: number;
-  private readonly ledger: HeightProducerTarget;
+  readonly maxBlocksPerTick: number;
+  private ledger: HeightProducerTarget;
   private readonly clock: () => number;
+  private readonly wallClock?: () => number;
+  private readonly jumpToleranceMs: number;
   private readonly onBlocks?: HeightProducerConfig["onBlocks"];
-  private readonly anchorMs: number;
-  private readonly anchorHeight: number;
+  private readonly log: (event: HeightProducerEvent) => void;
+  private anchorMs: number;
+  private anchorHeight: number;
+  private lastMono: number;
+  private lastWall: number;
+  private dropped = 0;
+  private jumps = 0;
   private timer?: ReturnType<typeof setInterval>;
 
   constructor(config: HeightProducerConfig) {
@@ -73,12 +121,22 @@ export class HeightProducer {
     const blockTimeMs = config.blockTimeMs ?? REFERENCE_BLOCK_TIME_MS;
     if (!Number.isSafeInteger(blockTimeMs) || blockTimeMs <= 0) throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: blockTimeMs is a positive integer");
     if (blockTimeMs < MIN_BLOCK_SPACING_MS) throw new Error(`HEIGHT_PRODUCER_BLOCK_SPACING: blockTimeMs ${blockTimeMs} is below the minimum block spacing of ${MIN_BLOCK_SPACING_MS} ms`);
+    const cap = config.maxBlocksPerTick ?? MAX_BLOCKS_PER_TICK;
+    if (!Number.isSafeInteger(cap) || cap < 1 || cap > MAX_BLOCKS_PER_TICK) throw new Error(`HEIGHT_PRODUCER_CONFIG_INVALID: maxBlocksPerTick is 1 to ${MAX_BLOCKS_PER_TICK}`);
+    const tolerance = config.wallClockJumpToleranceMs ?? blockTimeMs;
+    if (!Number.isFinite(tolerance) || tolerance <= 0) throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: wallClockJumpToleranceMs is positive");
     this.blockTimeMs = blockTimeMs;
+    this.maxBlocksPerTick = cap;
+    this.jumpToleranceMs = tolerance;
     this.ledger = config.ledger;
-    this.clock = config.clock ?? (() => Date.now());
+    this.clock = config.clock ?? defaultMonotonic;
+    this.wallClock = config.wallClock ?? (config.clock ? undefined : defaultWall);
     this.onBlocks = config.onBlocks;
+    this.log = config.log ?? defaultLog;
     this.anchorMs = this.readClock();
     this.anchorHeight = assertHeight(this.ledger.height);
+    this.lastMono = this.anchorMs;
+    this.lastWall = this.readWall();
   }
 
   private readClock(): number {
@@ -87,27 +145,89 @@ export class HeightProducer {
     return t;
   }
 
-  /** Height that real time allows now: anchorHeight + floor(elapsed / blockTimeMs); never below the anchor. */
-  allowedHeight(): number {
-    const elapsed = this.readClock() - this.anchorMs;
+  private readWall(): number {
+    if (!this.wallClock) return Number.NaN;
+    const t = this.wallClock();
+    return typeof t === "number" && Number.isFinite(t) ? t : Number.NaN;
+  }
+
+  /** Height that real time allows at monotonic time `now`: anchorHeight + floor(elapsed / blockTimeMs); never below the anchor. */
+  private allowedAt(now: number): number {
+    const elapsed = now - this.anchorMs;
     return elapsed <= 0 ? this.anchorHeight : this.anchorHeight + Math.floor(elapsed / this.blockTimeMs);
   }
 
-  /** Seal the blocks real time allows (0 or more). Returns the number sealed. */
+  /** Height that real time allows now. */
+  allowedHeight(): number {
+    return this.allowedAt(this.readClock());
+  }
+
+  /** Compare wall and monotonic elapsed time since the last tick; log a jump. Never seals. */
+  private checkWallClock(now: number): void {
+    const wall = this.readWall();
+    const wallElapsed = wall - this.lastWall;
+    const monoElapsed = now - this.lastMono;
+    if (Number.isFinite(wallElapsed) && Math.abs(wallElapsed - monoElapsed) > this.jumpToleranceMs) {
+      this.jumps++;
+      this.log({ kind: "wall-clock-jump", jumpMs: wallElapsed - monoElapsed, wallElapsedMs: wallElapsed, monotonicElapsedMs: monoElapsed });
+    }
+    this.lastWall = wall;
+    this.lastMono = now;
+  }
+
+  /** Seal the blocks real time allows (0 to maxBlocksPerTick). Returns the number sealed. */
   tick(): number {
-    const allowed = this.allowedHeight();
+    const now = this.readClock();
+    this.checkWallClock(now);
+    const allowed = this.allowedAt(now);
     const current = this.ledger.height;
     const due = allowed - current;
     if (due <= 0) return 0;
-    const height = this.ledger.advanceHeight(due);
-    this.onBlocks?.({ height, sealed: due });
-    return due;
+    const sealed = Math.min(due, this.maxBlocksPerTick);
+    let height: number;
+    try {
+      height = this.ledger.advanceHeight(sealed);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (message.startsWith("LEDGER_RETIRED")) {
+        this.stop();
+        this.log({ kind: "stopped", reason: "ledger retired by a restore; rebind() the producer to the restored ledger" });
+        return 0;
+      }
+      throw e;
+    }
+    if (due > sealed) {
+      // Frozen time: the rest of the gap does not count (no catch-up beyond the cap).
+      const dropped = due - sealed;
+      this.anchorMs += dropped * this.blockTimeMs;
+      this.dropped += dropped;
+      this.log({ kind: "catch-up-capped", due, sealed, dropped, height });
+    }
+    this.onBlocks?.({ height, sealed });
+    return sealed;
+  }
+
+  /**
+   * Move the producer to another target (for example the ledger returned by
+   * a restore). It anchors at that target's height and the current time, so
+   * the time before the rebind does not count.
+   */
+  rebind(target: HeightProducerTarget): this {
+    if (!target || typeof target.advanceHeight !== "function") throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: a ledger with advanceHeight() is required");
+    this.ledger = target;
+    this.anchorMs = this.readClock();
+    this.anchorHeight = assertHeight(target.height);
+    this.lastMono = this.anchorMs;
+    this.lastWall = this.readWall();
+    return this;
   }
 
   /** Start sealing on a timer (unref'ed, so it never keeps the process alive). */
   start(): this {
     if (this.timer) return this;
-    this.timer = setInterval(() => this.tick(), this.blockTimeMs);
+    this.timer = setInterval(() => {
+      try { this.tick(); } catch (e) { this.log({ kind: "stopped", reason: e instanceof Error ? e.message : String(e) }); this.stop(); }
+    }, this.blockTimeMs);
     this.timer.unref?.();
     return this;
   }
@@ -124,18 +244,28 @@ export class HeightProducer {
   status(): HeightProducerStatus {
     const allowed = this.allowedHeight();
     const height = this.ledger.height;
-    return { height, allowedHeight: allowed, aheadBy: Math.max(0, height - allowed), blockTimeMs: this.blockTimeMs, running: this.running };
+    return { height, allowedHeight: allowed, aheadBy: Math.max(0, height - allowed), blockTimeMs: this.blockTimeMs, maxBlocksPerTick: this.maxBlocksPerTick, running: this.running, droppedBlocks: this.dropped, wallClockJumps: this.jumps };
   }
 }
 
-/** A height source with its own counter, for stand-alone Marketplaces driven by a HeightProducer (no ledger). */
+/**
+ * A height source with its own counter, for stand-alone Marketplaces driven
+ * by a HeightProducer (no ledger). Like the ledger, advanceHeight(n) accepts
+ * at most MAX_BLOCKS_PER_TICK per call unless built with the test-only
+ * `testOnlyUnboundedHeightAdvance`.
+ */
 export class ProducedHeight implements HeightProducerTarget {
   private value = 0;
+  private readonly unbounded: boolean;
+  constructor(opts: { testOnlyUnboundedHeightAdvance?: boolean } = {}) {
+    this.unbounded = testOnlyOption("testOnlyUnboundedHeightAdvance", opts.testOnlyUnboundedHeightAdvance);
+  }
   get height(): number {
     return this.value;
   }
   advanceHeight(blocks = 1): number {
     if (!Number.isSafeInteger(blocks) || blocks < 0 || !Number.isSafeInteger(this.value + blocks)) throw new Error("HEIGHT_ADVANCE_INVALID");
+    if (blocks > MAX_BLOCKS_PER_TICK && !this.unbounded) throw new Error(`HEIGHT_ADVANCE_CAP: at most ${MAX_BLOCKS_PER_TICK} blocks per call`);
     this.value += blocks;
     return this.value;
   }

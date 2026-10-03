@@ -61,7 +61,8 @@ Attempts to spend a note with a key that the owner's address does not commit to.
 - planting a forged key-registry entry;
 - injecting a mismatched key into signed history or the pending queue;
 - using a mistyped, legacy or other-network address;
-- registering a marketplace identity under someone else's address.
+- registering a marketplace identity under someone else's address;
+- passing a legacy account id (one that commits to no key) off as a key-derived one. Since v0.5.0 key-derived ids carry a version byte and a 64-bit check (format v3), so a legacy id is classified as key-derived with probability below 2^-64, and `prepareSpend` / `preparePayment` only accept v3 ids or v2 ids whose key has been proven by a committed spend.
 
 ### Dispute and order-access attacker
 
@@ -86,7 +87,10 @@ checkpoint, or adds issuance that the dedicated faucet key did not sign.
 Attempts to lock Marketplace capacity without funds, with an unregistered or
 impersonated identity, or beyond the per-identity concurrency limit.
 Since v0.5.0 unfunded reservations also cannot fill an attester set's
-evidence cap: only HELD, DELIVERED or DISPUTED orders count against it.
+evidence cap: only HELD, DELIVERED or DISPUTED orders count against it. A
+funded actor that buys on its own listing is limited by the provider subcap
+(default 25% of the set cap), and a buyer whose funding is refused because a cap
+is full gets the deposit back.
 
 ## Residual trust (testnet)
 
@@ -105,8 +109,14 @@ Since v0.4.4 the following are also trusted parties of the testnet:
 
 Since v0.5.0 time is block height (ADR 0002), which adds one more trusted party:
 
-- **Single-node operator as time authority.** The operator of the single-node testnet decides when the height advances. The height producer (`src/service/height-producer.ts`) seals one block per 5 s of real time and never runs ahead of the clock, but the operator controls the process and can call `advanceHeight(n)` directly. Doing so is operator abuse: a provider could settle without the buyer's 24 h dispute window, and a MARS reservation or a 7-day dispute window could expire at once. Nobody else can move the height, and the height never goes backwards. This is the same trust the operator already has to order or censor transactions. A multi-node network needs a block-validation rule with a minimum spacing between blocks before heights can be trusted across operators.
-- **Attester sets (configuration).** The operator registers attester sets. A set names its source and its attesters' keys; two sets for the same source with a common attester are refused, and only funded orders count against a set's cap. Evidence itself is phase 2.3 and certifies publication, not truth (`docs/EVIDENCE.md`).
+- **Single-node operator as time authority.** The operator of the single-node testnet decides when the height advances. The height producer (`src/service/height-producer.ts`) seals one block per 5 s of real time and never runs ahead of the clock, but the operator controls the process and can call `advanceHeight(n)` directly. Doing so is operator abuse: a provider could settle without the buyer's 24 h dispute window, and a MARS reservation or a 7-day dispute window could expire at once. Nobody else can move the height. This is the same trust the operator already has to order or censor transactions. A multi-node network needs a block-validation rule with a minimum spacing between blocks before heights can be trusted across operators. What limits the operator's mistakes (not its intent):
+  - `advanceHeight(n)` seals at most 12 blocks per call outside test mode (`HEIGHT_ADVANCE_CAP`); a fast-forward needs repeated calls and is visible in the producer status (`aheadBy`).
+  - The producer measures time with a monotonic clock; a step of the system clock is logged and seals nothing. After a long stall it seals at most 12 blocks per tick and drops the rest.
+  - **Downtime.** A stopped or restarted node does not count the downtime: windows freeze. Operator downtime extends every deadline in real time and never expires a party.
+  - **Rollback.** A restore never lowers the height below the replaced ledger, an explicit floor or the trusted checkpoint unless the operator passes `allowHeightRegression: true`. A forced rollback makes bound Marketplaces fail (`HEIGHT_REGRESSED`); rebuilding the Marketplace loses its open orders and their held value.
+  - **Test-only options.** `testOnly*` options are refused under `NODE_ENV=production`, and services that parse configuration or requests refuse them from untrusted input.
+  - The HTTP API refuses to serve a Marketplace on an injected height source without a running height producer.
+- **Attester sets (configuration).** The operator registers attester sets. A set names its source and its attesters' keys; keys must be valid prime-order Ed25519 points, each key may belong to one set only (until phase 2.3), each provider may use at most a share of a set's cap, and only funded orders count against a set's cap. Evidence itself is phase 2.3 and certifies publication, not truth (`docs/EVIDENCE.md`).
 
 ## Out of scope
 

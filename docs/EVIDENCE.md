@@ -32,17 +32,24 @@ An attester set is `{ attesterSetId, sourceId, attesterKeys, threshold: k, size:
 
 `threshold`, `size` and `attesterKeys` are validated now but not used by any check until phase 2.3, when statements are verified against them.
 
-**Duplicate sets.** Two sets that observe the same `sourceId` and have any attester key in common are rejected (`EVIDENCE_ATTESTER_SET_DUPLICATE`). Otherwise the same attesters could register the same source under several set ids and multiply the cap. Until phase 2.3 this is the only cross-set rule. Phase 2.3 adds a cap per source and a per-attester aggregate cap across all sets an attester belongs to.
+**Attester keys.** Each key is normalized before it is stored: 64 lowercase hex characters (a 44-byte SPKI DER encoding in hex is accepted and reduced to the raw key). It must decode to a canonical Ed25519 point of prime order; all-zero, identity, small-order and off-curve keys are refused (`EVIDENCE_ATTESTER_SET_INVALID`). The keys of one set must be distinct after normalization.
+
+**One set per key.** Until phase 2.3 each attester key may belong to one attester set only, whatever the `sourceId` (`EVIDENCE_ATTESTER_SET_DUPLICATE`). Otherwise the same attesters could register the same source under several set ids, or under another spelling of the source URL, and multiply the cap. Until phase 2.3 this is the only cross-set rule.
+
+**Provider subcap.** Inside a set, one provider's funded open value in an asset may not exceed `providerCapBps` of the set's cap for that asset (optional field of the set, in basis points, 1 to 10,000; default `DEFAULT_PROVIDER_CAP_BPS = 2_500`, i.e. 25%, rounded up). It stops a buyer with capital equal to the set cap from filling the whole set with orders on its own listing. A listing whose `maxValuePerContract` exceeds the provider subcap is refused at publication. The subcap binds a provider identity; it relies on identities being costly, like every per-identity limit of the Marketplace.
+
+**Refused funding returns the deposit.** If `fundOrder()` fails because the set cap or the provider subcap is full, the buyer did nothing wrong: the reservation is closed without fault (`CANCELLED`, `closeReason: "EVIDENCE_CAP_FULL"`), the reservation deposit is returned to the buyer, and the call fails with the cap error so the client knows. Phase 2.3 adds a cap per source and a per-attester aggregate cap across all sets an attester belongs to.
 
 The open value of a set is the sum of gross amount + gas of its **funded** orders: HELD, DELIVERED or DISPUTED. It is taken when the buyer funds the order and goes down exactly once when the order is settled or refunded. Unfunded reservations (ACCEPTED) take nothing, so reservations that are cancelled in the grace period or expire cannot fill a set's cap at no cost.
 
-`marketplace.evidenceCaps` is a read-only view: `openValue(attesterSetId, asset)` and `attesterSet(attesterSetId)`. Locking and releasing are internal to the Marketplace.
+`marketplace.evidenceCaps` is a read-only view: `openValue(attesterSetId, asset)`, `providerOpenValue(attesterSetId, asset, providerId)`, `providerCap(attesterSetId, asset)` and `attesterSet(attesterSetId)`. Locking and releasing are internal to the Marketplace (an ECMAScript private field, not reachable from outside the instance).
 
 Errors:
 
 - `EVIDENCE_CONTRACT_CAP_EXCEEDED`: one order would lock or release more than `maxValuePerContract`.
 - `EVIDENCE_ATTESTER_SET_CAP_EXCEEDED`: the set's funded open value would exceed its cap (at funding; at reservation when the set is already full).
-- `EVIDENCE_ATTESTER_SET_DUPLICATE`: another set observes the same source with a common attester.
+- `EVIDENCE_PROVIDER_CAP_EXCEEDED`: the provider's funded open value in the set would exceed its subcap.
+- `EVIDENCE_ATTESTER_SET_DUPLICATE`: an attester key already belongs to another set.
 - `EVIDENCE_ATTESTER_SET_UNKNOWN`, `EVIDENCE_ATTESTER_SET_CAP_UNDEFINED`, `EVIDENCE_POLICY_INVALID`, `EVIDENCE_ATTESTER_SET_INVALID`: configuration errors at construction or publication.
 
 The checks run before any value moves. Listings without `evidencePolicy` are not affected and are not capped.
@@ -77,5 +84,5 @@ Only public sources that do not need an account are considered for adapters, for
 ## Not decided yet
 
 - Who can be an attester (the parties, third parties named in the contract, or UEP nodes) and how attesters are paid without a native token.
-- The outcome per category when evidence does not arrive in time (depends on the arbiter decision D-5).
+- The outcome per category when evidence does not arrive in time (depends on the open decision about the arbiter).
 - Verification of statements (signatures against the set's keys, binding to the order) and the evidence records of phase 2.3.

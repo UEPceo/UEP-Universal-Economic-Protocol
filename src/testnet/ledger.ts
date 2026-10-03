@@ -24,7 +24,9 @@ import type { IdentitySecrets } from "../identity/kdf.ts";
 import type { KeyObject } from "node:crypto";
 import { generateEd25519KeyPair, publicKeyHexOf, sha256Hex, signEd25519, stableStringify, toPrivateKey, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
 import { NoteCommitmentTree } from "../core/note-tree.ts";
-import { isKeyDerivedAccountId, senderAuthFailure, signSenderAuth, spendKeyMatchesAccount } from "../core/spend-key.ts";
+import { testOnlyOption } from "../core/test-only.ts";
+import { MAX_BLOCKS_PER_TICK } from "../core/height.ts";
+import { isKeyDerivedAccountId, isV2AccountIdForm, senderAuthFailure, signSenderAuth, spendKeyMatchesAccount } from "../core/spend-key.ts";
 import { encodeAccountAddress, parseAccountAddress } from "../core/address.ts";
 
 export type SubmitError =
@@ -170,6 +172,25 @@ export type SnapshotCheckpoint = {
   txChainHash: string;
   mintCount: number;
   mintChainHash: string;
+  /** v0.5.0: block height of the checkpointed snapshot; a restore against it may not go lower (see RestoreOptions). */
+  height?: number;
+};
+
+/**
+ * v0.5.0 restore options (ADR 0002, height never goes backwards):
+ *  - `replaces`: the ledger this restore takes over. The restored height may
+ *    not be below its height, and it is retired (advanceHeight throws
+ *    LEDGER_RETIRED, so a producer still bound to it stops at its next tick).
+ *  - `minHeight`: the restored height may not be below this.
+ *  - `allowHeightRegression`: explicit operator override of both rules and of
+ *    the checkpoint height (a rollback). The Marketplace has no snapshot: after
+ *    a rollback its height source regresses and it must be rebuilt, which
+ *    loses its orders and held value (docs/THREAT-MODEL.md).
+ */
+export type RestoreOptions = {
+  replaces?: { readonly height: number; retire?: () => void };
+  minHeight?: number;
+  allowHeightRegression?: boolean;
 };
 
 export type UepLedgerSnapshotPayload = ReturnType<UepLedger["snapshotPayload"]>;
@@ -214,6 +235,7 @@ export function checkpointOf(snap: UepLedgerSnapshot): SnapshotCheckpoint {
     txChainHash: txChainHash(snap.txs, snap.txs.length),
     mintCount: snap.mints.length,
     mintChainHash: mintChainHash(snap.mints, snap.mints.length),
+    ...(Number.isSafeInteger((snap as { height?: unknown }).height) ? { height: snap.height } : {}),
   };
 }
 
@@ -244,6 +266,11 @@ function distinctKeyHexes(keys: PublicKeyLike[] | undefined, code: string): stri
   return out;
 }
 
+/** v3 key-derived id, or the v2 form (grandfathered for restored state; a live recipient also needs a v2 proof). */
+function isKeyDerivedOrV2Form(id: Fr): boolean {
+  return isKeyDerivedAccountId(id) || isV2AccountIdForm(id);
+}
+
 /**
  * Structural rules of a single-input spend, shared by submit(), pending
  * validation and restore() so that all three accept exactly the same
@@ -257,12 +284,16 @@ function distinctKeyHexes(keys: PublicKeyLike[] | undefined, code: string): stri
  *   - output 1 (present iff change > 0) returns `input - amount - fee` to the sender.
  * Note openings against the transaction commitments are checked by the caller.
  */
-export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Note[]): SubmitError | undefined {
+export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Note[], acceptsRecipient: (id: Fr) => boolean = isKeyDerivedOrV2Form): SubmitError | undefined {
   if (tx.senderId.eq(tx.recipientId) || tx.senderId.eq(TREASURY_ID) || tx.recipientId.eq(TREASURY_ID)) {
     return { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." };
   }
-  if (!isKeyDerivedAccountId(tx.senderId) || !isKeyDerivedAccountId(tx.recipientId)) {
-    return { code: "INVALID_PARTICIPANTS", message: "Sender and recipient must be v2 key-derived accounts." };
+  // v0.5.0: the sender is a v3 id or a v2-form id; its spend key proves it (checked by the caller).
+  if (!isKeyDerivedOrV2Form(tx.senderId)) {
+    return { code: "INVALID_PARTICIPANTS", message: "Sender must be a key-derived account." };
+  }
+  if (!acceptsRecipient(tx.recipientId)) {
+    return { code: "INVALID_PARTICIPANTS", message: "Recipient must be a v3 key-derived account or a proven v2 account." };
   }
   if (inputs.length !== 1) return { code: "AMOUNT_MISMATCH", message: "Public testnet spends use exactly one input note." };
   const input = inputs[0]!;
@@ -324,6 +355,9 @@ export class UepLedger {
     if (value !== this.proofRequired) throw new Error("REQUIRE_PROOF_IMMUTABLE: requireProof is fixed at construction (testOnlyDisableProof is test-only)");
   }
   private readonly proofRequired: boolean;
+  private readonly unboundedHeightAdvance: boolean;
+  /** v0.5.0: set when a restore with `replaces` took over this ledger; it no longer advances. */
+  private retired = false;
   readonly networkId: string;
   readonly domainId: string;
   readonly connected: boolean;
@@ -343,6 +377,9 @@ export class UepLedger {
   balances = new Map<AccountKey, bigint>();
   notes: Note[] = [];
   txs: UepTransaction[] = [];
+  /** v0.5.0: v2 ids proven by a committed public-key spend (derived from txs; see acceptsRecipient). */
+  private readonly provenV2 = new Set<string>();
+  private provenV2Scanned = 0;
   pending: UepTransaction[] = [];
   noteCounter = 0n;
   /** Height of the last reconcilePending() (v0.5.0; a wall-clock ms value before format 7, reset to 0 by the 6 -> 7 migration). */
@@ -391,6 +428,8 @@ export class UepLedger {
     issuerSigningKeys?: Record<string, PrivateKeyLike>;
     /** v0.4.7 TEST-ONLY: build a ledger with requireProof = false. Never set outside tests. */
     testOnlyDisableProof?: boolean;
+    /** v0.5.0 TEST-ONLY: advanceHeight(n) accepts n > MAX_BLOCKS_PER_TICK (tests and offline simulations). */
+    testOnlyUnboundedHeightAdvance?: boolean;
   }) {
     if ((opts as { snapshotAuthoritySecret?: unknown }).snapshotAuthoritySecret !== undefined) throw new Error("SNAPSHOT_SECRET_UNSUPPORTED: v0.4.3 uses Ed25519 snapshotSigningKeys");
     this.networkId = opts.networkId;
@@ -400,7 +439,8 @@ export class UepLedger {
     const maxPending = opts.maxPendingTransactions ?? DEFAULT_MAX_PENDING_TRANSACTIONS;
     if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > MAX_PENDING_TRANSACTIONS_LIMIT) throw new Error("INVALID_MAX_PENDING_TRANSACTIONS");
     this.maxPendingTransactions = maxPending;
-    this.proofRequired = opts.testOnlyDisableProof !== true;
+    this.proofRequired = !testOnlyOption("testOnlyDisableProof", opts.testOnlyDisableProof);
+    this.unboundedHeightAdvance = testOnlyOption("testOnlyUnboundedHeightAdvance", opts.testOnlyUnboundedHeightAdvance);
     this.installSigningKeys(
       opts.snapshotSigningKeys ?? [generateEd25519KeyPair().privateKey],
       opts.faucetSigningKey === undefined ? (opts.allowFaucet ? generateEd25519KeyPair().privateKey : undefined) : (opts.faucetSigningKey ?? undefined),
@@ -422,9 +462,18 @@ export class UepLedger {
    * calls belong to the same height. It never reads a clock itself.
    */
   advanceHeight(blocks = 1): number {
+    if (this.retired) throw new Error("LEDGER_RETIRED: this ledger was replaced by a restore; bind the producer to the restored ledger");
     if (!Number.isSafeInteger(blocks) || blocks < 0 || !Number.isSafeInteger(this.blockHeight + blocks)) throw new Error("HEIGHT_ADVANCE_INVALID");
+    // v0.5.0: at most MAX_BLOCKS_PER_TICK per call outside test mode (an operator fast-forward
+    // moves every window at once; it is bounded per call and the producer then waits for real time).
+    if (blocks > MAX_BLOCKS_PER_TICK && !this.unboundedHeightAdvance) throw new Error(`HEIGHT_ADVANCE_CAP: at most ${MAX_BLOCKS_PER_TICK} blocks per call (testOnlyUnboundedHeightAdvance lifts it in tests)`);
     this.blockHeight += blocks;
     return this.blockHeight;
+  }
+
+  /** v0.5.0: true once a restore with `replaces: this` took over (advanceHeight then throws LEDGER_RETIRED). */
+  get isRetired(): boolean {
+    return this.retired;
   }
 
   stateRoot(): Fr {
@@ -483,9 +532,26 @@ export class UepLedger {
    * network) or a key-derived account id. Throws `ADDRESS_*` errors.
    */
   resolveAccount(accountOrAddress: Fr | string): Fr {
-    if (typeof accountOrAddress === "string") return parseAccountAddress(accountOrAddress, this.networkId);
-    if (!(accountOrAddress instanceof Fr) || !isKeyDerivedAccountId(accountOrAddress)) throw new Error("ADDRESS_VERSION: account id is not a v2 key-derived account");
-    return accountOrAddress;
+    const id = typeof accountOrAddress === "string" ? parseAccountAddress(accountOrAddress, this.networkId) : accountOrAddress;
+    if (!(id instanceof Fr) || !this.acceptsRecipient(id)) throw new Error("ADDRESS_VERSION: account id is not a v3 key-derived account or a proven v2 account");
+    return id;
+  }
+
+  /**
+   * v0.5.0: may `id` receive notes? A v3 id (version byte and 64-bit check)
+   * always; a v2-form id only once that account has proven its key, i.e. it
+   * is the sender of a committed spend whose revealed key hashes to it. A
+   * legacy H(secret, salt) id with the v2 byte can never get that proof.
+   * Derived from committed transactions only, so every replica agrees.
+   */
+  acceptsRecipient(id: Fr): boolean {
+    if (isKeyDerivedAccountId(id)) return true;
+    if (!isV2AccountIdForm(id)) return false;
+    for (; this.provenV2Scanned < this.txs.length; this.provenV2Scanned++) {
+      const t = this.txs[this.provenV2Scanned]!;
+      if (isV2AccountIdForm(t.senderId) && t.senderAuth && spendKeyMatchesAccount(t.senderAuth.publicKey, t.senderId)) this.provenV2.add(t.senderId.toHex());
+    }
+    return this.provenV2.has(id.toHex());
   }
 
   /**
@@ -1131,7 +1197,7 @@ export class UepLedger {
     }
     // Bind input and outputs to sender / recipient / amount / change (UEP-B03)
     // and the transaction nonce to the consumed note (UEP-C01).
-    const shapeError = checkSpendShape(tx, inputs, outputs);
+    const shapeError = checkSpendShape(tx, inputs, outputs, (id) => this.acceptsRecipient(id));
     if (shapeError) return { error: shapeError };
     if (outputs.some((o) => this.noteTree.indexOf(o.commitment) !== undefined)) {
       return { error: { code: "OUTPUT_BINDING", message: "Output note already exists on this ledger." } };
@@ -1240,7 +1306,7 @@ export class UepLedger {
     const ownerError = this.checkInputOwnerKeys(tx, resolved.inputs);
     if (ownerError) return { error: ownerError };
     // Same input/output binding rules as submit(), on the canonical inputs.
-    const shapeError = checkSpendShape(tx, resolved.inputs, outs);
+    const shapeError = checkSpendShape(tx, resolved.inputs, outs, (id) => this.acceptsRecipient(id));
     if (shapeError) return { error: shapeError };
     if (outs.some((o) => this.noteTree.indexOf(o.commitment) !== undefined)) return { error: { code: "OUTPUT_BINDING", message: "Pending output note already exists on this ledger." } };
     const membershipError = this.checkMembership(tx, resolved.inputs);
@@ -1351,7 +1417,7 @@ export class UepLedger {
    *     owner and signed it. There is no spend-key registry to trust.
    * A restored ledger can only sign snapshots or mint if `keys` are passed.
    */
-  static restore(data: UepLedgerSnapshot, trust: SnapshotTrust, keys: LedgerSigningKeys = {}): UepLedger {
+  static restore(data: UepLedgerSnapshot, trust: SnapshotTrust, keys: LedgerSigningKeys = {}, opts: RestoreOptions = {}): UepLedger {
     const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
     if (!data || typeof data !== "object") fail("SHAPE");
     // v0.5.0 (docs/COMPATIBILITY.md): older formats are migrated step by step
@@ -1474,6 +1540,15 @@ export class UepLedger {
     if (!Number.isSafeInteger(data.height) || data.height < 0 || !Number.isSafeInteger(data.lastReconcileAt) || data.lastReconcileAt < 0 || data.lastReconcileAt > data.height) fail("HEIGHT", "height must be a non-negative integer, at or above lastReconcileAt");
     l.lastReconcileAt = data.lastReconcileAt;
     l.blockHeight = data.height;
+    // v0.5.0: the height never goes backwards unless the operator forces a rollback.
+    if (opts.allowHeightRegression !== true) {
+      const floors: Array<[string, unknown]> = [["checkpoint", trust.checkpoint?.height], ["minHeight", opts.minHeight], ["replaced ledger", opts.replaces?.height]];
+      for (const [what, floor] of floors) {
+        if (floor === undefined) continue;
+        if (!Number.isSafeInteger(floor) || (floor as number) < 0) fail("HEIGHT", `${what} height is not a non-negative integer`);
+        if (data.height < (floor as number)) fail("HEIGHT_REGRESSION", `restored height ${data.height} is below the ${what} height ${floor}; pass allowHeightRegression to force a rollback`);
+      }
+    }
     const p = { ...(data.policy as any) };
     // Policy amounts may arrive as "<digits>n" strings when a snapshot was read with plain JSON.parse (same hash).
     for (const k of ["maxTransferAmount", "maxTransferPerWindow", "minFee"]) if (p[k] !== undefined) { try { p[k] = toPolicyBigint(p[k]); } catch { fail("POLICY", `${k} is not an amount`); } }
@@ -1497,7 +1572,8 @@ export class UepLedger {
       if (!openNote(n)) fail("NOTE_COMMITMENT");
       if (!n.nonce.eq(noteNonce(n.commitment, n.blinding))) fail("NOTE_NONCE");
       if (noteByCommitment.has(n.commitment.toHex())) fail("NOTE_DUPLICATE");
-      if (!isKeyDerivedAccountId(n.owner)) fail("NOTE_OWNER", "note owner is not a v2 key-derived account");
+      // v0.5.0: v3 ids, or the v2 form of state written v0.4.5 to v0.5.0 (grandfathered; its spends still need the key).
+      if (!isKeyDerivedOrV2Form(n.owner)) fail("NOTE_OWNER", "note owner is not a key-derived account");
       if (!findAssetByFr(l.networkId, n.assetId)) fail("NOTE_ASSET", "note asset is not registered on this network");
       noteByCommitment.set(n.commitment.toHex(), n);
     }
@@ -1624,7 +1700,13 @@ export class UepLedger {
     l.snapshotSequence = data.sequence;
     l.lastSnapshotHash = hash;
     l.restoredFrom = { formatVersion: sourceFormat as number, migrationSteps };
+    opts.replaces?.retire?.();
     return l;
+  }
+
+  /** v0.5.0: retire this ledger (called by restore(..., { replaces: this })); advanceHeight then throws LEDGER_RETIRED. */
+  retire(): void {
+    this.retired = true;
   }
 
   /**
@@ -1632,14 +1714,15 @@ export class UepLedger {
    * each snapshot must be signed per `trust`, directly follow its predecessor
    * and extend its predecessor's transaction and mint history.
    */
-  static restoreChain(snapshots: UepLedgerSnapshot[], trust: SnapshotTrust, keys: LedgerSigningKeys = {}): UepLedger {
+  static restoreChain(snapshots: UepLedgerSnapshot[], trust: SnapshotTrust, keys: LedgerSigningKeys = {}, opts: RestoreOptions = {}): UepLedger {
     if (!Array.isArray(snapshots) || snapshots.length === 0) throw new Error("INVALID_SNAPSHOT_CHAIN: empty chain");
     let restored: UepLedger | undefined;
     let prev: UepLedgerSnapshot | undefined;
     for (const [i, snap] of snapshots.entries()) {
       const linkTrust: SnapshotTrust = prev ? { ...trust, previousSnapshotHash: snapshotHash(prev), checkpoint: checkpointOf(prev) } : trust;
       if (prev && snap?.sequence !== prev.sequence + 1) throw new Error("INVALID_SNAPSHOT_CHAIN: sequence gap or reorder");
-      restored = UepLedger.restore(snap, linkTrust, i === snapshots.length - 1 ? keys : {});
+      const last = i === snapshots.length - 1;
+      restored = UepLedger.restore(snap, linkTrust, last ? keys : {}, last ? opts : { allowHeightRegression: opts.allowHeightRegression });
       prev = snap;
     }
     return restored!;

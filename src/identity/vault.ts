@@ -92,6 +92,9 @@ export async function unlockVault(pin: string): Promise<IdentitySecrets> {
   }
   const parsed = JSON.parse(new TextDecoder().decode(pt)) as { mnemonic: string; seed: string };
   const secrets = await deriveIdentity(fromB64(parsed.seed), parsed.mnemonic);
+  // v0.5.0: a vault created v0.4.5 to v0.5.0 stored the v2 id of the same key;
+  // it keeps working as that account (withAccountIdV2), new vaults store v3.
+  if (secrets.accountIdV2 && secrets.accountIdV2.toHex() === rec.accountId) return { ...secrets, accountId: secrets.accountIdV2 };
   if (secrets.accountId.toHex() !== rec.accountId) {
     // v0.4.5: account ids are key-derived (UEP-ADDR-002); vaults created earlier
     // stored the legacy H(secret, salt) id. The mnemonic still restores the

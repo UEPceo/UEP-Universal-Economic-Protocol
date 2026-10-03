@@ -31,6 +31,10 @@ export type HttpApiOptions = {
    * v0.5.0 (ADR 0002): height producer of the node's ledger (src/service/height-producer.ts).
    * listenUepHttpApi() starts it with the server and stops it when the server closes, so the
    * Marketplace windows behind the API pass in real time. Outside the transitions.
+   * Required (fail closed, HEIGHT_PRODUCER_REQUIRED) when the API serves a
+   * Marketplace whose height comes from an injected source: without a
+   * producer that height would stand still. Not needed for a Marketplace on
+   * a test-only local counter or the test-only millisecond clock.
    */
   heightProducer?: { start(): unknown; stop(): void };
 };
@@ -328,7 +332,19 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
   });
 }
 
+/** v0.5.0: does this API need a height producer to make progress? (A Marketplace on an injected height source.) */
+export function needsHeightProducer(api: HttpApiOptions["api"]): boolean {
+  const m = (api as { marketplace?: { timeUnit?: string; transitionClock?: { counter?: unknown } } }).marketplace;
+  return !!m && m.timeUnit === "height" && m.transitionClock?.counter === undefined;
+}
+
 export function listenUepHttpApi(opts: HttpApiOptions): Promise<{ server: Server; port: number }> {
+  if (!opts.heightProducer && needsHeightProducer(opts.api)) {
+    return Promise.reject(new Error("HEIGHT_PRODUCER_REQUIRED: the API serves a Marketplace on an injected height source; pass `heightProducer` (src/service/height-producer.ts) or the height stands still"));
+  }
+  if (opts.heightProducer && (typeof opts.heightProducer.start !== "function" || typeof opts.heightProducer.stop !== "function")) {
+    return Promise.reject(new Error("HEIGHT_PRODUCER_INVALID: heightProducer needs start() and stop()"));
+  }
   const server = createUepHttpApi(opts);
   const host = opts.host ?? "127.0.0.1";
   if (opts.heightProducer) {

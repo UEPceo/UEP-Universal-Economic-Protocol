@@ -16,7 +16,7 @@
 
 import { Fr } from "./field.ts";
 import { hLeaf, hNullifier } from "./hash.ts";
-import { accountIdFromSecrets } from "./spend-key.ts";
+import { accountIdsFromSecrets } from "./spend-key.ts";
 import {
   ACCOUNT_DEPTH,
   EMPTY_LEAF,
@@ -178,8 +178,9 @@ export function validateZkSpendInstance(
 
     // v0.4.5: senderId = key-derived account id of the spend key of (secret, salt).
     // A future circuit has to prove this binding (or the signature) in-circuit.
-    const expectId = accountIdFromSecrets(w.senderSecret, w.senderSalt);
-    if (!expectId.eq(pub.senderId)) {
+    // v0.5.0: the v3 id, or the v2 id of the same key for existing accounts.
+    const expectIds = accountIdsFromSecrets(w.senderSecret, w.senderSalt);
+    if (!expectIds.v3.eq(pub.senderId) && !expectIds.v2.eq(pub.senderId)) {
       errors.push("senderId != accountIdFromSpendKey(spendKey(secret, salt))");
     }
 

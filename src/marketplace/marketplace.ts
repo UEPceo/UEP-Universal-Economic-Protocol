@@ -6,6 +6,7 @@
  * and delegates marketplace fee accounting to MarketplaceTreasury.
  * Production payment/custody remains external until a real payment rail is wired.
  */
+import { testOnlyOption } from "../core/test-only.ts";
 import { createHash } from "node:crypto";
 import { MarketplaceReputation, type SellerReputation } from "./reputation.ts";
 import { contentHash, verifyContentHash } from "../service/content-hash.ts";
@@ -196,6 +197,8 @@ export type ServiceOrder = {
   windows: ContractWindows;
   /** v0.5.0: funded value counted against the attester set cap (set when the order is funded; 0n before and once closed). */
   evidenceLocked?: bigint;
+  /** v0.5.0: why an order closed for a system reason (no fault of either party; the deposit was returned). */
+  closeReason?: "EVIDENCE_CAP_FULL";
 };
 
 export type SettlementRecord = {
@@ -429,7 +432,8 @@ export class DigitalServicesMarketplace {
   readonly baseWindows: Readonly<Omit<ContractWindows, "domainDelay" | "referenceBlockTimeMs">> & { readonly readAuthorizationTtl: number; readonly listingWindow: number };
   /** v0.5.0: read-only view of the evidence attester sets and their funded open value. */
   readonly evidenceCaps: EvidenceCapsView;
-  private readonly evidence: EvidenceCaps;
+  // v0.5.0: an ECMAScript private field, so the caps cannot be locked or released through the instance at run time.
+  readonly #evidence: EvidenceCaps;
   private readonly listingAttempts = new Map<string, number[]>();
   private readonly orderIdempotency = new Map<string, string>();
   private readonly operationIdempotency = new Map<string, string>();
@@ -499,6 +503,8 @@ export class DigitalServicesMarketplace {
     this.deliveryValidator = config.deliveryValidator;
     this.paymaster = config.paymaster;
     if (this.paymaster && this.paymaster.clock.unit !== clock.unit) throw new Error("CLOCK_CONFIG_CONFLICT: the paymaster and the Marketplace must use the same time unit");
+    // v0.5.0: and the same height source (not only the unit): pass one function, e.g. heightOf(ledger), to both.
+    if (this.paymaster && !this.paymaster.clock.sameSourceAs(clock)) throw new Error("CLOCK_CONFIG_CONFLICT: the paymaster and the Marketplace must read the same height source (pass the same function, e.g. heightOf(ledger), to both)");
     this.adminIdentity = config.adminIdentity ?? "uep:marketplace-admin";
     if (this.adminIdentity === "marketplace-admin") throw new Error("LEGACY_ADMIN_ID_RESERVED");
     if ((RESERVED_IDENTITIES as readonly string[]).includes(this.adminIdentity)) throw new Error("LEGACY_ADMIN_ID_RESERVED");
@@ -525,7 +531,7 @@ export class DigitalServicesMarketplace {
     this.cancellationGraceMs = clock.toNominalMs(base.cancellationGrace);
     this.marketplaceId = config.marketplaceId ?? DEFAULT_MARKETPLACE_ID;
     this.ledgerNetworkId = config.ledgerNetworkId ?? TESTNET.networkId;
-    this.testOnlyAllowZeroReservationDeposit = config.testOnlyAllowZeroReservationDeposit === true;
+    this.testOnlyAllowZeroReservationDeposit = testOnlyOption("testOnlyAllowZeroReservationDeposit", config.testOnlyAllowZeroReservationDeposit);
     if (this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit >= 0n && this.fixedReservationDeposit < MIN_RESERVATION_DEPOSIT && !(this.testOnlyAllowZeroReservationDeposit && this.fixedReservationDeposit === 0n)) {
       throw new Error(`RESERVATION_DEPOSIT_BELOW_MINIMUM: reservationDeposit must be at least ${MIN_RESERVATION_DEPOSIT} (testOnlyAllowZeroReservationDeposit permits 0n in tests)`);
     }
@@ -538,8 +544,8 @@ export class DigitalServicesMarketplace {
       this.minReservationDepositByAsset.set(asset, min);
     }
     this.requireSignedCredits = config.requireSignedCredits === true;
-    this.evidence = new EvidenceCaps(config.evidence);
-    this.evidenceCaps = evidenceCapsView(this.evidence);
+    this.#evidence = new EvidenceCaps(config.evidence);
+    this.evidenceCaps = evidenceCapsView(this.#evidence);
   }
 
   /** v0.5.0: "height" (default) or the test-only "legacy-ms" clock. */
@@ -709,7 +715,7 @@ export class DigitalServicesMarketplace {
     // v0.5.0 (ADR 0002): the domain profile and the evidence terms are fixed here.
     if (input.domainProfile !== undefined && !isDomainProfileId(input.domainProfile)) throw new Error("DOMAIN_PROFILE_INVALID");
     const profile: DomainProfileId = input.domainProfile ?? DEFAULT_DOMAIN_PROFILE;
-    const evidencePolicy = input.evidencePolicy !== undefined ? this.evidence.assertListingPolicy(input.evidencePolicy, input.asset) : undefined;
+    const evidencePolicy = input.evidencePolicy !== undefined ? this.#evidence.assertListingPolicy(input.evidencePolicy, input.asset) : undefined;
     if (this.isReservedIdentity(input.providerId)) throw new Error("RESERVED_IDENTITY");
     if (!this.identities.has(input.providerId)) throw new Error("IDENTITY_NOT_REGISTERED");
     const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", signedTerms);
@@ -748,6 +754,8 @@ export class DigitalServicesMarketplace {
     for (const key of Object.keys(listing) as Array<keyof ServiceListing>) {
       if (key !== "available" && key !== "active") Object.defineProperty(listing, key, { writable: false, configurable: false });
     }
+    // v0.5.0: and no term can be added later (e.g. an evidencePolicy on a listing published without one).
+    Object.preventExtensions(listing);
     this.listings.set(listingId, listing);
     this.fingerprintIndex.set(fingerprint, listingId);
     const simIndex = this.similarityIndex.get(simKey) ?? new Map<string, Set<string>>();
@@ -820,7 +828,7 @@ export class DigitalServicesMarketplace {
     // only checked here (fail early) and taken when the order is funded, so unfunded
     // reservations cannot fill it.
     const evidenceValue = grossAmount + gasFee;
-    if (listing.evidencePolicy) this.evidence.checkLock(listing.evidencePolicy, listing.asset, evidenceValue);
+    if (listing.evidencePolicy) this.#evidence.checkLock(listing.evidencePolicy, listing.asset, evidenceValue, listing.providerId);
     listing.available -= input.quantity;
     this.accounts.add(listing.asset, input.buyerId, -deposit);
     this.locked.add(listing.asset, input.buyerId, deposit);
@@ -846,8 +854,10 @@ export class DigitalServicesMarketplace {
       updatedAt: now,
       reservationExpiresAt: now + listing.windows.reservationTtl,
       domainProfile: listing.domainProfile,
-      windows: { ...listing.windows },
+      windows: Object.freeze({ ...listing.windows }),
     };
+    // v0.5.0: the contract windows of an order are fixed at reserve() (not writable, frozen).
+    Object.defineProperty(order, "windows", { enumerable: true, writable: false, configurable: false });
     this.orders.set(orderId, order);
     this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
     this.enqueueReservation(order);
@@ -906,8 +916,21 @@ export class DigitalServicesMarketplace {
     // v0.5.0 (ADR 0002 rule 6): funded value is what counts against the attester set cap.
     const evidencePolicy = this.listing(order.listingId).evidencePolicy;
     const evidenceValue = order.grossAmount + (order.gasFee ?? 0n);
-    if (evidencePolicy) this.evidence.lock(evidencePolicy, order.asset, evidenceValue);
-    if (evidencePolicy) order.evidenceLocked = evidenceValue;
+    if (evidencePolicy) {
+      try {
+        this.#evidence.checkLock(evidencePolicy, order.asset, evidenceValue, order.providerId);
+      } catch (e) {
+        // A full set or provider cap is a system reason, not the buyer's fault: the
+        // reservation closes without fault and the deposit is returned (nothing else moved).
+        const code = (e as Error).message;
+        if (code !== "EVIDENCE_ATTESTER_SET_CAP_EXCEEDED" && code !== "EVIDENCE_PROVIDER_CAP_EXCEEDED") throw e;
+        this.closeOrder(order, "CANCELLED", false);
+        order.closeReason = "EVIDENCE_CAP_FULL";
+        throw new Error(`${code}: funding refused because the evidence cap is full; the reservation was closed without fault and the deposit returned`);
+      }
+      this.#evidence.lock(evidencePolicy, order.asset, evidenceValue, order.providerId);
+      order.evidenceLocked = evidenceValue;
+    }
     this.accounts.add(order.asset, order.buyerId, -amount);
     this.locked.add(order.asset, order.buyerId, -order.depositLocked);
     this.held.add(order.asset, order.buyerId, amount + order.depositLocked);
@@ -1161,7 +1184,12 @@ export class DigitalServicesMarketplace {
     // first listing: attaching later would change the terms of existing listings and orders.
     for (const listing of this.listings.values()) if (listing.category === category) throw new Error("CATEGORY_SERVICE_IN_USE");
     for (const order of this.orders.values()) if (this.listings.get(order.listingId)?.category === category) throw new Error("CATEGORY_SERVICE_IN_USE");
-    this.categoryServices.set(category, hooks);
+    // v0.5.0: copy and freeze the hooks, so mutating the caller's object later cannot change
+    // how open orders settle (each hook is read once, here).
+    if (!hooks || typeof hooks !== "object") throw new Error("CATEGORY_HOOKS_INVALID");
+    const { settlementGuard, consumedUnits } = hooks;
+    if ((settlementGuard !== undefined && typeof settlementGuard !== "function") || (consumedUnits !== undefined && typeof consumedUnits !== "function")) throw new Error("CATEGORY_HOOKS_INVALID");
+    this.categoryServices.set(category, Object.freeze({ settlementGuard, consumedUnits }));
     return {
       readOrder: (orderId: string) => {
         const order = this.order(orderId);
@@ -1180,7 +1208,7 @@ export class DigitalServicesMarketplace {
   private runSettlementGuard(order: ServiceOrder): void {
     // v0.5.0 (ADR 0002 rule 6): an evidence-gated release never moves more than the per-contract cap.
     const policy = this.listing(order.listingId).evidencePolicy;
-    if (policy) this.evidence.checkSettlement(policy, order.grossAmount + (order.gasFee ?? 0n));
+    if (policy) this.#evidence.checkSettlement(policy, order.grossAmount + (order.gasFee ?? 0n));
     const category = this.listing(order.listingId).category;
     const hooks = this.categoryServices.get(category);
     // IoT / M2M orders settle only against verified telemetry: no attached IoT service, no normal release.
@@ -1500,7 +1528,7 @@ export class DigitalServicesMarketplace {
   private releaseEvidence(order: ServiceOrder): void {
     if (!order.evidenceLocked) return;
     const policy = this.listing(order.listingId).evidencePolicy;
-    if (policy) this.evidence.release(policy.attesterSetId, order.asset, order.evidenceLocked);
+    if (policy) this.#evidence.release(policy.attesterSetId, order.asset, order.evidenceLocked, order.providerId);
     order.evidenceLocked = 0n;
   }
 

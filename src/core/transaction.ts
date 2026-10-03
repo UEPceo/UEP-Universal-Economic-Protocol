@@ -2,9 +2,9 @@
  * UepTransaction bound to UEP-25 public-input contract + UEP-009 lifecycle.
  * Status: IMPLEMENTED / TESTED
  */
-import { Fr } from "./field.ts";
+import { BN254_FR_MODULUS, Fr } from "./field.ts";
 import { canonicalTxCommitment, encodeStringToFr, u64ToFr } from "./encoding.ts";
-import { accountIdFromSecrets } from "./spend-key.ts";
+import { accountIdsFromSecrets } from "./spend-key.ts";
 import type { SpendProof } from "./spend-proof.ts";
 import type { Note } from "./note.ts";
 import { serializeNote, deserializeNote } from "./note.ts";
@@ -90,19 +90,33 @@ export function txIdFromCommitment(commitment: Fr, nullifier: Fr): Fr {
   return canonicalTxCommitment([commitment, nullifier]);
 }
 
-/** v0.4.5: the secrets control `senderId` iff their spend key hashes to it. */
+/**
+ * v0.4.5: the secrets control `senderId` iff their spend key hashes to it.
+ * v0.5.0: the v3 id or the v2 id of that key (existing accounts).
+ */
 export function verifyOwnership(secret: Fr, salt: Fr, senderId: Fr): boolean {
-  return accountIdFromSecrets(secret, salt).eq(senderId);
+  const ids = accountIdsFromSecrets(secret, salt);
+  return ids.v3.eq(senderId) || ids.v2.eq(senderId);
 }
 
 type SerializedNote = ReturnType<typeof serializeNote>;
 
+/** v0.5.0: canonical field element only (0 <= v < r); a value that Fr would silently reduce is refused. */
+function canonicalFr(n: bigint): string {
+  if (n < 0n || n >= BN254_FR_MODULUS) throw new Error("TX_NOTE_INVALID: field element is not canonical");
+  return new Fr(n).toHex();
+}
+
 function frHex(v: unknown): string {
   if (v instanceof Fr) return v.toHex();
-  if (typeof v === "string") return new Fr(v).toHex();
-  if (typeof v === "bigint") return new Fr(v).toHex();
+  if (typeof v === "string") {
+    const hex = v.startsWith("0x") || v.startsWith("0X") ? v.slice(2) : v;
+    if (!/^[0-9a-fA-F]{1,64}$/.test(hex)) throw new Error("TX_NOTE_INVALID");
+    return canonicalFr(BigInt("0x" + hex));
+  }
+  if (typeof v === "bigint") return canonicalFr(v);
   // A Fr that went through a JSON codec that keeps bigints: { n: <bigint> }.
-  if (v && typeof v === "object" && typeof (v as { n?: unknown }).n === "bigint") return new Fr((v as { n: bigint }).n).toHex();
+  if (v && typeof v === "object" && typeof (v as { n?: unknown }).n === "bigint") return canonicalFr((v as { n: bigint }).n);
   throw new Error("TX_NOTE_INVALID");
 }
 
@@ -118,6 +132,7 @@ export function canonicalSerializedNote(note: unknown): SerializedNote {
   const n = note as Record<string, unknown>;
   const amount = typeof n.amount === "bigint" ? n.amount.toString() : typeof n.amount === "string" && /^(0|[1-9][0-9]*)$/.test(n.amount) ? n.amount : undefined;
   if (amount === undefined) throw new Error("TX_NOTE_INVALID");
+  if (n.spent !== undefined && typeof n.spent !== "boolean") throw new Error("TX_NOTE_INVALID: spent is a boolean");
   return {
     assetId: frHex(n.assetId),
     amount,

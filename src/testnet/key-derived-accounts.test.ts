@@ -1,5 +1,6 @@
 /**
- * v0.4.5: key-derived accounts and v2 addresses (UEP-ADDR-002).
+ * v0.4.5: key-derived accounts and addresses (UEP-ADDR-002); v0.5.0: v3 ids
+ * with a 64-bit check, v2 ids kept for existing accounts.
  * Note owners commit to an Ed25519 spend key; spends reveal the key and sign,
  * so any replica verifies ownership without a spend-key registry.
  */
@@ -10,7 +11,12 @@ import { encodeStringToFr } from "../core/encoding.ts";
 import { hAccount } from "../core/hash.ts";
 import { makeNote, serializeNote, deserializeNote } from "../core/note.ts";
 import { computeTxCommitment, txIdFromCommitment, serializeTx, type UepTransaction } from "../core/transaction.ts";
-import { ACCOUNT_ID_VERSION, accountIdFromSpendKey, isKeyDerivedAccountId, signSenderAuth, spendKeyHash } from "../core/spend-key.ts";
+import fs from "node:fs";
+import path from "node:path";
+import { ACCOUNT_ID_VERSION, ACCOUNT_ID_VERSION_V2, accountIdFormat, accountIdFromSpendKey, accountIdFromSpendKeyV2, accountIdsFromSecrets, isKeyDerivedAccountId, isV2AccountIdForm, signSenderAuth, spendKeyBodyV3, spendKeyHashV2, spendKeyMatchesAccount } from "../core/spend-key.ts";
+import { verifyOwnership } from "../core/transaction.ts";
+import { withAccountIdV2 } from "../identity/kdf.ts";
+import { snapshotFromJSON } from "./snapshot-json.ts";
 import { ADDRESS_HRP, addressFromSpendKey, addressNetworkTag, bech32mEncode, decodeAccountAddress, encodeAccountAddress, isValidBech32m, parseAccountAddress, UepAddressV1 } from "../core/address.ts";
 import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
@@ -27,6 +33,16 @@ const EUR = "uep-test/teur";
 const asset = encodeStringToFr(EUR);
 
 const identity = async () => identityFromMnemonic(await generateMnemonic(128));
+/**
+ * Fixed legacy H(secret, salt) ids, so every check below is deterministic:
+ * LEGACY_V2_BYTE has the v2 version byte 0x02 (v2-era code took it for a
+ * key-derived id), LEGACY_V3_BYTE has the v3 byte 0x03 (its check fails),
+ * LEGACY_OTHER has neither.
+ */
+const LEGACY_V2_BYTE = hAccount(new Fr(21n), new Fr(7n));
+const LEGACY_V3_BYTE = hAccount(new Fr(4n), new Fr(7n));
+const LEGACY_OTHER = hAccount(new Fr(39n), new Fr(7n));
+const topByte = (id: Fr) => Number(id.n >> 248n);
 const ledger = (extra: { testOnlyDisableProof?: boolean } = {}) => new UepLedger({ networkId: NET, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey, ...extra });
 const resign = (snap: UepLedgerSnapshot) => signSnapshot(snap, [SNAPSHOT_KEY.privateKey]);
 const code = (r: { error: { code: string } } | { tx: unknown }) => ("error" in r ? r.error.code : "OK");
@@ -48,28 +64,74 @@ function recrafted(base: UepTransaction, signer: IdentitySecrets, fields: { send
 
 // ---------------------------------------------------------------- address format
 
-test("address v2: key-derived account id and checksummed, versioned, network-bound encoding", async () => {
+test("account id v3: version byte, 64-bit check, and v2 id of the same key", async () => {
   const a = await identity();
   assert.ok(isKeyDerivedAccountId(a.accountId));
-  assert.equal(a.accountId.n >> 248n, BigInt(ACCOUNT_ID_VERSION));
+  assert.equal(topByte(a.accountId), ACCOUNT_ID_VERSION);
+  assert.equal(ACCOUNT_ID_VERSION, 0x03);
   assert.ok(accountIdFromSpendKey(a.spendPublicKey).eq(a.accountId));
-  // The id is 0x02 || 31-byte key hash: a canonical field element (no reduction).
-  assert.equal(a.accountId.toHex().slice(2), spendKeyHash(a.spendPublicKey).toString("hex"));
+  // The id is 0x03 || 23-byte key hash || 8-byte check: a canonical field element (no reduction).
+  assert.equal(a.accountId.toHex().slice(2), spendKeyBodyV3(a.spendPublicKey).toString("hex"));
+  // The v2 id of the same key: 0x02 || 31-byte key hash.
+  const v2 = accountIdFromSpendKeyV2(a.spendPublicKey);
+  assert.equal(topByte(v2), ACCOUNT_ID_VERSION_V2);
+  assert.equal(v2.toHex().slice(2), spendKeyHashV2(a.spendPublicKey).toString("hex"));
+  assert.ok(a.accountIdV2!.eq(v2));
+  assert.ok(!isKeyDerivedAccountId(v2) && isV2AccountIdForm(v2));
+  assert.deepEqual([accountIdFormat(a.accountId), accountIdFormat(v2), accountIdFormat(LEGACY_OTHER)], ["v3", "v2-form", "legacy"]);
+  // Both ids belong to the key, and to nobody else's key.
+  const b = await identity();
+  assert.ok(spendKeyMatchesAccount(a.spendPublicKey, a.accountId) && spendKeyMatchesAccount(a.spendPublicKey, v2));
+  assert.ok(!spendKeyMatchesAccount(b.spendPublicKey, a.accountId) && !spendKeyMatchesAccount(b.spendPublicKey, v2));
+  assert.ok(verifyOwnership(a.secret, a.salt, a.accountId) && verifyOwnership(a.secret, a.salt, v2));
+  assert.ok(!verifyOwnership(b.secret, b.salt, a.accountId) && !verifyOwnership(b.secret, b.salt, v2));
+  assert.ok(withAccountIdV2(a).accountId.eq(v2));
+  const ids = accountIdsFromSecrets(a.secret, a.salt);
+  assert.ok(ids.v3.eq(a.accountId) && ids.v2.eq(v2));
+  // Flipping any bit of the key hash or of the check breaks the check.
+  for (const bit of [0n, 1n, 63n, 64n, 100n, 183n, 247n]) assert.ok(!isKeyDerivedAccountId(new Fr(a.accountId.n ^ (1n << bit))), `bit ${bit}`);
+});
+
+test("account id v3: fixed legacy ids are never classified as key-derived", () => {
+  assert.equal(topByte(LEGACY_V2_BYTE), 0x02);
+  assert.equal(topByte(LEGACY_V3_BYTE), 0x03);
+  for (const id of [LEGACY_V2_BYTE, LEGACY_V3_BYTE, LEGACY_OTHER]) assert.ok(!isKeyDerivedAccountId(id), id.toHex());
+  // 4,000 fixed legacy ids: about 1 in 48 has the v2 byte (what v2-era code
+  // accepted), none passes the v3 check (expected false positives: 4000 * 2^-69.6).
+  let v2Form = 0; let v3Byte = 0; let v3Valid = 0;
+  for (let i = 1n; i <= 4000n; i++) {
+    const id = hAccount(new Fr(i), new Fr(0x5eedn));
+    if (isV2AccountIdForm(id)) v2Form++;
+    if (topByte(id) === 0x03) v3Byte++;
+    if (isKeyDerivedAccountId(id)) v3Valid++;
+  }
+  assert.ok(v2Form > 0 && v3Byte > 0, `fixed sample has ${v2Form} v2-byte and ${v3Byte} v3-byte ids`);
+  assert.equal(v3Valid, 0);
+});
+
+test("address v3: checksummed, versioned, network-bound encoding", async () => {
+  const a = await identity();
   const addr = addressFromSpendKey(NET, a.spendPublicKey);
   assert.equal(addr, encodeAccountAddress(NET, a.accountId));
   assert.match(addr, /^uep1[02-9ac-hj-np-z]{64}$/);
   assert.equal(addr.length, 68);
   assert.ok(isValidBech32m(addr));
   const d = decodeAccountAddress(addr, NET);
-  assert.ok(d.ok && d.version === 2 && d.accountId.eq(a.accountId) && d.networkTag === addressNetworkTag(NET));
+  assert.ok(d.ok && d.version === 3 && d.accountId.eq(a.accountId) && d.networkTag === addressNetworkTag(NET));
   assert.ok(parseAccountAddress(addr.toUpperCase(), NET).eq(a.accountId)); // all-uppercase is valid Bech32m
-  // Legacy H(secret, salt) ids are not key-derived and cannot be encoded.
+  // The v2 address of the same key still decodes, to the v2 id.
+  const v2Addr = encodeAccountAddress(NET, a.accountIdV2!);
+  assert.equal(v2Addr.length, 68);
+  const d2 = decodeAccountAddress(v2Addr, NET);
+  assert.ok(d2.ok && d2.version === 2 && d2.accountId.eq(a.accountIdV2!));
+  // Legacy H(secret, salt) ids without the v2 byte cannot be encoded.
   assert.ok(!isKeyDerivedAccountId(hAccount(a.secret, a.salt)));
-  assert.throws(() => encodeAccountAddress(NET, hAccount(a.secret, a.salt)), /ADDRESS_VERSION/);
+  assert.throws(() => encodeAccountAddress(NET, LEGACY_OTHER), /ADDRESS_VERSION/);
+  assert.throws(() => encodeAccountAddress(NET, LEGACY_V3_BYTE), /ADDRESS_VERSION/);
   assert.throws(() => UepAddressV1.encode(NET, a.accountId), /ADDRESS_LEGACY_V1/);
 });
 
-test("address v2: checksum, version, HRP, network, case and legacy errors", async () => {
+test("address v3: checksum, id check, version, HRP, network, case and legacy errors", async () => {
   const a = await identity();
   const addr = encodeAccountAddress(NET, a.accountId);
   const err = (s: string, net: string | undefined = NET) => { const r = decodeAccountAddress(s, net); return r.ok ? "OK" : r.code; };
@@ -82,10 +144,15 @@ test("address v2: checksum, version, HRP, network, case and legacy errors", asyn
   let t = 30;
   while (addr[t] === addr[t + 1]) t++;
   assert.equal(err(addr.slice(0, t) + addr[t + 1] + addr[t] + addr.slice(t + 2)), "ADDRESS_CHECKSUM");
-  // Correct checksum, unsupported version byte.
-  const payload = Buffer.from([0x02, ...Buffer.from(addressNetworkTag(NET), "hex"), ...Buffer.from(a.accountId.toHex().slice(2), "hex")]);
+  // Correct Bech32m checksum, unsupported version byte or broken id check.
+  const payload = Buffer.from([0x03, ...Buffer.from(addressNetworkTag(NET), "hex"), ...Buffer.from(a.accountId.toHex().slice(2), "hex")]);
   assert.equal(bech32mEncode(ADDRESS_HRP, payload), addr);
-  assert.equal(err(bech32mEncode(ADDRESS_HRP, Buffer.from([0x03, ...payload.subarray(1)]))), "ADDRESS_VERSION");
+  assert.equal(err(bech32mEncode(ADDRESS_HRP, Buffer.from([0x04, ...payload.subarray(1)]))), "ADDRESS_VERSION");
+  assert.equal(err(bech32mEncode(ADDRESS_HRP, Buffer.from([0x01, ...payload.subarray(1)]))), "ADDRESS_VERSION");
+  const badCheck = Buffer.from(payload); badCheck[35] ^= 0x01;
+  assert.equal(err(bech32mEncode(ADDRESS_HRP, badCheck)), "ADDRESS_ID_CHECK");
+  const badHash = Buffer.from(payload); badHash[10] ^= 0x80;
+  assert.equal(err(bech32mEncode(ADDRESS_HRP, badHash)), "ADDRESS_ID_CHECK");
   assert.equal(err(bech32mEncode(ADDRESS_HRP, payload.subarray(0, 30))), "ADDRESS_LENGTH");
   assert.equal(err(bech32mEncode("btc", payload)), "ADDRESS_HRP");
   assert.equal(err(encodeAccountAddress("uep-global-1", a.accountId)), "ADDRESS_NETWORK");
@@ -97,7 +164,7 @@ test("address v2: checksum, version, HRP, network, case and legacy errors", asyn
   for (const v of ["abc1rzg", "1p2gdwpf", "a1lqfn3q", "M1VUXWEZ"]) assert.ok(!isValidBech32m(v), v);
 });
 
-test("ledger: faucet and spends accept v2 addresses and refuse invalid or legacy accounts", async () => {
+test("ledger: faucet and spends accept v3 addresses and refuse invalid, legacy or unproven v2 accounts", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
   const bAddr = l.addressOf(b.accountId);
@@ -105,9 +172,13 @@ test("ledger: faucet and spends accept v2 addresses and refuse invalid or legacy
   assert.throws(() => l.faucet(hAccount(a.secret, a.salt), EUR, 1n), /FAUCET_ACCOUNT_INVALID/);
   assert.throws(() => l.faucet(`uep:${NET}:${a.accountId.toHex()}`, EUR, 1n), /FAUCET_ACCOUNT_INVALID: ADDRESS_LEGACY_V1/);
   const flipped = bAddr.slice(0, 30) + (bAddr[30] === "q" ? "p" : "q") + bAddr.slice(31);
-  for (const bad of [flipped, encodeAccountAddress("uep-global-1", b.accountId), hAccount(b.secret, b.salt)]) {
+  // A legacy id with the v2 byte (accepted by v2-era code), as an id or as a v2 address, is refused.
+  assert.throws(() => l.faucet(LEGACY_V2_BYTE, EUR, 1n), /FAUCET_ACCOUNT_INVALID/);
+  for (const bad of [flipped, encodeAccountAddress("uep-global-1", b.accountId), hAccount(b.secret, b.salt), LEGACY_V2_BYTE, LEGACY_V3_BYTE, LEGACY_OTHER, encodeAccountAddress(NET, LEGACY_V2_BYTE), b.accountIdV2!, encodeAccountAddress(NET, b.accountIdV2!)]) {
     assert.equal(code(l.prepareSpend(a, bad, EUR, 100n)), "INVALID_ADDRESS");
+    assert.equal(code(l.preparePayment(a, bad, EUR, 100n) as never), "INVALID_ADDRESS");
   }
+  assert.ok(!l.acceptsRecipient(LEGACY_V2_BYTE) && !l.acceptsRecipient(b.accountIdV2!) && l.acceptsRecipient(b.accountId));
   assert.equal(code(l.prepareSpend(a, TREASURY_ID, EUR, 100n)), "INVALID_PARTICIPANTS");
   // Honest spend to an address string; value is conserved across restore.
   const tx = prepared(l, a, bAddr, 1_000n);
@@ -180,8 +251,32 @@ test("restore: a key/owner mismatch in committed history or a non-key-derived no
   const stripped = structuredClone(snap) as any;
   stripped.txs[0].senderAuth = { publicKey: a.spendPublicKey, signature: "00".repeat(64) };
   assert.throws(() => UepLedger.restore(resign(stripped), TRUST), /INVALID_SNAPSHOT_TX_SENDER/);
-  // A note whose owner is a legacy H(secret, salt) id.
-  const legacy = structuredClone(snap) as any;
-  legacy.notes.push(serializeNote(makeNote(hAccount(a.secret, a.salt), asset, 5n, new Fr(77n))));
-  assert.throws(() => UepLedger.restore(resign(legacy), TRUST, NODE_KEYS), /INVALID_SNAPSHOT_NOTE_OWNER/);
+  // A note whose owner is a legacy H(secret, salt) id (fixed: neither version byte).
+  for (const owner of [LEGACY_OTHER, LEGACY_V3_BYTE]) {
+    const legacy = structuredClone(snap) as any;
+    legacy.notes.push(serializeNote(makeNote(owner, asset, 5n, new Fr(77n))));
+    assert.throws(() => UepLedger.restore(resign(legacy), TRUST, NODE_KEYS), /INVALID_SNAPSHOT_NOTE_OWNER/);
+  }
+});
+
+// ---------------------------------------------------------------- v2 accounts (existing state)
+
+const FIXTURE = path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures", "snapshots", "v7-v0.5.0-evidence-time.json");
+
+test("v2 accounts: existing ids keep working; an unproven v2-form id is not a recipient", async () => {
+  const fx = snapshotFromJSON<{ trust: typeof TRUST; accounts: { alice: string; bob: string }; chain: UepLedgerSnapshot[] }>(fs.readFileSync(FIXTURE, "utf8"));
+  const alice = new Fr(BigInt("0x" + fx.accounts.alice)); const bob = new Fr(BigInt("0x" + fx.accounts.bob));
+  assert.ok(isV2AccountIdForm(alice) && isV2AccountIdForm(bob) && !isKeyDerivedAccountId(alice));
+  // First snapshot: alice has spent (key proven), bob has only received.
+  const first = UepLedger.restoreChain(fx.chain.slice(0, 1), fx.trust);
+  assert.ok(first.acceptsRecipient(alice));
+  assert.ok(!first.acceptsRecipient(bob));
+  // Full chain: bob has spent too; both v2 ids and their v2 addresses are recipients.
+  const full = UepLedger.restoreChain(fx.chain, fx.trust);
+  assert.ok(full.acceptsRecipient(alice) && full.acceptsRecipient(bob));
+  assert.ok(full.resolveAccount(full.addressOf(bob)).eq(bob));
+  assert.ok(!full.acceptsRecipient(LEGACY_V2_BYTE));
+  // A spend from a v2 sender after restore is the fixture's post-migration spend (snapshot-fixtures.test.ts).
+  const c = await identity();
+  assert.ok(full.acceptsRecipient(c.accountId));
 });

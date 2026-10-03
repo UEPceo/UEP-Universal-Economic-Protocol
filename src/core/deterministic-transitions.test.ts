@@ -15,19 +15,24 @@ test("determinism lint: transition paths have no clock reads or external calls o
   for (const f of ["src/marketplace/marketplace.ts", "src/testnet/ledger.ts", "src/core/security-policy.ts", "src/service/iot-m2m.ts", "src/marketplace/evidence.ts"]) assert.ok(files.includes(f), f);
 });
 
-test("determinism lint: every allowlist entry is justified; outside tests only the two key generators, line-scoped", () => {
-  assert.ok(ALLOWLIST.length <= 5);
+test("determinism lint: every allowlist entry is justified; outside tests only the two key generators and the NODE_ENV guard, line-scoped", () => {
+  assert.ok(ALLOWLIST.length <= 7);
   const nonTest: string[] = [];
   for (const a of ALLOWLIST as Array<{ file: string; rule: string; reason: string; match?: string[] }>) {
     assert.ok(a.reason.length > 40, a.file);
     assert.ok((RULES as Array<{ id: string }>).some((r) => r.id === a.rule));
     if (/\.test\.ts$/.test(a.file)) continue;
     nonTest.push(a.file);
-    assert.equal(a.rule, "randomness", a.file);
     assert.ok(a.match && a.match.length > 0, `${a.file} must be limited to specific lines`);
+    if (a.file === "src/core/test-only.ts") {
+      assert.equal(a.rule, "process-state");
+      assert.deepEqual(a.match, ['process.env.NODE_ENV === "production"']);
+      continue;
+    }
+    assert.equal(a.rule, "randomness", a.file);
     assert.match(a.reason, /poisoned-clock\.test\.ts/);
   }
-  assert.deepEqual(nonTest.sort(), ["src/core/ed25519.ts", "src/service/iot-m2m.ts"]);
+  assert.deepEqual(nonTest.sort(), ["src/core/ed25519.ts", "src/core/test-only.ts", "src/service/iot-m2m.ts"]);
   // A line-scoped entry does not cover another randomness call in the same file.
   const ed = checkRepository(undefined, { "src/core/ed25519.ts": 'import { randomBytes } from "node:crypto";\nexport const r = () => randomBytes(8);\n' });
   assert.ok(ed.violations.some((v: { file: string; rule: string }) => v.file === "src/core/ed25519.ts" && v.rule === "randomness"));
@@ -74,6 +79,19 @@ test("determinism lint: detects each forbidden pattern and ignores comments and 
     ["const x = new Function('return Date.now()');", "dynamic-code"],
     ["const name = 'node:' + 'http'; await import(name);", "dynamic-import"],
     ["await import(`node:${'http'}`);", "dynamic-import"],
+    // Second review: key agreement, process resources, scheduling- and GC-dependent APIs, Date as a function.
+    ["const e = createECDH('prime256v1'); e.generateKeys();", "randomness"],
+    ["const dh = createDiffieHellman(512);", "randomness"],
+    ["const dh = getDiffieHellman('modp14');", "randomness"],
+    ["const m = process.memoryUsage();", "process-state"],
+    ["const c = process.cpuUsage();", "process-state"],
+    ["Atomics.wait(view, 0, 0, 10);", "nondeterministic-runtime"],
+    ["const w = new WeakRef(obj); w.deref();", "nondeterministic-runtime"],
+    ["const f = new FinalizationRegistry(() => 1);", "nondeterministic-runtime"],
+    ["const s = Date(0);", "date-ref"],
+    ["const n = Object.getPrototypeOf(Date).now();", "date-ref"],
+    ["const n = new Date(0).constructor.now();", "new-date"],
+    ["const o = performance.timeOrigin;", "performance-ref"],
   ];
   for (const [src, rule] of cases) {
     const found = scanSource(src);
@@ -107,4 +125,30 @@ test("determinism lint: transition code cannot import a helper outside the scann
   assert.equal(reExport.violations.filter((v: { file: string; rule: string }) => v.file === "src/marketplace/evidence.ts" && v.rule === "import-closure").length, 2);
   const typeOnly = checkRepository(undefined, { "src/marketplace/evidence.ts": 'import type { X } from "../agent/clock-helper.ts";\nexport type Y = X;\n' });
   assert.ok(!typeOnly.violations.some((v: { rule: string }) => v.rule === "import-closure"));
+});
+
+test("determinism lint: the import closure is checked per statement and refuses non-relative specifiers", () => {
+  const closure = (src: string, file = "src/marketplace/evidence.ts") =>
+    checkRepository(undefined, { [file]: src }).violations.filter((v: { file: string; rule: string }) => v.file === file && v.rule === "import-closure").length;
+  const evasions = [
+    'import type { X } from "./evidence-types.ts"; import { wallNow } from "../agent/x.ts";', // two statements on one line
+    'import { now } from "uep-clock";', // npm specifier
+    'import { now } from "file:///tmp/clock.mjs";',
+    'import { now } from "/tmp/clock.mjs";',
+    'import { now } from "#clock";',
+    "const m = await import(`../agent/x.ts`);", // template literal without substitutions
+    'import "../agent/side-effect.ts";', // side-effect import
+    'import { type A, now } from "../agent/x.ts";', // inline type modifier: still a value import
+    'import os from "node:os";',
+    'import { createHash } from "crypto";', // bare builtin without node:
+    'const r = require("../agent/x.ts");',
+    'export * as clock from "../agent/x.ts";',
+  ];
+  for (const src of evasions) assert.ok(closure(src) >= 1, src);
+  // Allowed: scanned relative files, node:crypto, type-only imports, strings that only look like specifiers.
+  for (const src of ['import { Fr } from "../core/field.ts";', 'import { createHash } from "node:crypto";', 'import type { X } from "../agent/x.ts";', 'export const s = "../agent/x.ts";', 'const t = `from "../agent/x.ts"`;']) assert.equal(closure(src), 0, src);
+  // Tests may import relative helpers outside the scanned paths, but not npm, file: or absolute specifiers.
+  assert.equal(closure('import { x } from "../../scripts/poisoned-clock.mjs";', "src/marketplace/evidence-caps.test.ts"), 0);
+  assert.equal(closure('import { x } from "uep-clock";', "src/marketplace/evidence-caps.test.ts"), 1);
+  assert.equal(closure('import { x } from "file:///tmp/x.mjs";', "src/marketplace/evidence-caps.test.ts"), 1);
 });

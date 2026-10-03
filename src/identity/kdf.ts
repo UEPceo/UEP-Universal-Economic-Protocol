@@ -6,7 +6,7 @@
  * Status: IMPLEMENTED (Web Crypto). Android analog: Android Keystore.
  */
 import { Fr } from "../core/field.ts";
-import { accountIdFromSpendKey, deriveSpendKey } from "../core/spend-key.ts";
+import { accountIdFromSpendKey, accountIdFromSpendKeyV2, deriveSpendKey } from "../core/spend-key.ts";
 
 const te = new TextEncoder();
 
@@ -84,7 +84,18 @@ export type IdentitySecrets = {
   accountId: Fr;
   /** v0.4.5: hex SPKI DER Ed25519 spend public key that `accountId` commits to. */
   spendPublicKey: string;
+  /**
+   * v0.5.0: the v2 id of the same spend key (accounts created v0.4.5 to
+   * v0.5.0). `accountId` is the v3 id for new identities; withAccountIdV2()
+   * selects the v2 id to spend notes still held there.
+   */
+  accountIdV2?: Fr;
 };
+
+/** The same identity acting as its v2 account (to spend notes of an existing v2 account). */
+export function withAccountIdV2(secrets: IdentitySecrets): IdentitySecrets {
+  return { ...secrets, accountId: secrets.accountIdV2 ?? accountIdFromSpendKeyV2(secrets.spendPublicKey) };
+}
 
 export async function deriveIdentity(seed: Uint8Array, mnemonic: string): Promise<IdentitySecrets> {
   const secretBytes = await hmacSha256(seed, te.encode("UEP v0.1 account secret"));
@@ -93,7 +104,8 @@ export async function deriveIdentity(seed: Uint8Array, mnemonic: string): Promis
   const salt = Fr.fromBytesBE(saltBytes);
   const spendPublicKey = deriveSpendKey(secret, salt).publicKeyHex;
   const accountId = accountIdFromSpendKey(spendPublicKey);
-  return { mnemonic, seed, secret, salt, accountId, spendPublicKey };
+  const accountIdV2 = accountIdFromSpendKeyV2(spendPublicKey);
+  return { mnemonic, seed, secret, salt, accountId, spendPublicKey, accountIdV2 };
 }
 
 export const PIN_ITERATIONS = 100_000;

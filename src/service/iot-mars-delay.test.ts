@@ -27,7 +27,7 @@ type Outcome = string;
 
 /** Height mode: the Marketplace and the IoT service read the single-node testnet's height. */
 function runHeights(profile: DomainProfileId | undefined, delayHeights: number, beforeObserve = 0): Outcome {
-  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, faucetSigningKey: null });
+  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, faucetSigningKey: null, testOnlyUnboundedHeightAdvance: true });
   const marketplace = new DigitalServicesMarketplace({ height: () => ledger.height, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex });
   const iot = new IoTM2MService(marketplace);
   return flow(marketplace, iot, profile, () => ledger.advanceHeight(delayHeights), () => ledger.advanceHeight(beforeObserve));

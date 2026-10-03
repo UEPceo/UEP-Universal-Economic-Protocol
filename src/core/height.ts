@@ -18,12 +18,20 @@
  *    the transition code reads a real clock in this mode either.
  * Without a source the clock fails closed (HEIGHT_SOURCE_REQUIRED).
  */
+import { testOnlyOption } from "./test-only.ts";
 import { DEPRECATIONS, deprecate } from "./deprecation.ts";
 
 /** Reference block time used to convert durations into heights (5 s). */
 export const REFERENCE_BLOCK_TIME_MS = 5_000;
 /** Heights per day at the reference block time (17_280). */
 export const HEIGHTS_PER_DAY = (24 * 60 * 60 * 1000) / REFERENCE_BLOCK_TIME_MS;
+/**
+ * v0.5.0: most blocks one producer tick (and one ledger advanceHeight() call
+ * outside test mode) may seal: 12 blocks = 1 minute at the reference block
+ * time. A longer gap (a stalled process, a restart) is not caught up: the
+ * windows freeze for the rest of it (ADR 0002).
+ */
+export const MAX_BLOCKS_PER_TICK = 12;
 
 /** Returns the current block height (a non-negative safe integer). */
 export type HeightSource = () => number;
@@ -72,6 +80,23 @@ export class HeightCounter {
   }
 }
 
+const HEIGHT_SOURCES = new WeakMap<object, HeightSource>();
+
+/**
+ * v0.5.0: the height source of a target with a `height` property (a ledger,
+ * a ProducedHeight). The same target always gives the same function, so
+ * components that must share one height (the paymaster and its Marketplace)
+ * can be checked for it: `const height = heightOf(ledger)`.
+ */
+export function heightOf(target: { readonly height: number }): HeightSource {
+  let source = HEIGHT_SOURCES.get(target);
+  if (!source) {
+    source = () => target.height;
+    HEIGHT_SOURCES.set(target, source);
+  }
+  return source;
+}
+
 /** Time source of a transition component (see the module comment). */
 export class TransitionClock {
   readonly unit: TimeUnit;
@@ -106,6 +131,10 @@ export class TransitionClock {
     const nowMs = config.testOnlyNowMs ?? config.now;
     const local = config.testOnlyLocalHeight === true;
     if (config.testOnlyLocalHeight !== undefined && typeof config.testOnlyLocalHeight !== "boolean") throw new Error("CLOCK_CONFIG_INVALID: testOnlyLocalHeight is a boolean");
+    // v0.5.0: test-only options are rejected under NODE_ENV=production (src/core/test-only.ts).
+    testOnlyOption("testOnlyLocalHeight", config.testOnlyLocalHeight);
+    if (config.testOnlyNowMs !== undefined && typeof config.testOnlyNowMs === "function") testOnlyOption("testOnlyNowMs", config.testOnlyNowMs, "function");
+    if (config.now !== undefined && typeof config.now === "function") testOnlyOption("now", config.now, "function");
     if ([config.height !== undefined, nowMs !== undefined, local].filter(Boolean).length > 1) throw new Error("CLOCK_CONFIG_CONFLICT: pass exactly one of `height`, `testOnlyLocalHeight` or the test-only `testOnlyNowMs`");
     if (config.height !== undefined) {
       if (typeof config.height !== "function") throw new Error("HEIGHT_SOURCE_INVALID");
@@ -121,6 +150,17 @@ export class TransitionClock {
       return new TransitionClock("height", counter.source(), counter);
     }
     throw new Error("HEIGHT_SOURCE_REQUIRED: pass `height: () => ledger.height` (advanced by a HeightProducer, src/service/height-producer.ts), or `testOnlyLocalHeight: true` in tests and offline simulations");
+  }
+
+  /**
+   * v0.5.0: true iff both clocks read the same height source: the same
+   * function (e.g. both built from heightOf(ledger)), not merely the same unit.
+   * Two local counters are never the same source. The test-only millisecond
+   * mode compares the unit only (removed in 0.6.0).
+   */
+  sameSourceAs(other: TransitionClock): boolean {
+    if (this.unit !== other.unit) return false;
+    return this.unit === "legacy-ms" || this.source === other.source;
   }
 
   /** Current tick. In height mode: a validated height that never goes backwards. */

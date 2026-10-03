@@ -29,6 +29,7 @@
  * age window is the base window plus the fixed delay of the order's domain
  * profile (EARTH 0, MOON 1, MARS 602 heights). No clock is read here.
  */
+import { testOnlyOption } from "../core/test-only.ts";
 import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from "node:crypto";
 import { encodeCanonicalCbor } from "./iot-m2m-codec.ts";
 import { contentHash } from "./content-hash.ts";
@@ -257,6 +258,7 @@ export class IoTM2MService {
     // v0.5.0 compatibility: with a height-based Marketplace a legacy `now` is ignored (deprecated); time is the Marketplace height.
     if (config.now !== undefined && config.testOnlyNowMs !== undefined) throw new Error("CLOCK_CONFIG_CONFLICT: `now` is the deprecated alias of `testOnlyNowMs`; pass one");
     const injected = config.testOnlyNowMs ?? config.now;
+    if (injected !== undefined) testOnlyOption(config.testOnlyNowMs !== undefined ? "testOnlyNowMs" : "now", injected, "function");
     const legacyNow = injected !== undefined && clock.unit === "legacy-ms" ? injected : undefined;
     if (injected !== undefined && clock.unit !== "legacy-ms") deprecate(DEPRECATIONS.IOT_NOW_IGNORED, "IoTM2MService: `testOnlyNowMs` / `now` is ignored with a height-based Marketplace since v0.5.0; the service uses the Marketplace height");
     else if (config.now !== undefined) deprecate(DEPRECATIONS.NOW_OPTION, "`now` is deprecated since v0.5.0: renamed `testOnlyNowMs`; the millisecond mode is removed in 0.6.0");

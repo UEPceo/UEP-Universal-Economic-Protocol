@@ -6,14 +6,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DigitalServicesMarketplace, type ServiceOrder } from "./marketplace.ts";
-import { EvidenceCaps } from "./evidence.ts";
+import { DEFAULT_PROVIDER_CAP_BPS, EvidenceCaps } from "./evidence.ts";
+import { Fr } from "../core/field.ts";
+import { deriveSpendKey } from "../core/spend-key.ts";
+import { isPrimeOrderEd25519Point, normalizeEd25519PublicKeyHex } from "../core/ed25519-point.ts";
 import { act, cancelAsBuyer, deliver, enrollIdentity, fund, getOrder, publishAs, refundAs, reserveAs, settle } from "./testkit.ts";
 
 const getStatus = (m: DigitalServicesMarketplace, orderId: string, actor: string) => getOrder(m, orderId, actor).status;
 import { listingTerms } from "./identity.ts";
 
-const KEYS = ["a1", "b2", "c3", "d4"].map((x) => x.repeat(32));
-const SET = { attesterSetId: "space-weather-2of3", sourceId: "https://example.org/space-weather/v1", attesterKeys: KEYS.slice(0, 3), threshold: 2, size: 3, valueCaps: { EUR: 1_000n } };
+/** Deterministic, valid Ed25519 public keys (raw 64 hex); public data only. */
+const keyOf = (i: number) => deriveSpendKey(new Fr(BigInt(i)), new Fr(9n)).publicKeyHex.slice(-64);
+const KEYS = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(keyOf);
+// providerCapBps 10000: these tests look at the set cap alone; the per-provider subcap has its own test.
+const SET = { attesterSetId: "space-weather-2of3", sourceId: "https://example.org/space-weather/v1", attesterKeys: KEYS.slice(0, 3), threshold: 2, size: 3, valueCaps: { EUR: 1_000n }, providerCapBps: 10_000 };
 const base = { providerId: "prov", description: "comms with force-majeure evidence", category: "API" as const, asset: "EUR", unitPrice: 100n, capacity: 100n };
 
 function setup() {
@@ -103,14 +109,72 @@ test("evidence caps: the funded value of one attester set is capped across listi
   assert.equal(m.valueAccounting("EUR").conserved, true);
 });
 
-test("evidence caps: the same source with a common attester under another set id is rejected (no cap multiplication)", () => {
+test("evidence caps: an attester key belongs to one set only, whatever the sourceId says (no cap multiplication)", () => {
   const twin = { ...SET, attesterSetId: "space-weather-copy" };
   assert.throws(() => new EvidenceCaps({ attesterSets: [SET, twin] }), /EVIDENCE_ATTESTER_SET_DUPLICATE/);
-  assert.throws(() => new EvidenceCaps({ attesterSets: [SET, { ...twin, attesterKeys: [KEYS[2]!, KEYS[3]!, "e5".repeat(32)] }] }), /EVIDENCE_ATTESTER_SET_DUPLICATE/);
+  assert.throws(() => new EvidenceCaps({ attesterSets: [SET, { ...twin, attesterKeys: [KEYS[2]!, KEYS[3]!, KEYS[4]!] }] }), /EVIDENCE_ATTESTER_SET_DUPLICATE/);
   assert.throws(() => new EvidenceCaps({ attesterSets: [SET, { ...twin, attesterKeys: SET.attesterKeys.map((k) => k.toUpperCase()) }] }), /EVIDENCE_ATTESTER_SET_DUPLICATE/);
-  // Another source, or the same source with disjoint attesters, is a different set.
-  const ok = new EvidenceCaps({ attesterSets: [SET, { ...twin, sourceId: "https://example.org/other" }, { ...twin, attesterSetId: "disjoint", attesterKeys: [KEYS[3]!, "e5".repeat(32), "f6".repeat(32)] }] });
+  assert.throws(() => new EvidenceCaps({ attesterSets: [SET, { ...twin, attesterKeys: SET.attesterKeys.map((k) => `302a300506032b6570032100${k}`) }] }), /EVIDENCE_ATTESTER_SET_DUPLICATE/);
+  // Spelling the same source another way does not help: the keys decide.
+  const variants = ["HTTPS://EXAMPLE.ORG/space-weather/v1", "https://example.org/space-weather/v1?", "https://example.org/space-weather/v1#a", "https://example.org:443/space-weather/v1", "https://example.org/space%2Dweather/v1", "https://example.org//space-weather/v1", "http://example.org/space-weather/v1", "noaa-kp", "https://example.org/other"];
+  for (const sourceId of variants) assert.throws(() => new EvidenceCaps({ attesterSets: [SET, { ...twin, sourceId }] }), /EVIDENCE_ATTESTER_SET_DUPLICATE/, sourceId);
+  // Disjoint attesters form a different set, also for the same source.
+  const ok = new EvidenceCaps({ attesterSets: [SET, { ...twin, attesterSetId: "disjoint", attesterKeys: [KEYS[3]!, KEYS[4]!, KEYS[5]!] }] });
   assert.equal(ok.attesterSet("disjoint").sourceId, SET.sourceId);
+});
+
+test("evidence caps: attester keys are normalized and must be prime-order Ed25519 points", () => {
+  for (const k of KEYS) assert.ok(isPrimeOrderEd25519Point(Buffer.from(k, "hex")));
+  const bad = [
+    "00".repeat(32), // all zero
+    "01" + "00".repeat(31), // identity
+    "ec" + "ff".repeat(30) + "7f", // order 2
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", // order 8
+    "ed" + "ff".repeat(30) + "7f", // y = p (non-canonical)
+    "a1".repeat(32), // not on the curve
+    "zz".repeat(32),
+    KEYS[0]!.slice(2),
+  ];
+  for (const k of bad) {
+    assert.equal(normalizeEd25519PublicKeyHex(k), undefined, k);
+    assert.throws(() => new EvidenceCaps({ attesterSets: [{ ...SET, attesterKeys: [KEYS[0]!, KEYS[1]!, k] }] }), /EVIDENCE_ATTESTER_SET_INVALID: attesterKeys/, k);
+  }
+  // Uppercase and SPKI DER forms normalize to the raw lowercase key.
+  const caps = new EvidenceCaps({ attesterSets: [{ ...SET, attesterKeys: [KEYS[0]!.toUpperCase(), `302a300506032b6570032100${KEYS[1]!}`, KEYS[2]!] }] });
+  assert.deepEqual(caps.attesterSet(SET.attesterSetId).attesterKeys, KEYS.slice(0, 3));
+  assert.throws(() => new EvidenceCaps({ attesterSets: [{ ...SET, attesterKeys: [KEYS[0]!, KEYS[0]!.toUpperCase(), KEYS[1]!] }] }), /EVIDENCE_ATTESTER_SET_INVALID: attesterKeys are distinct/);
+});
+
+test("evidence caps: one provider may hold at most its subcap (default 25%) of a set; a full cap closes the reservation without fault", () => {
+  const set = { ...SET, providerCapBps: undefined };
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, evidence: { attesterSets: [set] } });
+  assert.equal(DEFAULT_PROVIDER_CAP_BPS, 2_500);
+  assert.equal(m.evidenceCaps.providerCap(SET.attesterSetId, "EUR"), 250n);
+  // A listing whose per-contract cap exceeds the provider subcap could never be funded: refused at publication.
+  assert.throws(() => publishAs(m, { ...base, title: "Too big", evidencePolicy: { attesterSetId: SET.attesterSetId, maxValuePerContract: 300n } }), /EVIDENCE_POLICY_INVALID: maxValuePerContract exceeds the per-provider subcap/);
+  const own = publishAs(m, { ...base, providerId: "sybil", title: "Own relay", evidencePolicy: { attesterSetId: SET.attesterSetId, maxValuePerContract: 200n } });
+  const honest = publishAs(m, { ...base, providerId: "prov", title: "Honest relay", evidencePolicy: { attesterSetId: SET.attesterSetId, maxValuePerContract: 200n } });
+  // An attacker funding orders on its own listing fills its subcap (250), not the set cap (1000).
+  const first = reserveAs(m, { listingId: own.listingId, buyerId: "attacker", quantity: 2n }, { credit: 10_000n });
+  fund(m, first.orderId, first.fundingDue);
+  assert.throws(() => reserveAs(m, { listingId: own.listingId, buyerId: "attacker", quantity: 1n }), /EVIDENCE_PROVIDER_CAP_EXCEEDED/);
+  assert.equal(m.evidenceCaps.providerOpenValue(SET.attesterSetId, "EUR", "sybil"), 200n);
+  // Other providers of the set are not blocked. Two reservations fit the honest provider's subcap
+  // at reserve() time (nothing funded yet); the second no longer fits once the first is funded.
+  const h = reserveAs(m, { listingId: honest.listingId, buyerId: "buyer", quantity: 2n }, { credit: 10_000n });
+  const late = reserveAs(m, { listingId: honest.listingId, buyerId: "late", quantity: 1n }, { credit: 10_000n });
+  fund(m, h.orderId, h.fundingDue);
+  assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 400n);
+  const before = { balance: m.availableBalance("EUR", "late"), locked: m.lockedDeposit("EUR", "late") };
+  assert.ok(before.locked > 0n);
+  assert.throws(() => fund(m, late.orderId, late.fundingDue), /EVIDENCE_PROVIDER_CAP_EXCEEDED: funding refused/);
+  assert.deepEqual({ balance: m.availableBalance("EUR", "late"), locked: m.lockedDeposit("EUR", "late") }, { balance: before.balance + before.locked, locked: 0n });
+  assert.equal(getOrder(m, late.orderId, "late").closeReason, "EVIDENCE_CAP_FULL");
+  assert.equal(m.getListing(honest.listingId).available, 98n); // the closed reservation's unit is back
+  assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 400n);
+  assert.equal(m.valueAccounting("EUR").conserved, true);
+  // providerCapBps is validated.
+  for (const bps of [0, 10_001, 1.5]) assert.throws(() => new EvidenceCaps({ attesterSets: [{ ...SET, providerCapBps: bps }] }), /providerCapBps/);
 });
 
 test("evidence caps: only funded value counts against the set cap; unfunded reservations cannot fill it", () => {
@@ -125,11 +189,14 @@ test("evidence caps: only funded value counts against the set cap; unfunded rese
   fund(m, reservations[1]!.orderId, reservations[1]!.fundingDue);
   fund(m, reservations[2]!.orderId, reservations[2]!.fundingDue);
   assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 900n);
-  // The fourth funding would exceed the cap: refused before any value moves.
+  // The fourth funding would exceed the cap: refused, and the reservation closes without
+  // fault: the buyer gets the deposit back (no loss for a system reason).
   const before = { balance: m.availableBalance("EUR", "r3"), locked: m.lockedDeposit("EUR", "r3") };
-  assert.throws(() => fund(m, reservations[3]!.orderId, reservations[3]!.fundingDue), /EVIDENCE_ATTESTER_SET_CAP_EXCEEDED/);
-  assert.deepEqual({ balance: m.availableBalance("EUR", "r3"), locked: m.lockedDeposit("EUR", "r3") }, before);
-  assert.equal(getStatus(m, reservations[3]!.orderId, "r3"), "ACCEPTED");
+  assert.throws(() => fund(m, reservations[3]!.orderId, reservations[3]!.fundingDue), /EVIDENCE_ATTESTER_SET_CAP_EXCEEDED: funding refused because the evidence cap is full; the reservation was closed without fault and the deposit returned/);
+  assert.deepEqual({ balance: m.availableBalance("EUR", "r3"), locked: m.lockedDeposit("EUR", "r3") }, { balance: before.balance + before.locked, locked: 0n });
+  const closed = getOrder(m, reservations[3]!.orderId, "r3");
+  assert.deepEqual([closed.status, closed.closeReason, closed.depositOutcome], ["CANCELLED", "EVIDENCE_CAP_FULL", "REFUNDED"]);
+  assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 900n);
   // A new reservation fails early while the funded value fills the cap.
   assert.throws(() => reserveAs(m, { listingId: listing.listingId, buyerId: "late", quantity: 2n }, { credit: 1_000n }), /EVIDENCE_ATTESTER_SET_CAP_EXCEEDED/);
   // Cancelling an unfunded reservation releases nothing (nothing was taken).
@@ -139,7 +206,7 @@ test("evidence caps: only funded value counts against the set cap; unfunded rese
   deliver(m, reservations[0]!.orderId, "prov", Buffer.from("report"));
   settle(m, reservations[0]!.orderId, "r0");
   assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 600n);
-  fund(m, reservations[3]!.orderId, reservations[3]!.fundingDue);
+  fund(m, reservations[4]!.orderId, reservations[4]!.fundingDue);
   assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 900n);
   assert.equal(m.valueAccounting("EUR").conserved, true);
 });
@@ -147,7 +214,10 @@ test("evidence caps: only funded value counts against the set cap; unfunded rese
 test("evidence caps: the Marketplace exposes a read-only view (no lock / release)", () => {
   const { m } = setup();
   const view = m.evidenceCaps as unknown as Record<string, unknown>;
-  assert.deepEqual(Object.keys(view).sort(), ["attesterSet", "openValue"]);
+  assert.deepEqual(Object.keys(view).sort(), ["attesterSet", "openValue", "providerCap", "providerOpenValue"]);
+  // The caps instance itself is an ECMAScript private field: not reachable through the object.
+  assert.equal((m as unknown as Record<string, unknown>).evidence, undefined);
+  assert.ok(!Object.getOwnPropertyNames(m).some((k) => k.toLowerCase().includes("evidence") && k !== "evidenceCaps"));
   assert.equal(view.release, undefined);
   assert.equal(view.lock, undefined);
   assert.ok(Object.isFrozen(view));
@@ -160,8 +230,34 @@ test("listing terms, domain profile and windows are frozen inside the Marketplac
     assert.throws(() => { "use strict"; internal[key] = "changed"; }, TypeError, key);
   }
   assert.throws(() => { (internal.windows as Record<string, number>).reservationTtl = 1; }, TypeError);
+  // No term can be added later (a listing published without evidence terms stays without them).
+  const plain = publishAs(m, { ...base, title: "Plain relay" });
+  const plainInternal = (m as unknown as { listings: Map<string, Record<string, unknown>> }).listings.get(plain.listingId)!;
+  assert.throws(() => { plainInternal.evidencePolicy = { attesterSetId: SET.attesterSetId, maxValuePerContract: 1n }; }, TypeError);
+  assert.equal(Object.isExtensible(plainInternal), false);
+  // The windows of an order are fixed at reserve(): not writable, frozen.
+  const o = reserveAs(m, { listingId: listing.listingId, buyerId: "w", quantity: 1n });
+  const internalOrder = (m as unknown as { orders: Map<string, Record<string, unknown>> }).orders.get(o.orderId)!;
+  assert.throws(() => { (internalOrder.windows as Record<string, number>).cancellationGrace = 1_000_000; }, TypeError);
+  assert.throws(() => { internalOrder.windows = { ...(internalOrder.windows as object), cancellationGrace: 1_000_000 }; }, TypeError);
+  assert.ok(Object.isFrozen(getOrder(m, o.orderId, "w").windows));
   assert.equal(m.getListing(listing.listingId).domainProfile, "EARTH");
   // Capacity accounting still works.
   reserveAs(m, { listingId: listing.listingId, buyerId: "b", quantity: 1n });
-  assert.equal(m.getListing(listing.listingId).available, 99n);
+  assert.equal(m.getListing(listing.listingId).available, 98n); // "w" and "b" hold one unit each
+});
+
+test("category hooks are copied and frozen at attach: mutating the caller's object later changes nothing", () => {
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
+  const hooks: { settlementGuard?: (o: ServiceOrder) => void } = {};
+  m.attachCategoryService("API", hooks);
+  const listing = publishAs(m, { ...base, title: "Hooked API" });
+  const order = reserveAs(m, { listingId: listing.listingId, buyerId: "buyer", quantity: 1n });
+  fund(m, order.orderId, order.fundingDue);
+  deliver(m, order.orderId, "prov", Buffer.from("payload"));
+  // A guard added to the caller's object after attach is not consulted.
+  hooks.settlementGuard = () => { throw new Error("GUARD_ADDED_LATER"); };
+  assert.equal(settle(m, order.orderId, "buyer").orderId, order.orderId);
+  assert.throws(() => m.attachCategoryService("DATA", { settlementGuard: "nope" as never }), /CATEGORY_HOOKS_INVALID/);
+  assert.throws(() => m.attachCategoryService("STORAGE", null as never), /CATEGORY_HOOKS_INVALID/);
 });

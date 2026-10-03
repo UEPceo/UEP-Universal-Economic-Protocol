@@ -5,15 +5,27 @@
  * not every alias. This module checks the same property by execution. It
  * wraps the transition methods of the given classes; while one of them runs
  * (synchronously), every clock, timer, network and randomness entry point
- * throws and is recorded as a violation:
- *   Date.now(), new Date() / Date() without arguments, performance.now(),
- *   process.hrtime(), process.uptime(), setTimeout / setInterval /
- *   setImmediate / queueMicrotask, fetch, Math.random, crypto.randomUUID /
- *   getRandomValues, node:crypto random and key generation, http(s).request,
- *   net.connect, dns.lookup.
- * Aliases (`const d = Date; d.now()`), `globalThis['fetch']` and calls through
- * helpers in other files are caught too, because they end in the same
- * function. Violations are recorded even when the transition catches the error.
+ * below throws and is recorded as a violation:
+ *   - clocks: Date.now() (also reached as Object.getPrototypeOf(Date).now,
+ *     Date.prototype.constructor.now, new Date(0).constructor.now), new Date()
+ *     without arguments, Date(...) called as a function with any arguments,
+ *     performance.now(), performance.timeOrigin, process.hrtime(),
+ *     process.uptime(), Intl.DateTimeFormat format() / formatToParts()
+ *     without a date, os.uptime();
+ *   - timers: setTimeout / setInterval / setImmediate / queueMicrotask, also
+ *     from node:timers and node:timers/promises, and Promise.then (async
+ *     continuations);
+ *   - randomness: Math.random, crypto.randomUUID / getRandomValues, node:crypto
+ *     random, key generation, ECDH / Diffie-Hellman, non-Ed25519 crypto.sign;
+ *   - process and host state: process.env, memoryUsage, cpuUsage,
+ *     resourceUsage; os load / memory / cpus / network interfaces;
+ *   - files, processes and network: fs and fs/promises reads and writes,
+ *     child_process, http(s), http2, net, tls, dgram, dns.
+ * Calls through aliases and helpers in other files end in these patched
+ * functions and are caught. NOT caught: a reference to an original function
+ * captured before the poison was installed, native addons, and anything the
+ * list above does not name. Like the lint, this is a guard, not a sandbox.
+ * Violations are recorded even when the transition catches the error.
  *
  * Used by scripts/poisoned-clock-preload.mjs (node --import) and by
  * src/service/poisoned-clock.test.ts. Test tooling only, never imported by
@@ -24,6 +36,15 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import dns from "node:dns";
+import tls from "node:tls";
+import dgram from "node:dgram";
+import http2 from "node:http2";
+import os from "node:os";
+import fs from "node:fs";
+import fsPromises from "node:fs/promises";
+import childProcess from "node:child_process";
+import timers from "node:timers";
+import timersPromises from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
 
 let depth = 0;
@@ -56,17 +77,64 @@ function patch(obj, key, make) {
 
 function poisonGlobals() {
   const RealDate = globalThis.Date;
+  const realNow = RealDate.now;
   function PoisonedDate(...args) {
-    if (args.length === 0) guard("new Date() / Date()");
-    return new.target ? Reflect.construct(RealDate, args, new.target) : RealDate(...args);
+    if (!new.target) guard("Date() called as a function"); // returns the current time whatever the arguments
+    else if (args.length === 0) guard("new Date()");
+    return new.target ? Reflect.construct(RealDate, args, new.target === PoisonedDate ? RealDate : new.target) : RealDate(...args);
   }
-  Object.setPrototypeOf(PoisonedDate, RealDate);
+  // Not a subclass of the real Date: Object.getPrototypeOf(Date) must not lead back to it.
   PoisonedDate.prototype = RealDate.prototype;
-  PoisonedDate.now = function now() { guard("Date.now()"); return RealDate.now(); };
+  PoisonedDate.now = function now() { guard("Date.now()"); return realNow.call(RealDate); };
   PoisonedDate.parse = RealDate.parse;
   PoisonedDate.UTC = RealDate.UTC;
   globalThis.Date = PoisonedDate;
   restorers.push(() => { globalThis.Date = RealDate; });
+  // The real Date stays reachable through instances (new Date(0).constructor) and the prototype: poison it too.
+  RealDate.now = PoisonedDate.now;
+  restorers.push(() => { RealDate.now = realNow; });
+  const protoCtor = Object.getOwnPropertyDescriptor(RealDate.prototype, "constructor");
+  Object.defineProperty(RealDate.prototype, "constructor", { ...protoCtor, value: PoisonedDate });
+  restorers.push(() => { Object.defineProperty(RealDate.prototype, "constructor", protoCtor); });
+
+  // performance.timeOrigin (an accessor on the prototype): shadow it on the instance.
+  if (globalThis.performance) {
+    const perf = globalThis.performance;
+    const originDesc = Object.getOwnPropertyDescriptor(perf, "timeOrigin");
+    const proto = Object.getPrototypeOf(perf);
+    const protoDesc = proto && Object.getOwnPropertyDescriptor(proto, "timeOrigin");
+    const read = () => (protoDesc?.get ? protoDesc.get.call(perf) : originDesc?.value);
+    Object.defineProperty(perf, "timeOrigin", { configurable: true, enumerable: true, get() { guard("performance.timeOrigin"); return read(); } });
+    restorers.push(() => { if (originDesc) Object.defineProperty(perf, "timeOrigin", originDesc); else delete perf.timeOrigin; });
+  }
+  // Intl date formatting without a date reads the clock.
+  for (const k of ["format", "formatToParts"]) {
+    const proto = Intl.DateTimeFormat.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, k);
+    if (!desc) continue;
+    if (desc.get) {
+      Object.defineProperty(proto, k, { ...desc, get() { const f = desc.get.call(this); return (d) => { if (d === undefined) guard(`Intl.DateTimeFormat.${k}() without a date`); return f(d); }; } });
+    } else if (typeof desc.value === "function") {
+      const fn = desc.value;
+      Object.defineProperty(proto, k, { ...desc, value: function (d) { if (d === undefined) guard(`Intl.DateTimeFormat.${k}() without a date`); return fn.call(this, d); } });
+    }
+    restorers.push(() => { Object.defineProperty(proto, k, desc); });
+  }
+  // process.env: a guarded view while a transition runs.
+  const realEnv = process.env;
+  const envProxy = new Proxy(realEnv, {
+    get(t, key, r) { if (typeof key === "string") guard("process.env"); return Reflect.get(t, key, r); },
+    has(t, key) { guard("process.env"); return Reflect.has(t, key); },
+    ownKeys(t) { guard("process.env"); return Reflect.ownKeys(t); },
+  });
+  try {
+    process.env = envProxy;
+    restorers.push(() => { process.env = realEnv; });
+  } catch { /* not replaceable on this runtime */ }
+  // Async continuations: a transition is synchronous; scheduling work for later is a timer.
+  const realThen = Promise.prototype.then;
+  Promise.prototype.then = function then(...a) { guard("Promise.then() (async continuation)"); return realThen.apply(this, a); };
+  restorers.push(() => { Promise.prototype.then = realThen; });
 
   const wrap = (name) => (fn) => function (...a) { guard(name); return fn.apply(this, a); };
   if (globalThis.performance) patch(globalThis.performance, "now", wrap("performance.now()"));
@@ -78,9 +146,25 @@ function poisonGlobals() {
   poisonedHr.bigint = function () { guard("process.hrtime.bigint()"); return hr.bigint(); };
   process.hrtime = poisonedHr;
   restorers.push(() => { process.hrtime = hr; });
-  patch(process, "uptime", wrap("process.uptime()"));
-  for (const k of ["randomBytes", "randomUUID", "randomInt", "randomFill", "randomFillSync", "generateKeyPair", "generateKeyPairSync", "generateKey", "generateKeySync", "generatePrime", "generatePrimeSync", "getRandomValues"]) patch(nodeCrypto, k, wrap(`crypto.${k}()`));
-  for (const [mod, name, keys] of [[http, "http", ["request", "get"]], [https, "https", ["request", "get"]], [net, "net", ["connect", "createConnection"]], [dns, "dns", ["lookup", "resolve"]]]) for (const k of keys) patch(mod, k, wrap(`${name}.${k}()`));
+  for (const k of ["uptime", "memoryUsage", "cpuUsage", "resourceUsage"]) patch(process, k, wrap(`process.${k}()`));
+  for (const k of ["randomBytes", "randomUUID", "randomInt", "randomFill", "randomFillSync", "generateKeyPair", "generateKeyPairSync", "generateKey", "generateKeySync", "generatePrime", "generatePrimeSync", "getRandomValues", "createECDH", "createDiffieHellman", "createDiffieHellmanGroup", "getDiffieHellman", "createSign"]) patch(nodeCrypto, k, wrap(`crypto.${k}()`));
+  // crypto.sign is deterministic for Ed25519 / Ed448 (used to sign snapshots); other key types (ECDSA, RSA-PSS) draw randomness.
+  patch(nodeCrypto, "sign", (fn) => function (alg, data, key, ...rest) {
+    const type = key?.asymmetricKeyType ?? key?.key?.asymmetricKeyType;
+    if (type !== "ed25519" && type !== "ed448") guard("crypto.sign() with a randomized key type");
+    return fn.call(this, alg, data, key, ...rest);
+  });
+  const modules = [
+    [http, "http", ["request", "get"]], [https, "https", ["request", "get"]], [http2, "http2", ["connect"]],
+    [net, "net", ["connect", "createConnection"]], [tls, "tls", ["connect"]], [dgram, "dgram", ["createSocket"]], [dns, "dns", ["lookup", "resolve"]],
+    [os, "os", ["uptime", "loadavg", "freemem", "totalmem", "cpus", "networkInterfaces", "hostname", "userInfo"]],
+    [fs, "fs", ["readFileSync", "readFile", "writeFileSync", "writeFile", "openSync", "open", "statSync", "stat", "existsSync", "readdirSync", "readdir", "createReadStream", "createWriteStream"]],
+    [fsPromises, "fs/promises", ["readFile", "writeFile", "open", "stat", "readdir"]],
+    [childProcess, "child_process", ["exec", "execSync", "execFile", "execFileSync", "spawn", "spawnSync", "fork"]],
+    [timers, "timers", ["setTimeout", "setInterval", "setImmediate"]],
+    [timersPromises, "timers/promises", ["setTimeout", "setInterval", "setImmediate"]],
+  ];
+  for (const [mod, name, keys] of modules) for (const k of keys) patch(mod, k, wrap(`${name}.${k}()`));
   syncBuiltinESMExports();
 }
 

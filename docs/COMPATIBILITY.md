@@ -7,7 +7,8 @@ The policy covers:
 - ledger snapshots (`UepLedger.snapshot()`, `restore()`, `restoreChain()`);
 - the public TypeScript API (`src/core`, `src/testnet`, `src/marketplace`, `src/service`);
 - the HTTP adapter (`/v1/*`) and its headers;
-- asset ids.
+- asset ids;
+- account ids and addresses.
 
 The labs (`src/lab`, `uep-core`, the research circuits) are experimental and not covered. Their changes are listed in the CHANGELOG.
 
@@ -107,6 +108,13 @@ For each fixture, `snapshot-fixtures.test.ts` checks:
 | A height source, `testOnlyLocalHeight` and the legacy `testOnlyNowMs` / `now` together (any two), or a `*Heights` option together with its `*Ms` form | The configuration is ambiguous. `CLOCK_CONFIG_CONFLICT` stays. | Pass one of them. |
 | Notes minted under an old asset id | A note commitment binds the asset's field encoding. Such notes stay valid and spendable, and their change outputs keep the old encoding. | Nothing to do. `balanceOfAsset(account, id)` counts both encodings for either id. `balanceOf(account, assetFr)` stays per encoding. |
 | One payment that would need notes of both encodings of one asset | One transaction carries a single asset encoding. | `preparePayment()` uses notes of one encoding (namespaced first). Make two payments, or consolidate. |
+| Sending to a v2 account id that has never spent (`prepareSpend`, `preparePayment`, `faucet`) | A v2 id carries only its version byte, so 1 in 256 legacy ids looks like one; the ledger cannot tell a v2 id from a legacy id until the key behind it has been revealed. The call fails with `ADDRESS_VERSION`. | Ask the recipient for its v3 address (same key, `encodeAddress(accountIdFromSpendKey(key))`). A v2 account that holds notes becomes a valid recipient after its first spend. |
+| A restored ledger restarted with a lower height (`restore()` of an older snapshot) | A rollback would rewind every window. The restore fails with `INVALID_SNAPSHOT_HEIGHT_REGRESSION` when the snapshot is below the replaced ledger, `minHeight` or the trusted checkpoint. | Restore the latest snapshot, or pass `allowHeightRegression: true` and rebuild the Marketplace (its open orders are lost). |
+| `ledger.advanceHeight(n)` with `n > 12` | One call seals at most 12 blocks (`HEIGHT_ADVANCE_CAP`). | Call it repeatedly, or build test ledgers with `testOnlyUnboundedHeightAdvance: true`. |
+| `listenUepHttpApi()` serving a Marketplace on an injected height source without `heightProducer` | The height would never move (`HEIGHT_PRODUCER_REQUIRED`). | Pass `heightProducer: new HeightProducer(ledger)`, or use `testOnlyLocalHeight` in tests. |
+| A paymaster and a Marketplace given two different height functions (for example two `() => ledger.height` closures) | Since v0.5.0 the clocks are compared by source, not only by unit (`CLOCK_CONFIG_CONFLICT`). | Pass the same function to both, e.g. `const height = heightOf(ledger)`; `heightOf()` returns the same function for the same target. |
+| Attester sets that share a key, or keys that are not valid Ed25519 points | One set per key until phase 2.3; keys are validated (`docs/EVIDENCE.md`). | Give each set its own attester keys. |
+| `testOnly*` options under `NODE_ENV=production`, or in JSON-parsed options | Refused (`TEST_ONLY_OPTION_IN_PRODUCTION`, `TEST_ONLY_OPTION_UNTRUSTED`). | Remove them from deployed configuration. |
 | Lab proofs and keys of circuit v3 | Circuit v4 changes the statement. | Labs only, outside this policy. |
 
 ## 4. CI check: `npm run check:snapshot-compat`
@@ -146,6 +154,18 @@ Behaviour:
 - The Marketplace stores the canonical id.
 - A listing or credit signed by an old client over the old id still verifies, because the signature is checked over the terms as signed.
 - New notes use the canonical encoding. Notes that already exist keep theirs (section 3).
+
+## 5b. Account ids and addresses: v2 → v3
+
+Since v0.5.0 a key-derived account id is **v3**: `0x03 ‖ H23(key) ‖ C8`, where `H23` is the first 23 bytes of a domain-separated SHA-256 of the spend public key and `C8` a 64-bit check over the version byte and `H23`. A random or legacy id passes the check with probability 2^-64 or less, so `isKeyDerivedAccountId()` no longer misclassifies legacy ids (a v2 id was recognized by its top byte only, which 1 in 256 legacy ids have). Addresses are version 3 (`ADDRESS_VERSION = 3`); `decodeAddress()` also verifies the id check (`ADDRESS_ID_CHECK`).
+
+Existing v2 ids (`0x02 ‖ H31(key)`) keep working and are classified as v2, never as v3:
+
+- `decodeAddress()` still decodes version-2 addresses (`version: 2`), and `encodeAddress()` of a v2 id writes a version-2 address.
+- `spendKeyMatchesAccount()`, the spend-ownership check and snapshot restore accept the v2 id of a key. Notes held by a v2 id are spent with `withAccountIdV2(secrets)` (`src/identity/kdf.ts`); `deriveIdentity()` returns both ids (`accountId` is v3, `accountIdV2` is v2) and a vault created before v0.5.0 unlocks as its v2 account.
+- A v2 id is accepted as a **recipient** only once it has been proven: a committed spend of that id revealed a key that hashes to it (`ledger.acceptsRecipient()`). The set is derived from the committed transactions, so every replica computes the same answer.
+- Snapshots are unchanged (format 7). Restored history is replayed under the rules it was written with.
+- `accountIdFromSpendKey()` returns the v3 id; `accountIdFromSpendKeyV2()` returns the v2 id and `accountIdsOfSpendKey()` both. `spendKeyHash()` is a deprecated alias of `spendKeyHashV2()`.
 
 ## 6. Deprecated API shims (v0.5.0)
 

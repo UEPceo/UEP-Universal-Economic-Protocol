@@ -1,16 +1,22 @@
 /**
  * UEP account addresses.
  *
- * v2 (UEP-ADDR-002, since v0.4.5), the only accepted format:
+ *   address = Bech32m(hrp = "uep", data = version || networkTag || body)
  *
- *   address = Bech32m(hrp = "uep", data = version || networkTag || keyHash)
- *
- *   version    1 byte   0x02 (= ACCOUNT_ID_VERSION)
+ * v3 (since v0.5.0, the format of new addresses):
+ *   version    1 byte   0x03 (= ACCOUNT_ID_VERSION)
  *   networkTag 4 bytes  SHA-256("UEP-ADDR-NETWORK-v2\n" || networkId)[0..4]
- *   keyHash    31 bytes SHA-256("UEP-ACCOUNT-KEY-v2\n" || raw32(spendPublicKey))[0..31]
+ *   body       31 bytes 23-byte key hash || 8-byte check (see spend-key.ts)
  *
- * The ledger account id is 0x02 || keyHash (see spend-key.ts), so an address
- * commits to the owner's Ed25519 spend key. Bech32m (BIP-350) gives a
+ * v2 (v0.4.5 to v0.5.0, still decoded for existing accounts):
+ *   version    1 byte   0x02 (= ACCOUNT_ID_VERSION_V2)
+ *   networkTag 4 bytes  as above
+ *   body       31 bytes SHA-256("UEP-ACCOUNT-KEY-v2\n" || raw32(spendPublicKey))[0..31]
+ *
+ * The ledger account id is version || body (see spend-key.ts), so an address
+ * commits to the owner's Ed25519 spend key. Decoding a v3 address also checks
+ * the 64-bit id check (ADDRESS_ID_CHECK). A v2 address decodes to its v2 id;
+ * the ledger decides whether it accepts that id as a recipient. Bech32m (BIP-350) gives a
  * 6-character BCH checksum over the HRP and data; addresses are lowercase,
  * 68 characters long and start with "uep1". The network tag makes an address
  * for one network fail to decode on another.
@@ -20,10 +26,11 @@
  */
 import { createHash } from "node:crypto";
 import { Fr } from "./field.ts";
-import { ACCOUNT_ID_VERSION, accountIdFromKeyHash, accountIdFromSpendKey, isKeyDerivedAccountId, keyHashOfAccountId } from "./spend-key.ts";
+import { ACCOUNT_ID_VERSION, ACCOUNT_ID_VERSION_V2, accountIdFromKeyHash, accountIdFromSpendKey, isKeyDerivedAccountId, isV2AccountIdForm, keyHashOfAccountId } from "./spend-key.ts";
 import type { PublicKeyLike } from "./ed25519.ts";
 
-export const ADDRESS_VERSION = 2;
+export const ADDRESS_VERSION = 3;
+export const ADDRESS_VERSION_V2 = 2;
 export const ADDRESS_HRP = "uep";
 const NETWORK_TAG_DOMAIN = "UEP-ADDR-NETWORK-v2\n";
 const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
@@ -37,9 +44,10 @@ export type AddressErrorCode =
   | "ADDRESS_CHECKSUM"
   | "ADDRESS_LENGTH"
   | "ADDRESS_VERSION"
-  | "ADDRESS_NETWORK";
+  | "ADDRESS_NETWORK"
+  | "ADDRESS_ID_CHECK";
 
-export type DecodedAddress = { version: 2; networkTag: string; accountId: Fr };
+export type DecodedAddress = { version: 2 | 3; networkTag: string; accountId: Fr };
 export type AddressDecodeResult = ({ ok: true } & DecodedAddress) | { ok: false; code: AddressErrorCode; message: string };
 
 export interface AddressEncoder {
@@ -109,20 +117,24 @@ export function addressNetworkTag(networkId: string): string {
   return createHash("sha256").update(NETWORK_TAG_DOMAIN + networkId, "utf8").digest().subarray(0, 4).toString("hex");
 }
 
-/** Encode a key-derived account id as a v2 address for `networkId`. */
+/**
+ * Encode a key-derived account id as an address for `networkId`: a v3 id gives
+ * a v3 address; an existing v2-form id gives the v2 address it always had.
+ */
 export function encodeAccountAddress(networkId: string, accountId: Fr): string {
   if (!networkId) throw new Error("ADDRESS_NETWORK: networkId required");
-  if (!isKeyDerivedAccountId(accountId)) throw new Error("ADDRESS_VERSION: account id is not a v2 key-derived account");
-  const payload = Buffer.concat([Buffer.from([ACCOUNT_ID_VERSION]), Buffer.from(addressNetworkTag(networkId), "hex"), keyHashOfAccountId(accountId)]);
+  const version = isKeyDerivedAccountId(accountId) ? ACCOUNT_ID_VERSION : isV2AccountIdForm(accountId) ? ACCOUNT_ID_VERSION_V2 : undefined;
+  if (version === undefined) throw new Error("ADDRESS_VERSION: account id is not a key-derived account");
+  const payload = Buffer.concat([Buffer.from([version]), Buffer.from(addressNetworkTag(networkId), "hex"), keyHashOfAccountId(accountId)]);
   return bech32mEncode(ADDRESS_HRP, payload);
 }
 
-/** v2 address of an Ed25519 spend public key. */
+/** v3 address of an Ed25519 spend public key. */
 export function addressFromSpendKey(networkId: string, publicKey: PublicKeyLike): string {
   return encodeAccountAddress(networkId, accountIdFromSpendKey(publicKey));
 }
 
-/** Decode and fully validate a v2 address. Never throws. */
+/** Decode and fully validate a v3 or v2 address. Never throws. */
 export function decodeAccountAddress(address: string, expectedNetworkId?: string): AddressDecodeResult {
   const err = (code: AddressErrorCode, message: string): AddressDecodeResult => ({ ok: false, code, message });
   if (typeof address !== "string") return err("ADDRESS_FORMAT", "address must be a string");
@@ -141,13 +153,16 @@ export function decodeAccountAddress(address: string, expectedNetworkId?: string
   if (polymod([...hrpExpand(hrp), ...data]) !== BECH32M_CONST) return err("ADDRESS_CHECKSUM", "Bech32m checksum mismatch");
   const bytes = convertBits(data.slice(0, -6), 5, 8, false);
   if (!bytes || bytes.length !== PAYLOAD_BYTES) return err("ADDRESS_LENGTH", "unexpected payload length");
-  if (bytes[0] !== ACCOUNT_ID_VERSION) return err("ADDRESS_VERSION", `unsupported address version ${bytes[0]}`);
+  const version = bytes[0];
+  if (version !== ACCOUNT_ID_VERSION && version !== ACCOUNT_ID_VERSION_V2) return err("ADDRESS_VERSION", `unsupported address version ${version}`);
   const networkTag = Buffer.from(bytes.slice(1, 5)).toString("hex");
   if (expectedNetworkId !== undefined && networkTag !== addressNetworkTag(expectedNetworkId)) return err("ADDRESS_NETWORK", "address belongs to a different network");
-  return { ok: true, version: 2, networkTag, accountId: accountIdFromKeyHash(Uint8Array.from(bytes.slice(5))) };
+  let accountId: Fr;
+  try { accountId = accountIdFromKeyHash(Uint8Array.from(bytes.slice(5)), version); } catch { return err("ADDRESS_ID_CHECK", "account id check mismatch"); }
+  return { ok: true, version: version === ACCOUNT_ID_VERSION ? 3 : 2, networkTag, accountId };
 }
 
-/** Decode a v2 address for `networkId` or throw `<ADDRESS_CODE>: message`. */
+/** Decode a v3 or v2 address for `networkId` or throw `<ADDRESS_CODE>: message`. */
 export function parseAccountAddress(address: string, networkId: string): Fr {
   const r = decodeAccountAddress(address, networkId);
   if (!r.ok) throw new Error(`${r.code}: ${r.message}`);
