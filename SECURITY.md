@@ -14,9 +14,20 @@ This repository is an experimental public reference implementation. Security rep
 - Paymaster accounting;
 - deterministic serialization;
 - transaction domain separation;
+- the Poseidon protocol hash implementation and its test vectors;
+- addresses, key-derived account ids and sender signatures;
+- snapshot signing, restore and issuance (faucet and issuer keys);
+- per-asset isolation of balances, issuance, limits and fees;
+- IoT/M2M telemetry verification and settlement;
 - policy/authentication bypass;
 - Marketplace action authorization;
 - accidental secret exposure.
+
+Reports about the **research labs** (`src/lab`, `src/agent`, the service/API lab in `src/service`, `uep-core/`, including the UEP-26 circuit and `uep-zk`) are also welcome. The labs are experimental and make no security claim, so a lab issue is treated as research input unless it also affects the testnet reference path. Please use the same private channel for anything that could matter for a future production design (for example a soundness problem in the circuit).
+
+## Supported versions
+
+Reports should target the current `main` branch or the latest GitHub Release. Older releases are superseded testnet snapshots and do not receive separate fixes.
 
 ## Important limitation
 

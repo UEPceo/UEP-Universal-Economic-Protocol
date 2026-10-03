@@ -1,13 +1,17 @@
 # UEP-25 — Atomic Sparse-State Transition Specification
 
-## Objetivo
+> Lab specification of the Rust reference state machine in `uep-core/uep-25-prototype`
+> (tested by `npm run test:rust`). It is not the public testnet ledger, whose rules
+> live in `src/core` and `src/testnet` (see `docs/LABS.md`).
 
-Cerrar los fallos arquitectónicos detectados en UEP-23/24 y acercar el núcleo a
-un prototipo verificable.
+## Objective
 
-## Invariantes
+Close the architectural flaws found in UEP-23/24 and move the core towards a
+verifiable prototype.
 
-### Propiedad
+## Invariants
+
+### Ownership
 
 `SenderID = H_ACCOUNT(secret, salt)`
 
@@ -15,15 +19,17 @@ un prototipo verificable.
 
 `N = H_NULLIFIER(secret, nonce)`
 
-El mismo `secret + nonce` no puede aceptarse dos veces.
+The same `secret + nonce` cannot be accepted twice.
 
 ### Fee
 
-`fee = floor(amount * 10 / 10000)`.
+`fee = max(1, floor(amount * 10 / 10000))` for `amount > 0` (`src/fee.rs`).
 
-Esto representa 0,1% en unidades enteras, con redondeo hacia abajo.
+This is 0.1% in integer units, rounded down, with a 1-unit floor: the same rule
+as the public core and the UEP-26 circuit (v3). Earlier revisions of this
+specification used `floor(amount * 10 / 10000)` without the floor.
 
-### Transferencia
+### Transfer
 
 `sender_new = sender_old - amount - fee`
 
@@ -31,46 +37,51 @@ Esto representa 0,1% en unidades enteras, con redondeo hacia abajo.
 
 `treasury_new = treasury_old + fee`
 
-### Conservación
+### Conservation
 
 `sender_old + recipient_old + treasury_old`
 =
 `sender_new + recipient_new + treasury_new`
 
-### Estado
+### State
 
-La aceptación final exige:
+Final acceptance requires:
 
 `old_state_root -> new_state_root`
 
-mediante tres actualizaciones SMT atómicas y:
+through three atomic SMT updates, and:
 
 `old_nullifier_root -> new_nullifier_root`
 
-mediante la inserción del nullifier.
+through the insertion of the nullifier.
 
-## Dominios
+## Domains
 
-Se separan hashes de:
+Hashes are domain-separated for:
 
-- cuentas,
+- accounts,
 - nullifiers,
-- hojas,
-- nodos Merkle,
-- commitments de transacción.
+- leaves,
+- Merkle nodes,
+- transaction commitments.
 
-Esto evita reutilizar accidentalmente una misma relación hash para objetos
-semánticamente diferentes.
+This prevents the same hash relation from being reused by accident for
+semantically different objects.
 
-## Lo que falta antes de testnet
+## Open items recorded by this specification
 
-1. Congelar parámetros Poseidon/Poseidon2.
-2. Implementar los gadgets R1CS de hash y SMT con esos parámetros.
-3. Probar membership/update de las tres hojas.
-4. Probar inserción de nullifier y no-replay dentro del circuito.
-5. Generar Groth16 real y verificar contra el conjunto de inputs públicos.
-6. Añadir serialización canónica y versionada.
-7. Medir rendimiento en hardware definido.
-8. Añadir fuzzing y property-based testing.
-9. Revisar overflow/range constraints dentro del propio circuito.
-10. Congelar el genesis/configuration ID de la red.
+This list was written when UEP-25 was the most advanced prototype. Several items
+have since been addressed in later labs (for example the Poseidon parameter
+freeze in UEP-26 and the Groth16 spend circuit in `uep-26-spend-circuit`); none
+of them makes the lab a production system.
+
+1. Freeze the Poseidon/Poseidon2 parameters.
+2. Implement the R1CS hash and SMT gadgets with those parameters.
+3. Prove membership/update of the three leaves.
+4. Prove nullifier insertion and non-replay inside the circuit.
+5. Generate a real Groth16 proof and verify it against the set of public inputs.
+6. Add canonical, versioned serialization.
+7. Measure performance on defined hardware.
+8. Add fuzzing and property-based testing.
+9. Review overflow/range constraints inside the circuit itself.
+10. Freeze the genesis/configuration ID of the network.

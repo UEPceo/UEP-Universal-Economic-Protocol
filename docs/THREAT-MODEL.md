@@ -1,5 +1,7 @@
 # Public Threat Model
 
+This threat model covers the **testnet reference path**: `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, the IoT/M2M service (`src/service/iot-m2m*`) and `src/network`. The research labs (`src/lab`, `src/agent`, the service/API lab in `src/service`, `uep-core/`) are experimental and outside this model; they carry no security claim (see [`LABS.md`](./LABS.md)). Per-release findings and their status are in the `PUBLIC-SECURITY-REMEDIATION-v0.4.x.md` files.
+
 ## Assets to protect
 
 - transaction integrity;
@@ -99,7 +101,8 @@ The public repository does not claim to solve:
 - physical resource delivery;
 - regulatory compliance;
 - production payment-rail fraud;
-- interplanetary double-spend under real communication partitions.
+- interplanetary double-spend under real communication partitions;
+- the soundness of the research ZK circuit or the safety of the lab consensus experiments.
 
 ## Security principle
 

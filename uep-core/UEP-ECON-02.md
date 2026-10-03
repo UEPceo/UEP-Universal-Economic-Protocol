@@ -1,57 +1,65 @@
 # UEP-ECON-02 — Service settlement (lab)
 
-## Justificación (directiva)
+## Rationale
 
-1. **Problema:** ECON-01 mueve valor; falta ligar el pago a *algo que ocurre* (servicio).
-2. **Autonomía:** proveedores pueden ofrecer trabajo y cobrar vía estado económico UEP.
-3. **Sanidad:** settlement = BatchTx ECON-01 (fee + treasury + conservación); sin token.
-4. **Relación real:** obligación → entrega verificable → pago finalizado en multinodo.
-5. **¿Ahora?** Sí — siguiente eslabón de la brújula tras ECON-01.
-6. **Complejidad:** registro lab + TX existente; **sin** BFT/ZK/Poseidon.
+1. **Problem:** ECON-01 moves value; the payment still had to be tied to
+   *something that happens* (a service).
+2. **Autonomy:** providers can offer work and get paid through UEP economic state.
+3. **Sanity:** settlement is an ECON-01 `BatchTx` (fee + treasury + conservation);
+   no token.
+4. **Relation to real use:** obligation → verifiable delivery → payment finalized
+   on the multi-node lab.
+5. **Why now:** the next link in the chain after ECON-01.
+6. **Complexity:** a lab registry plus the existing transaction; **no** new
+   BFT, ZK or Poseidon work.
 
-## Flujo
+## Flow
 
 ```
-Proveedor registra Offer (precio, expectedResultDigest)
+Provider registers an Offer (price, expectedResultDigest)
         ↓
-Cliente accept → Obligation OPEN
+Client accepts → Obligation OPEN
         ↓
-Proveedor submitDelivery(resultDigest)
+Provider submitDelivery(resultDigest)
         ↓
-planSettlement: digest match → BatchTx client→provider
+planSettlement: digest match → BatchTx client → provider
         ↓
 MultiNodeCluster propose/finalize (ECON-01)
         ↓
 markSettled
 ```
 
-## Verificación (lab)
+## Verification (lab)
 
-`resultDigest === expectedResultDigest` (SHA-256 del payload acordado).
+`resultDigest === expectedResultDigest` (SHA-256 of the agreed payload).
 
-Producción futura: oráculos, ZK attestations, etc. — **no** en ECON-02.
+Oracles, ZK attestations and similar mechanisms are future work and are **not**
+part of ECON-02.
 
-## Rechazos
+## Rejections
 
-| Caso | reason |
+| Case | reason |
 |------|--------|
-| Sin entrega | NOT_DELIVERED |
-| Digest incorrecto | DIGEST_MISMATCH → DISPUTED |
-| No es el provider | NOT_PROVIDER |
-| Doble settle | ALREADY_SETTLED |
-| Cancelada | CANCELLED |
+| No delivery | NOT_DELIVERED |
+| Wrong digest | DIGEST_MISMATCH → DISPUTED |
+| Not the provider | NOT_PROVIDER |
+| Double settlement | ALREADY_SETTLED |
+| Cancelled | CANCELLED |
 
 ## Fee
 
-Misma política experimental ECON-01 (`floor(amount/1000)`). **No** es tokenomics definitiva.
+The same rule as ECON-01: `creatorFee(price)` from `src/core/fee.ts`
+(0.1% with a 1-unit floor). This is a testnet rule, **not** a final fee model.
 
 ## Tests
 
-`test:econ-02` → 7/7 PASS (happy path, adversarial, multinode meaningful).
+`src/lab/uep-econ-02.test.ts` (7 tests: version, happy path, settlement without
+delivery, digest mismatch, non-provider delivery, multi-node meaningful
+settlement, cancellation). Run with `npm run test:lab -- uep-econ-02`.
 
-## No es
+## Not covered
 
-- Escrow on-chain / locking de fondos antes de entrega
-- Consenso sobre el servicio
-- Remuneración automática de provers/relayers de red
-- Oracle de producción
+- On-chain escrow / locking funds before delivery (see ECON-03 and ECON-04)
+- Consensus about the service itself
+- Automatic remuneration of network provers or relayers
+- A production oracle

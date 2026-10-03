@@ -1,34 +1,37 @@
-# Cómo compilar y ejecutar `uep-zk`
+# How to build and run `uep-zk`
 
-`uep-zk` es la herramienta local de laboratorio del circuito UEP-26 (Groth16 sobre
-BN254 con claves de desarrollo). **No** hay ceremonia de producción y las claves que
-genera son solo para pruebas.
+`uep-zk` is the local lab tool for the UEP-26 spend circuit (Groth16 over BN254
+with development keys). There is **no** production ceremony, and the keys it
+generates are for testing only.
 
-Este repositorio **no incluye ningún binario precompilado**. Se compila desde el
-código fuente:
+This repository **does not include any prebuilt binary**. Build it from source:
 
 ```bash
 npm run build:uep-zk          # = scripts/build-uep-zk.sh
-# binario resultante: uep-core/target/release/uep-zk
+# resulting binary: uep-core/target/release/uep-zk
 uep-core/target/release/uep-zk circuit-id
 ```
 
-Requisitos: Rust estable (CI usa 1.85) y acceso a crates.io. El `Cargo.lock` de
-`uep-26-spend-circuit` está fijado (`cargo build --locked`).
+Requirements: stable Rust (CI uses 1.85.1) and access to crates.io. The
+`Cargo.lock` of `uep-26-spend-circuit` is pinned (`cargo build --locked`).
 
-El código TypeScript del laboratorio (`src/lab/zk-bridge.ts`, `src/lab/uep-zk-runner.ts`)
-busca el binario en este orden: variable `UEP_ZK_BIN`, `uep-core/target/release/uep-zk`
-y otras rutas locales. `npm run test:all` compila el binario y exporta `UEP_ZK_BIN`
-automáticamente.
+The lab TypeScript code (`src/lab/zk-bridge.ts`, `src/lab/uep-zk-runner.ts`)
+looks for the binary in this order: the `UEP_ZK_BIN` environment variable,
+`uep-core/target/release/uep-zk`, then other local paths inside the repository
+(there is no shared `/tmp` fallback). `npm run test:lab` (and therefore
+`npm run test:all`) sets `UEP_ZK_BIN` automatically when the built binary exists.
 
 ## Smoke test
 
 ```bash
-npm run smoke:zk        # demo D=4: setup + prove + verify
+npm run smoke:zk        # D=4 demo: setup + prove + verify
 ```
 
-## Alcance
+## Scope
 
-- Claves Groth16 de desarrollo, generadas en local. No usar fuera del laboratorio.
-- Las pruebas no se vinculan todavía al ledger público de testnet (`src/testnet`), que usa
-  el hash de referencia SHA-256→BN254 y un SMT de 254 bits.
+- Development Groth16 keys, generated locally. Do not use them outside the lab.
+- Proofs are not yet part of the public testnet ledger (`src/testnet`). The
+  ledger and the circuit share the same Poseidon BN254 hash, but the ledger uses
+  a 254-bit SMT and key-derived account ids, while the circuit uses a 32-level
+  tree and the older `H_ACCOUNT(secret, salt)` binding (see `docs/LABS.md`,
+  "Differences between the labs and the public core").

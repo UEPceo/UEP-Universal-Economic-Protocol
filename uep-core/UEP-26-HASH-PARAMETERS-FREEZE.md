@@ -198,7 +198,7 @@ These remain the normative vectors for the **currently running** TypeScript / An
 | Account | 7 | 11 | 497 |
 | Nullifier | 7 | 9 | 501 |
 
-Source: `src/core/uep.test.ts` and UEP-25 `hash.rs`. These are **not** Poseidon outputs.
+Source: `src/lab/uep.test.ts` and UEP-25 `hash.rs`. These are **not** Poseidon outputs.
 
 ---
 

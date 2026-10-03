@@ -11,7 +11,7 @@ CONSENSUS: proposal digest, CommitCert, FinalityCert (unchanged).
 Workers never finalize.
 
 ## C–I) NetworkAdapt (experimental)
-`src/core/uep-net-adapt/` — NetworkAdapter, StarlinkAdapter (mock/recorded),
+`src/lab/uep-net-adapt/` — NetworkAdapter, StarlinkAdapter (mock/recorded),
 telemetry confidence levels, RelaySelector, DTN store-and-forward sim, topology sim.
 
 Starlink is **not** an architectural dependency.

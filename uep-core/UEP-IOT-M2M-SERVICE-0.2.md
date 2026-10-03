@@ -1,4 +1,4 @@
-# UEP IoT / M2M Service Layer v0.1
+# UEP IoT / M2M Service Layer v0.1 + v0.2 addendum
 
 ## Purpose
 

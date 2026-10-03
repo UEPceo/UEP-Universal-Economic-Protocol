@@ -35,7 +35,7 @@ ceremony.
 | Agents | `src/agent/` | Agent identity, owner-signed capabilities, signed action requests, nonce windows |
 | Service/API layer | `src/service/uep-*.ts`, `storage-provider.ts`, `memory-storage.ts`, `s3-adapter.ts`, `ipfs-adapter.ts`, `observability.ts`, `groth16-spend-queue.ts` | A versioned service API over HTTP, storage abstraction with content hashes, observability |
 | Rust / ZK | `uep-core/uep-21-poseidon`, `uep-25-prototype`, `uep-26-spend-circuit` | Poseidon BN254 (t=3, α=5) + R1CS, the UEP-25 reference state machine, the UEP-26 spend circuit and `uep-zk` CLI |
-| Design notes | `uep-core/*.md`, `uep-core/docs/` | Lab design notes by milestone. Historical notes say so in their first line. |
+| Design notes | `uep-core/*.md`, `uep-core/docs/` | Lab design notes by milestone, indexed in [`uep-core/README.md`](../uep-core/README.md). Historical notes say so in their first line; status words in the notes are lab status, not production claims. |
 
 `uep-core/uep-23-state-transition` and `uep-core/uep-24-atomic` are historical
 scaffolds kept for reference; they do not compile and are not tested.

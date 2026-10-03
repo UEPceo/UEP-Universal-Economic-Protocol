@@ -27,6 +27,13 @@ Publishes the project's research labs next to the testnet so that everything bui
 - **Behaviour change (labs):** proofs from the v2 circuit do not verify against v3 keys; `verifyZkSpendProofAgainstExpected()` takes an `expectedDomainId` argument.
 - `npm run test:protocol` has 83 tests (4 new Poseidon vector tests) and takes about a minute, since Poseidon in TypeScript is slower than SHA-256.
 
+### Documentation
+
+- README: new "Origin and motivation" section (the research question the project started from) and a status legend (implemented on testnet, experimental lab, planned, research); a "Research labs" overview; status table with the Rust and lab test counts; repository layout updated (Poseidon, composite keys, `uep-core/` structure); ZK and multi-node sections reworded now that the labs are public.
+- New `uep-core/README.md`: index of the Rust crates and lab design notes, with guidance on lab status words, historical notes and internal-workspace test commands.
+- Lab design notes: Spanish notes translated to English; stale paths (`src/core/…` → `src/lab/…`) and stale statements (testnet hash, fee floor in ECON-01/02 and UEP-25) corrected.
+- `docs/ARCHITECTURE.md`, `ROADMAP.md`, `docs/REPRODUCIBILITY.md`, `docs/THREAT-MODEL.md`, `SECURITY.md`, `CONTRIBUTING.md`, `NOTICE` and the PR template updated for the research labs (scope, counts, troubleshooting). No code, test or configuration change.
+
 ### CI
 
 - `npm run test:all` now also runs `test:rust`, `build:uep-zk` and `test:lab`; it is the blocking CI job on Node.js 22.x and 24.x with Rust 1.85.1 and a cargo cache.

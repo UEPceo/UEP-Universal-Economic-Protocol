@@ -27,7 +27,7 @@ Pre-submit gates:
 
 Wired into `UepLedger.prepareSpend` → reject `POLICY` if verdict fails. Window commits after successful `submit`.
 
-## 2. Oracles (`src/core/oracle.ts`)
+## 2. Oracles (`src/lab/oracle.ts`)
 
 - Multi-source quotes per `(base, quote)` asset pair
 - Staleness window
@@ -37,7 +37,7 @@ Wired into `UepLedger.prepareSpend` → reject `POLICY` if verdict fails. Window
 
 Consensus **does not** require oracle data for basic P2P transfers. Liquidity / risk modules may require fresh quotes.
 
-## 3. Liquidity (`src/core/liquidity.ts`)
+## 3. Liquidity (`src/lab/liquidity.ts`)
 
 - Constant-product AMM pools (`x * y = k`)
 - Pool fee in ppm
@@ -57,4 +57,4 @@ Demo pool: `pool:test:energy-eur`.
 
 ## Tests
 
-`src/core/security-liquidity.test.ts` — included in `npm run test:uep`.
+`src/lab/security-liquidity.test.ts` — included in `npm run test:uep`.

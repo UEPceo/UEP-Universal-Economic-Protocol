@@ -13,7 +13,7 @@
 
 ## Module
 
-`src/core/uep36-aggregate-semantics.ts`
+`src/lab/uep36-aggregate-semantics.ts`
 
 - `validateProposalSemantics`
 - `HeightVoteLock`

@@ -10,6 +10,7 @@
 
 - [ ] `npm test` passes on Node.js 22 and 24 (CI runs both)
 - [ ] `npm run smoke:testnet` passes
+- [ ] `npm run test:all` passes if the change touches the research labs or `uep-core/` (needs Rust 1.85)
 - [ ] New or changed behaviour has tests (including negative tests where relevant)
 - [ ] `CHANGELOG.md` is updated (if the change is user-visible)
 - [ ] Docs are updated (`README.md`, `docs/API.md`, examples) where relevant

@@ -1,8 +1,14 @@
-# Multi-asset design checkpoint (no implementación)
+# Multi-asset design checkpoint (lab, no implementation)
 
-Estado actual: `CANONICAL_ASSET_ID` fijo en leaves.
+> Historical lab note. It describes the consensus/SMT labs, where leaves use a
+> fixed `CANONICAL_ASSET_ID`. The public testnet ledger keeps balances per
+> account and asset and commits the asset id into notes; v0.4.7 added per-asset
+> hardening (see `CHANGELOG.md` and `ROADMAP.md`, "Multi-asset").
 
-Antes de congelar leaves definitivamente, assetId debe entrar en:
-account identity, leaf encoding, SMT index, state root, fee, treasury por activo, escrow, settlement, ZK public inputs.
+Current lab state: a fixed `CANONICAL_ASSET_ID` in the leaves.
 
-No segundo ledger paralelo. No implementar en A.1.
+Before the leaves are frozen for good, the asset id has to be part of:
+account identity, leaf encoding, SMT index, state root, fee, per-asset treasury,
+escrow, settlement and the ZK public inputs.
+
+No second parallel ledger. Not to be implemented in milestone A.1.

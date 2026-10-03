@@ -38,7 +38,7 @@ npm run build:uep-zk   # build the research uep-zk prover from source
 npm run test:lab       # research labs (src/lab, src/agent, service/API lab), see docs/LABS.md
 ```
 
-Lab code is experimental. Changes to protocol rules belong in `src/core` and `src/testnet` first; labs import those modules rather than copying them.
+Lab code is experimental. Changes to protocol rules belong in `src/core` and `src/testnet` first; labs import those modules rather than copying them. To run a subset of the labs, pass a path fragment: `npm run test:lab -- uep36` runs only the lab files whose path contains `uep36`. Older lab design notes in `uep-core/` sometimes mention `npm run test:<milestone>` scripts from the internal workspace; in this repository use `npm run test:lab -- <fragment>` instead (see [`uep-core/README.md`](./uep-core/README.md)).
 
 CI runs `npm run test:all` on Node.js 22.x and 24.x; this job is blocking. The lab files listed in `scripts/lab-known-issues.json` run in a separate non-blocking job (`npm run test:lab:known`).
 
@@ -53,6 +53,7 @@ Examples include:
 - performance measurements with complete methodology;
 - Marketplace lifecycle tests;
 - independent compatibility implementations;
+- reviews of the research labs (circuit constraints, consensus experiments) that state clearly which property was checked;
 - clear bug reports with minimal reproduction cases.
 
 ## Do not submit
@@ -64,7 +65,7 @@ Never commit:
 - `.env` files containing credentials;
 - customer/user personal data;
 - production endpoints or credentials;
-- confidential audit material;
+- confidential assessment material;
 - undisclosed private vulnerability details;
 - proprietary material belonging to third parties.
 
@@ -85,6 +86,8 @@ Pull requests use the [pull request template](./.github/pull_request_template.md
 5. whether any security assumption changed.
 
 Protocol-affecting changes should include deterministic tests where practical. User-visible changes should add a `CHANGELOG.md` entry.
+
+Repository documentation is written in English. When a document describes a capability, label it as implemented (testnet), experimental (lab), planned or research, as the README does.
 
 ## Code of Conduct
 

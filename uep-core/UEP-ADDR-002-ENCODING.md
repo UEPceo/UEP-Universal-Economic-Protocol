@@ -100,7 +100,7 @@ address_id   = Fr(1)
 ueptest1qyqqqqqpqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzqwnptw
 ```
 
-Reference: `src/core/address-v2.ts` + `address-v2.test.ts` (9/9 PASS).
+Reference: `src/lab/address-v2.ts` + `address-v2.test.ts` (9/9 PASS).
 
 ## 10. Legacy
 

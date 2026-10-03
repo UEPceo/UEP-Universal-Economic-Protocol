@@ -1,6 +1,6 @@
 # UEP-33.1 — ZK on 3-node cluster + multi-host path
 
-## 1. Groth16 obligatorio en A/B/C
+## 1. Groth16 required on A/B/C
 
 ```
 Payment → Engine prove D=4

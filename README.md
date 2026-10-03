@@ -15,12 +15,36 @@ This repository is the **public reproducible reference slice** of the project. I
 
 The repository is intended for developers, researchers, security testers and early community participants who want to inspect the implementation, reproduce its tests, attack its assumptions and build compatible experiments.
 
+Alongside these two layers, the repository also publishes the project's **research labs** (Rust/ZK core in `uep-core/`, consensus, node, economic and agent experiments in `src/lab/` and `src/agent/`). They are experimental, are tested by `npm run test:all`, and are not part of the testnet rules ([`docs/LABS.md`](./docs/LABS.md)).
+
+## Origin and motivation
+
+UEP did not start as a product plan. It started from a research question:
+
+> *Can two parties agree on a price, exchange a service and settle it reliably when they do not share a currency, do not depend on a central payment operator, and cannot count on a fast, always-available communication link between them?*
+
+On Earth the question is mostly about neutrality and resilience: different assets coexisting, intermittent connectivity, machines paying machines. Taken to its limit, with parties separated by minutes to hours of signal delay, it becomes a question about how economic coordination can work when a shared, low-latency clock cannot be assumed.
+
+The project has grown step by step from that question: first a minimal state machine for notes, nullifiers and fees; then a hardened local testnet; then a Marketplace and an IoT/M2M service layer to test the model against concrete service flows; and, in parallel, research labs for zero-knowledge spends, multi-node consensus and delay-tolerant settlement. Each public step is released with its tests and its known limitations; since the first public release, independent adversarial assessments have examined each release line up to v0.4.6.
+
+There was no predefined commercial goal. As the protocol gains capabilities, some of them could become broadly useful, for example settling machine-to-machine services or keeping local economies working under poor or delayed connectivity. These are hypotheses to be tested, not statements about what UEP does today.
+
+### How to read the status of anything in this repository
+
+| Label | Meaning |
+|---|---|
+| **Implemented (testnet)** | Code in `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/service/iot-m2m*` and `src/network`, covered by `npm test`. Runs only on the local, single-node, in-process testnet. |
+| **Experimental (lab)** | Code in `src/lab`, `src/agent`, the service/API lab in `src/service` and `uep-core/`. Tested by `npm run test:all`, but not part of the testnet rules and without any security claim. |
+| **Planned** | A roadmap milestone with deliverables and exit criteria ([`ROADMAP.md`](./ROADMAP.md)); not yet in code. |
+| **Research / future vision** | A direction of inquiry, such as delay-tolerant or interplanetary settlement. No settled design, nothing operational. |
+
 ### Current status (v0.4.7)
 
 | Item | Status |
 |---|---|
-| Version | `0.4.7-public-iot-m2m` on `main` (latest tag `v0.4.6-public-iot-m2m`) |
-| Tests | protocol **83/83**, Marketplace + IoT/M2M **104/104**, scale **3/3**, IoT **23/23** |
+| Version | `0.4.7-public-iot-m2m` on `main`, plus the unreleased research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
+| Tests (testnet) | protocol **83/83**, Marketplace + IoT/M2M **104/104** (includes IoT **23/23** and scale **3/3**) |
+| Tests (research labs) | Rust **107** (uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 91); labs **440** tests in 93 files; 16 lab files with known issues run in a non-blocking job |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 6 |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
@@ -105,6 +129,22 @@ The public Marketplace layer implements:
 
 The Marketplace is intentionally a separate business layer in this release. **The repository does not claim that Marketplace settlement is already an end-to-end production transaction through the UEP consensus/ZK stack.**
 
+### Research labs (experimental)
+
+The labs were internal experiments during the project's early stage and are now published so that the whole project can be built and tested in one place. They import the hardened primitives from `src/core` and do not change the testnet rules. They include:
+
+- **Rust/ZK core** (`uep-core/`): Poseidon over BN254 with an R1CS gadget, the UEP-25 reference state machine, and the UEP-26 Groth16 spend circuit with the `uep-zk` CLI (development keys from a seeded setup, no ceremony);
+- **ZK bridge** (`src/lab/zk-*.ts`, `poseidon-*.ts`): calling `uep-zk` from TypeScript to prove and verify spends;
+- **execution engine** with conflict scheduling and persistence;
+- **node protocol and transport**: authenticated envelopes, TCP handshake, pinned verifying keys;
+- **consensus experiments** (`src/lab/uep34-*` to `uep38-*`): leader election, quorum and commit certificates, BFT configuration gate, DAG dissemination, partitions and recovery, multi-leader aggregates, view change, SMT economic state on the consensus path;
+- **economic labs** (`src/lab/uep-econ-*`): meaningful transactions, service settlement, escrow and holds, dispute liveness;
+- **network adaptation** (`src/lab/uep-net-adapt/`): simulated links, relays and delay-tolerant bridging;
+- **agents** (`src/agent/`): agent identity, owner-signed capabilities, nonce windows;
+- **service/API lab** (`src/service/`): a versioned HTTP service API, storage adapters with content hashes, observability.
+
+Some lab suites have documented known failures and run in a non-blocking CI job. Scope, commands and the known differences between the labs and the core are in [`docs/LABS.md`](./docs/LABS.md); the design notes are indexed in [`uep-core/README.md`](./uep-core/README.md).
+
 ---
 
 ## 3. Current public economic model
@@ -147,7 +187,7 @@ The Marketplace Treasury is separate from the protocol-level testnet treasury.
 
 ## 4. Security hardening in v0.3.2
 
-Release v0.3.2 followed external review `UEP-RR-2026-10-02-001`. The previous public alpha had critical weaknesses in its provisional hash and optional authentication path. v0.3.2 addressed them. In particular:
+Release v0.3.2 followed independent assessment `UEP-RR-2026-10-02-001`. The previous public alpha had critical weaknesses in its provisional hash and optional authentication path. v0.3.2 addressed them. In particular:
 
 - the reversible/commutative algebraic placeholder is no longer the active public hash backend;
 - sender authentication is required by default;
@@ -164,7 +204,7 @@ The SHA-256-based backend introduced in v0.3.2 was a reference hardening backend
 
 ## 5. Security hardening in v0.4.1 – v0.4.7
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the external reviews of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the independent adversarial assessments of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
@@ -298,7 +338,7 @@ npm run test:all
 6. `npm run build:uep-zk`: builds the research Groth16 prover `uep-zk` from source into `uep-core/target/`;
 7. `npm run test:lab`: the research labs in `src/lab/`, `src/agent/` and the service/API lab in `src/service/` (see [`docs/LABS.md`](./docs/LABS.md)).
 
-Steps 1–4 need no network access and take about a minute. Steps 5–7 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs the same command on Node.js 22.x and 24.x as a blocking job, and runs the lab files with known issues (`scripts/lab-known-issues.json`) in a separate non-blocking job, so the badge reflects the core. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
+Steps 1–4 need no network access and take a few minutes, depending on the machine (the protocol suite alone takes about a minute, because Poseidon runs in TypeScript). Steps 5–7 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs the same command on Node.js 22.x and 24.x as a blocking job, and runs the lab files with known issues (`scripts/lab-known-issues.json`) in a separate non-blocking job, so the badge reflects the core. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
 
 ### Minimal reproducible verification
 
@@ -409,7 +449,8 @@ Repository layout:
 ├── src/
 │   ├── core/                 # Minimal public economic/cryptographic primitives
 │   │   ├── field.ts
-│   │   ├── hash.ts
+│   │   ├── poseidon.ts       # active protocol hash: Poseidon over BN254 (+ poseidon-bn254-params.ts)
+│   │   ├── hash.ts           # hash backend interface; SHA-256 backend kept as inactive reference
 │   │   ├── encoding.ts
 │   │   ├── fee.ts
 │   │   ├── note.ts
@@ -419,7 +460,8 @@ Repository layout:
 │   │   ├── transaction.ts
 │   │   ├── reconciliation.ts
 │   │   ├── address.ts        # v0.4.5: Bech32m v2 addresses (UEP-ADDR-002)
-│   │   ├── assets.ts
+│   │   ├── assets.ts         # asset registry, canonical asset ids (v0.4.7)
+│   │   ├── composite-key.ts  # injective composite keys for per-asset maps (v0.4.7)
 │   │   ├── security-policy.ts
 │   │   ├── ed25519.ts        # Ed25519 helpers (node:crypto) for snapshots, mints, buyer signatures
 │   │   ├── spend-key.ts      # spend keys, key-derived account ids (v0.4.5), sender signatures
@@ -428,6 +470,7 @@ Repository layout:
 │   │   ├── status.ts
 │   │   ├── zk-witness-contract.ts
 │   │   ├── index.ts
+│   │   ├── poseidon.test.ts
 │   │   └── uep-smt-key-hardening.test.ts
 │   │
 │   ├── identity/             # Deterministic test identities
@@ -452,9 +495,18 @@ Repository layout:
 │   ├── marketplace-20k-simulation.mjs
 │   ├── test-rust.sh / build-uep-zk.sh   # research Rust crates and uep-zk prover
 │   ├── test-lab.mjs                     # research lab runner (+ lab-known-issues.json)
-│   └── zk-local-smoke.mjs
+│   └── zk-local-smoke.mjs               # npm run smoke:zk (D=4 setup + prove + verify)
 │
-├── uep-core/                 # Research Rust crates, specs, vectors and benchmarks (experimental)
+├── uep-core/                 # Research labs (experimental), see uep-core/README.md
+│   ├── uep-21-poseidon/      # Poseidon BN254 + R1CS gadget (Rust)
+│   ├── uep-25-prototype/     # UEP-25 reference state machine (Rust)
+│   ├── uep-26-spend-circuit/ # UEP-26 Groth16 spend circuit and uep-zk CLI (Rust, development keys)
+│   ├── uep-23-state-transition/, uep-24-atomic/   # historical scaffolds, not built or tested
+│   ├── uep-32-e2e-evidence/  # lab evidence notes
+│   ├── vectors/              # Poseidon and SMT golden vectors
+│   ├── benchmarks/           # recorded lab benchmark outputs
+│   ├── docs/                 # lab API, storage and observability notes
+│   └── UEP-*.md              # lab design notes by milestone
 │
 └── docs/
     ├── API.md            # changed public signatures (v0.4.3 – v0.4.7)
@@ -597,14 +649,12 @@ This public release must not be interpreted as a production ZK network.
 
 The public testnet transaction path uses the **development/reference spend-MAC mechanism** so that the transaction flow is reproducible without distributing a production proving ceremony or claiming a production verifier.
 
-The internal project contains additional ZK research and implementation work, but the following are intentionally **not published here as production guarantees**:
+The project's ZK research (the UEP-26 spend circuit, the `uep-zk` prover and the TypeScript bridge) is published as experimental lab code (see below). No production trusted-setup ceremony has been performed, so there are no production proving or verification keys. The following are intentionally **not published here**:
 
-- production proving keys;
-- production verification keys;
-- ceremony secrets;
+- ceremony secrets or any future production key material;
 - private proving infrastructure;
 - internal ZK worker deployment configuration;
-- confidential audit material.
+- confidential assessment material.
 
 **Protocol hash.** The testnet core hashes note commitments, nullifiers and the sparse Merkle tree with **Poseidon over BN254** (x^5, t = 3, 8 full + 57 partial rounds, circomlib-compatible constants; `src/core/poseidon.ts`), checked against the `uep-core/vectors` test vectors. It is the same hash the research spend circuit uses, so there is one canonical protocol hash. This changes commitments, nullifiers and roots (snapshot format 6); account ids and addresses are unchanged. Using a circuit-friendly hash is not a production ZK claim.
 
@@ -616,9 +666,9 @@ If a future public release reaches a production-cryptographic milestone, it shou
 
 ## 13. Multi-node and interplanetary status
 
-The internal UEP project investigates multi-node consensus, delayed networking, DTN-style transport and interplanetary reconciliation.
+UEP investigates multi-node consensus, delayed networking, DTN-style transport and interplanetary reconciliation.
 
-Those areas are **research tracks**, not features that this repository claims to provide as a live network. Some of the multi-node consensus experiments are published as labs in `src/lab/` (local processes on one machine; see [`docs/LABS.md`](./docs/LABS.md)).
+Those areas are **research tracks**, not features that this repository claims to provide as a live network. The multi-node consensus experiments (leader election, quorum and commit certificates, BFT configuration gate, DAG dissemination, partitions and recovery, view change) and a simulated network-adaptation / delay-tolerant bridging lab are published in `src/lab/`. They run as in-process simulations or as local processes and TCP connections on one machine (see [`docs/LABS.md`](./docs/LABS.md)); they are not the testnet and not a deployed network.
 
 In particular:
 
@@ -703,7 +753,7 @@ A future feature should not be considered part of the public protocol merely bec
 
 All BIP-39 recovery phrases used by the public examples and tests are generated at runtime with the platform cryptographic random generator. No fixed mnemonic, private key, seed phrase or personal wallet credential is embedded in this repository. Test identities are disposable testnet identities and must never be funded with real-world value.
 
-This repository audit found no hard-coded BIP-39 mnemonic or personal wallet seed. Historical use outside the repository cannot be established from source code alone; the project therefore makes no claim about any seed that may have existed in an earlier private environment.
+A review of this repository's source found no hard-coded BIP-39 mnemonic or personal wallet seed. Historical use outside the repository cannot be established from source code alone; the project therefore makes no claim about any seed that may have existed in an earlier private environment.
 
 ---
 

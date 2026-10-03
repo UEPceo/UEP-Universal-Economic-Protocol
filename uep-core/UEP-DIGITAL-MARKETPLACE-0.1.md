@@ -100,7 +100,7 @@ The software does not embed a founder private key. The production operating enti
 
 ## UEP protocol fee separation
 
-If UEP later charges its planned 0.10% infrastructure fee, that fee must remain a separate protocol accounting event. It must not silently be mixed with the Marketplace 3.00% business fee.
+The UEP testnet protocol fee (0.1%, minimum 1 unit) must remain a separate protocol accounting event. It must not silently be mixed with the Marketplace 3.00% business fee.
 
 ## API surface
 
