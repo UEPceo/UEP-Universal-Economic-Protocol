@@ -1,6 +1,6 @@
 # Public API reference: changed signatures (v0.4.3 – v0.5.2)
 
-This page lists the public signatures that changed in `0.5.2-modules`, `0.5.1-public-iot-m2m`, `0.5.0-public-iot-m2m`, `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+This page lists the public signatures that changed in `0.5.2-public-iot-m2m`, `0.5.1-public-iot-m2m`, `0.5.0-public-iot-m2m`, `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
 
 # v0.5.2
 

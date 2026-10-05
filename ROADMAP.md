@@ -18,8 +18,8 @@ For the layer-by-layer architecture and the current status of each layer, see [`
 
 | Item | Status |
 |---|---|
-| Current version | `0.5.1-public-iot-m2m` (deterministic height-based transitions, evidence caps, compatibility policy, review fixes), on top of v0.5.0 and the research-labs integration and Poseidon protocol hash (latest GitHub Release `v0.4.6-public-iot-m2m`) |
-| Tests | testnet: protocol 96/96, Marketplace + IoT/M2M + HTTP authorization 121/121 (includes IoT 23/23 and scale 3/3); research labs: Rust 115, labs 455 in 96 files (`npm run test:all` runs everything) |
+| Current version | `0.5.2-public-iot-m2m` (settlement engine, category modules swap/relay/dispute/drip, oracle policy layer with real Poseidon, attack-battery hardenings), on top of `0.5.1-public-iot-m2m` (height-based transitions, evidence caps, compatibility policy) and v0.5.0 (latest GitHub Release `v0.5.2`) |
+| Tests | testnet: protocol 144/144, Marketplace + IoT/M2M + HTTP + attack-battery 176/176, settlement 5/5, oracle 7/7, category 4/4; poisoned clock 298; research labs: Rust 115, labs 463 in 98 files (`npm run test:all` runs everything) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process, not a throughput claim) |
 | CI | GitHub Actions: `npm run test:all` on Node.js 22.x and 24.x (blocking); 14 lab files with known issues in a separate non-blocking job |
 | Network | Local, single-node, in-process testnet |
@@ -53,7 +53,7 @@ Phase 9  Interplanetary economic network research
 
 **Goal:** anyone can run UEP and check that the economic system works without depending on the team.
 
-**Delivered (v0.4.1 – v0.5.0):**
+**Delivered (v0.4.1 – v0.5.2):**
 
 - Ledger: 254-bit SMT keys, input notes resolved against the ledger, output and nonce binding, distinct transfer participants, restore that re-derives the full state.
 - Snapshots: Ed25519 authorities with optional k-of-n threshold, hash chain and checkpoints, a separate faucet key with signed mints, verify-only restore with public keys.
@@ -63,6 +63,8 @@ Phase 9  Interplanetary economic network research
 - IoT/M2M: machine keys required, signed telemetry with sequence and nonce anti-replay, settlement only against verified telemetry for the full quantity.
 - Per-asset hardening (v0.4.7): canonical asset ids, per-asset balance keying in the Marketplace, per-asset issuer keys with rotation and revocation, restore rejects unregistered assets, per-asset policy limits and fee floors, atomic multi-note payments, `requireProof` fixed at construction.
 - v0.5.0: API authorization hardening (signed actor headers, fail-closed 401/403, signed treasury read, objects token, CORS off by default), ledger spends authorized by the sender signature by default, paymaster caps and expiry, a compressed sparse Merkle tree, a duplicate-listing index, circuit v4 keyed by (account, asset) with pinned development verifying keys, namespaced asset ids and the signed asset registry manifest module.
+- v0.5.1: deterministic height-based transitions (ADR 0002), monotonic height producer, domain delay windows (EARTH/MOON/MARS), evidence value caps, snapshot format 7 with migrations, v3 account ids, object-route Host/Origin checks, lab domain binding, 130-bit self-certifying namespaces.
+- v0.5.2: settlement engine as the single payout path behind Marketplace and category HOLDs; category modules (swap, relay, dispute, drip) over Marketplace escrow/subsidy ports; oracle layer with repository Poseidon BN254 for policy evaluation only (not on the spend path); attack-battery hardenings (concurrent spend guard / `SpendSerializer`, unfunded reservation caps, `ORDER_STATE_CONFLICT`, paymaster capture on settle, relay custody 20 % / delivery 80 %). Deferred: IoT hardware attestation, HPKE for relay payloads.
 - Independent adversarial assessments of every release line, the latest on v0.4.7. Per-finding status is in the `PUBLIC-SECURITY-REMEDIATION-v0.4.x.md` files.
 
 **Still open (documented in [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md)):**
@@ -90,6 +92,8 @@ The ledger already keeps balances per account and asset and commits the asset id
 ## Phase 2 — Service economy · In progress
 
 **Goal:** UEP runs reproducible economic services on the testnet, and applications no longer need to import internal classes.
+
+**Partial progress in v0.5.2 (testnet):** the settlement engine, category modules (swap/relay/dispute/drip) and the policy-only oracle layer land ahead of milestones 2.3–2.4. They do not replace the event bus, storage abstraction, evidence system or generic service schemas still listed below.
 
 ```text
 Provider → Service → Discovery → Request → Order → HOLD

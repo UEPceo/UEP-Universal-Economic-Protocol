@@ -56,13 +56,13 @@ Research labs (`src/lab`, `src/agent`, the service/API lab in `src/service`, `ue
 | **B. Economic state / ledger** | Implemented (testnet) | `src/testnet/ledger.ts`: 254-bit SMT, note-commitment Merkle tree, Ed25519 k-of-n hash-chained snapshots, signed mints, validated pending queue; per-asset hardening (v0.4.7): canonical asset ids, per-asset issuer keys, per-asset policy limits and fee floors, atomic multi-note payments; spends authorized by the sender signature, compressed SMT storage, namespaced asset ids (v0.5.0) | True multi-input spends (nullifier vector); wiring the signed asset registry manifest into the ledger (ADR 0001) |
 | **C. Cryptography / ZK** | Partial | Poseidon BN254 protocol hash (`src/core/poseidon.ts`, the same hash as the spend circuit; snapshot format 7, format 6 migrated, see [`COMPATIBILITY.md`](./COMPATIBILITY.md)), Ed25519 via `node:crypto`, SMT, note tree, ZK witness contract (not wired), development spend MAC. Labs: the UEP-26 Groth16 spend circuit (`uep-core/`, `src/lab/`, experimental, see [`LABS.md`](./LABS.md)) | Production circuits, a 254-level circuit tree and in-circuit key-derived account ids (see [`LABS.md`](./LABS.md)), witness range checks (UEP-A22), production keys and ceremony |
 | **D. Consensus & network** | Future | A `local://` testnet profile only. Labs: local multi-process consensus experiments in `src/lab/` (experimental) | Replication, consensus, P2P |
-| **E. Marketplace** | Implemented (testnet) | `src/marketplace`: listings, funded reservations, HOLD, delivery, disputes with an arbiter, settlement, treasury, paymaster, reputation; balances indexed per asset and identity, optional asset-registry mode and signed credits (v0.4.7); paymaster caps and expiry, duplicate-listing index (v0.5.0) | Marketplace snapshot/restore; service schemas and SLA; a real payment rail |
+| **E. Marketplace** | Implemented (testnet) | `src/marketplace` plus `src/settlement` / `src/category` / `src/oracle` (v0.5.2): listings, funded reservations, HOLD, delivery, disputes with an arbiter, settlement through the single settlement engine, treasury, paymaster (capture on settle), reputation; category modules swap/relay/dispute/drip over escrow ports; policy-only oracle (Poseidon BN254); balances indexed per asset and identity; unfunded reservation caps, `ORDER_STATE_CONFLICT`, relay 20/80 custody split; paymaster caps and expiry, duplicate-listing index (v0.5.0) | Marketplace snapshot/restore; service schemas and SLA; a real payment rail; IoT hardware attestation; HPKE for relay payloads |
 | **F. Service plane** | Partial | Signed identities, IoT provider and machine registries, listings as the service registry, `attachCategoryService()` | A decoupled layer with typed registries and identity states; a generic execution interface |
 | **G. IoT / M2M** | Implemented (testnet) | `src/service/iot-m2m*.ts`: machine Ed25519 keys, signed canonical-CBOR telemetry, anti-replay, settlement against verified telemetry | Gateway, retry/backoff, machine offline mode, schema validation, physical attestation |
 | **H. Identity & authorization** | Partial | Key-derived accounts, `uep1` Bech32m addresses, a signed `ActorAuth` on every action, admin and arbiter keys, per-asset issuer key rotation and revocation (v0.4.7); signed actor headers and fail-closed HTTP/service API (v0.5.0) | Rotation of snapshot, admin and arbiter keys; suspended/revoked states, Sybil resistance |
 | **I. Events / storage / API** | Design | Content hashes as delivery evidence; all state is in memory. Lab: a versioned service API and storage abstraction in `src/service/` (experimental) | Event bus, storage abstraction, network API |
 | **J. SDK / developer platform** | Design | TypeScript library API ([`API.md`](./API.md)), the first-transaction example, test kits | `@uep/*` packages, CLI, sandbox |
-| **K. Node / infrastructure** | Future | Role separation inside one node: snapshot authority, faucet key, verify-only node. Labs: node protocol, TCP transport and handshake in `src/lab/` (experimental) | Node processes, validators, provers, oracles, relayers |
+| **K. Node / infrastructure** | Future | Role separation inside one node: snapshot authority, faucet key, verify-only node. Labs: node protocol, TCP transport and handshake in `src/lab/` (experimental). The v0.5.2 policy oracle in `src/oracle` is Implemented (testnet) under Marketplace, not a network oracle role | Node processes, validators, provers, network oracles, relayers |
 | **L. Testnet** | Implemented (testnet), local only | In-process ledger, smoke test, quickstart, 20k simulation, CI on Node.js 22 and 24 | Local multi-node, public testnet |
 | **M. Interplanetary extensions** | Future | Labels only: non-public `GLOBAL` / `INTERPLANETARY` profiles and simulated assets | Delay-tolerant networking, asynchronous settlement |
 | **N. Public economic network** | Design | 0.1% protocol fee and 3% Marketplace fee with the 40/25/20/15 treasury split, on testnet | Provider and node economics, treasury governance |
@@ -77,9 +77,21 @@ Research labs (`src/lab`, `src/agent`, the service/API lab in `src/service`, `ue
                         │ attachCategoryService()
                         ▼
 ┌──────────────────────────────────────────────┐
+│  CATEGORIES / ORACLE (src/category, oracle)  │
+│ swap · relay · dispute · drip · policy quotes│
+└───────────────────────┬──────────────────────┘
+                        │ escrow / subsidy ports
+                        ▼
+┌──────────────────────────────────────────────┐
 │           UEP DIGITAL MARKETPLACE            │
 │ listings · orders · HOLD · delivery · fees   │
 │ disputes · treasury · reputation · paymaster │
+└───────────────────────┬──────────────────────┘
+                        │ SettlementEngine.payout
+                        ▼
+┌──────────────────────────────────────────────┐
+│          SETTLEMENT (src/settlement)         │
+│ single payout executor · receipt Merkle tree │
 └───────────────────────┬──────────────────────┘
                         │
                         │ business-layer boundary
@@ -88,6 +100,7 @@ Research labs (`src/lab`, `src/agent`, the service/API lab in `src/service`, `ue
 │                 UEP TESTNET                  │
 │ identities · notes · transactions · SMT      │
 │ nullifiers · fees · local state transition   │
+│ concurrent spend guard / SpendSerializer     │
 └──────────────────────────────────────────────┘
 ```
 
@@ -356,8 +369,10 @@ This is the direction, not the current state. The current state is the table in 
 
 Added as **Implemented (testnet)** modules on top of the Marketplace:
 
-- `src/settlement` — single payout executor behind Marketplace and category HOLDs.
-- `src/category` — swap, relay, dispute, drip over a Marketplace escrow port.
-- `src/oracle` — policy-evaluation oracle (Poseidon BN254 commitments); never on the spend path.
+- `src/settlement` — single payout executor behind Marketplace and category HOLDs. Marketplace `payout()` and category `settleHold()` go through it; one fee path (Marketplace fee on the provider part only).
+- `src/category` — swap, relay, dispute, drip over once-issued Marketplace escrow/subsidy ports (no private ledgers). Relay pays 20 % custody / 80 % delivery after key publication.
+- `src/oracle` — policy-evaluation oracle (repository Poseidon BN254 commitments); never imported from core/testnet; never holds balances; not on the spend or consensus path.
 
-See `docs/SETTLEMENT.md`, `docs/CATEGORY-MODULES.md`, `docs/ORACLE.md` and `docs/INTEGRATION-PLAN.md`.
+Attack-battery hardenings that land with these modules (still testnet only): process-local concurrent spend guard (`LEDGER_BUSY`) and `SpendSerializer`; `maxUnfundedReservationsPerListing`; optimistic `order.version` / `ORDER_STATE_CONFLICT`; paymaster sponsorship captured only on settle. Deferred: IoT hardware attestation (Evidence phase); HPKE for relay payloads.
+
+See `docs/SETTLEMENT.md`, `docs/CATEGORY-MODULES.md`, `docs/ORACLE.md`, `docs/THREAT-MODEL.md` and `docs/INTEGRATION-PLAN.md`.

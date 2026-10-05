@@ -114,18 +114,27 @@ The public Marketplace layer implements:
 - order creation;
 - HOLD / reservation lifecycle;
 - delivery integrity hashing;
-- deterministic settlement;
+- deterministic settlement through the **settlement engine** (`src/settlement`, v0.5.2) as the single payout path;
 - Marketplace Treasury accounting;
 - seller reputation;
 - listing/rate controls;
 - idempotent settlement;
 - duplicate/replay protection;
-- Paymaster-style gas sponsorship accounting;
+- Paymaster-style gas sponsorship accounting (sponsorship captured only on settle since v0.5.2);
 - signed actions for every order step, with party-only order access (v0.4.4);
 - buyer disputes with arbiter resolution (release / refund / split) and a timeout outcome (v0.4.4);
 - IoT/M2M orders settled against telemetry signed by the machine's registered key (v0.4.4);
 - authorization checks for cancellation/expiration;
+- unfunded reservation caps per listing and optimistic `order.version` / `ORDER_STATE_CONFLICT` (v0.5.2);
 - synthetic 20,000-operation load testing.
+
+### Category modules and oracle (v0.5.2)
+
+**Implemented (testnet)** alongside the Marketplace:
+
+- **Categories** (`src/category`): swap, relay, dispute and drip over Marketplace escrow/subsidy ports (no private ledgers). Relay uses a 20 % custody / 80 % delivery split after key publication.
+- **Oracle** (`src/oracle`): Poseidon BN254 policy evaluation only (SLA, tariff, dispute evidence, AMM skew checks). Never on the spend or consensus path; never holds balances.
+- Details: [`docs/SETTLEMENT.md`](./docs/SETTLEMENT.md), [`docs/CATEGORY-MODULES.md`](./docs/CATEGORY-MODULES.md), [`docs/ORACLE.md`](./docs/ORACLE.md).
 
 The Marketplace is intentionally a separate business layer in this release. **The repository does not claim that Marketplace settlement is already an end-to-end production transaction through the UEP consensus/ZK stack.**
 
@@ -202,9 +211,9 @@ The SHA-256-based backend introduced in v0.3.2 was a reference hardening backend
 
 ---
 
-## 5. Security hardening in v0.4.1 – v0.5.0
+## 5. Security hardening in v0.4.1 – v0.5.2
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the independent adversarial assessments of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening. v0.5.0 adds the API authorization hardening, signed spends, paymaster caps and the fixes from the reviews of v0.4.7; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the independent adversarial assessments of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening. v0.5.0 adds the API authorization hardening, signed spends, paymaster caps and the fixes from the reviews of v0.4.7. v0.5.1 adds height-based transitions and evidence caps. v0.5.2 adds the settlement engine, category modules, the policy-only oracle and the attack-battery hardenings listed above; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
@@ -514,7 +523,7 @@ Repository layout:
 │   └── UEP-*.md              # lab design notes by milestone
 │
 └── docs/
-    ├── API.md            # changed public signatures (v0.4.3 – v0.5.0)
+    ├── API.md            # changed public signatures (v0.4.3 – v0.5.2)
     ├── adr/              # architecture decision records (0001: asset model)
     ├── ARCHITECTURE.md   # layers A–N, status table, diagrams
     ├── THREAT-MODEL.md
@@ -743,7 +752,7 @@ The full roadmap is in [`ROADMAP.md`](./ROADMAP.md). Its year buckets are goals,
 | Phase | Status |
 |---|---|
 | 0. Foundation | Done |
-| 1. Hardened public testnet | Closing (v0.4.1 – v0.5.0) |
+| 1. Hardened public testnet | Closing (v0.4.1 – v0.5.2) |
 | Multi-asset | In progress: per-asset hardening in v0.4.7; unit and asset model decided (ADR 0001) and the signed asset registry manifest in v0.5.0; ledger integration next |
 | 2. Service economy | In progress: event bus, storage and evidence, API, IoT gateway, SDK, sandbox, simulators |
 | 3. Public developer platform | Planned |

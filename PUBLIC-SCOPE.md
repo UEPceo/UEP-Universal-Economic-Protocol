@@ -10,6 +10,9 @@ This document defines what may be published in the public repository and what re
 - Test identity derivation required for reproducible transactions.
 - Public transaction, note, nullifier, SMT and fee primitives used by the reference path.
 - Public Marketplace implementation, including disputes and signed actions.
+- Settlement engine (`src/settlement`): single payout executor behind Marketplace and category HOLDs (Implemented / testnet).
+- Category modules (`src/category`): swap, relay, dispute and drip over Marketplace escrow/subsidy ports (Implemented / testnet).
+- Oracle layer (`src/oracle`): Poseidon BN254 policy evaluation only; not on the spend path (Implemented / testnet).
 - IoT/M2M service layer (machine registry, signed telemetry, verified settlement).
 - Marketplace and IoT/M2M tests and synthetic simulation.
 - Reproducibility scripts and examples.
