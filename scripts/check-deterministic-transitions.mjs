@@ -26,7 +26,8 @@
  * npm run test:poisoned-clock) is the second guard; neither is a proof.
  *
  * Scanned paths: src/core, src/testnet, src/marketplace (including tests and
- * testkits), src/network and the IoT / M2M service files. Exceptions are the
+ * testkits), src/network, src/settlement, src/category, src/oracle (v0.5.2)
+ * and the IoT / M2M service files. Exceptions are the
  * ALLOWLIST below; each entry names a file, the rule it may break and why.
  * An allowlist entry that no longer matches anything also fails the check.
  *
@@ -39,7 +40,8 @@ import { fileURLToPath } from "node:url";
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Directories scanned recursively (relative to the repository root). */
-export const SCANNED_DIRS = ["src/core", "src/testnet", "src/marketplace", "src/network"];
+/** v0.5.2: the settlement engine, the category modules and the oracle layer are scanned too. */
+export const SCANNED_DIRS = ["src/core", "src/testnet", "src/marketplace", "src/network", "src/settlement", "src/category", "src/oracle"];
 /** Single files scanned (IoT / M2M category service and the helpers deliver() uses). */
 export const SCANNED_FILES = ["src/service/iot-m2m.ts", "src/service/iot-m2m-codec.ts", "src/service/iot-testkit.ts", "src/service/content-hash.ts"];
 
@@ -134,6 +136,11 @@ export const ALLOWLIST = [
     file: "src/testnet/snapshot-fixtures.test.ts",
     rule: "net-import",
     reason: "Test-only node:fs read of the committed golden snapshot fixtures (src/testnet/fixtures/snapshots, docs/COMPATIBILITY.md); static repository data, not live data.",
+  },
+  {
+    file: "src/oracle/oracle.test.ts",
+    rule: "net-import",
+    reason: "Test-only node:fs read of repository source files to assert the oracle is not imported from core/testnet (policy-only boundary).",
   },
 ];
 
