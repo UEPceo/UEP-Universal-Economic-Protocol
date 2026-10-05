@@ -1,6 +1,6 @@
 # Integration plan: settlement engine, category modules and oracle layer (v0.5.2)
 
-Status: **implemented** on branch `v0.5.2-modules` (not pushed). Plan written before
+Status: **implemented** and released as `0.5.2-public-iot-m2m` / tag `v0.5.2`. Plan written before
 implementation (step 0.4 of the integration guide), then kept up to date with the
 decisions taken while integrating. Scope is the public
 testnet / reference implementation. Nothing here is a production, ZK or

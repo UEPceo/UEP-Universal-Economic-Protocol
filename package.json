@@ -1,6 +1,6 @@
 {
   "name": "uep-public-testnet-marketplace",
-  "version": "0.5.2-modules",
+  "version": "0.5.2-public-iot-m2m",
   "private": false,
   "type": "module",
   "description": "Public reproducible UEP testnet: hardened core, Marketplace and IoT/M2M, plus research labs (consensus, ZK/Groth16 dev circuit, agents, service API).",
