@@ -350,3 +350,14 @@ The Marketplace Treasury is not a native UEP token treasury.
 ```
 
 This is the direction, not the current state. The current state is the table in section 2.
+
+
+## Settlement, categories and oracle (v0.5.2)
+
+Added as **Implemented (testnet)** modules on top of the Marketplace:
+
+- `src/settlement` — single payout executor behind Marketplace and category HOLDs.
+- `src/category` — swap, relay, dispute, drip over a Marketplace escrow port.
+- `src/oracle` — policy-evaluation oracle (Poseidon BN254 commitments); never on the spend path.
+
+See `docs/SETTLEMENT.md`, `docs/CATEGORY-MODULES.md`, `docs/ORACLE.md` and `docs/INTEGRATION-PLAN.md`.

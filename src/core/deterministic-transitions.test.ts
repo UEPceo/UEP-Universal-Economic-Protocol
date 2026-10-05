@@ -12,7 +12,7 @@ test("determinism lint: transition paths have no clock reads or external calls o
   assert.deepEqual(result.violations, [], JSON.stringify(result.violations, null, 2));
   assert.deepEqual(result.staleAllowlist, []);
   const files: string[] = result.files;
-  for (const f of ["src/marketplace/marketplace.ts", "src/testnet/ledger.ts", "src/core/security-policy.ts", "src/service/iot-m2m.ts", "src/marketplace/evidence.ts"]) assert.ok(files.includes(f), f);
+  for (const f of ["src/marketplace/marketplace.ts", "src/testnet/ledger.ts", "src/core/security-policy.ts", "src/service/iot-m2m.ts", "src/marketplace/evidence.ts", "src/settlement/engine.ts", "src/category/swap.ts", "src/oracle/index.ts"]) assert.ok(files.includes(f), f);
 });
 
 test("determinism lint: every allowlist entry is justified; outside tests only the two key generators and the NODE_ENV guard, line-scoped", () => {

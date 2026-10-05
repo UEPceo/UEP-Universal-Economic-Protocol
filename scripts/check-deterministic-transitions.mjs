@@ -137,11 +137,6 @@ export const ALLOWLIST = [
     rule: "net-import",
     reason: "Test-only node:fs read of the committed golden snapshot fixtures (src/testnet/fixtures/snapshots, docs/COMPATIBILITY.md); static repository data, not live data.",
   },
-  {
-    file: "src/oracle/oracle.test.ts",
-    rule: "net-import",
-    reason: "Test-only node:fs read of repository source files to assert the oracle is not imported from core/testnet (policy-only boundary).",
-  },
 ];
 
 /** Replace comments and string / template literal contents with spaces (keeps offsets and line numbers). */

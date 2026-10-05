@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.5.2-modules — 2026-10-05
+
+Version 0.5.2 integrates three module packages into the testnet reference: a **settlement engine** (single payout executor behind the Marketplace), **category modules** (swap, relay, dispute, drip) over Marketplace HOLDs, and an **oracle layer** for policy evaluation only. Attack-battery fixes from BATTERY-2026-10-05 that are cheap and critical are included. No native token; fees unchanged. Status: IMPLEMENTED (testnet reference) — not a production, ZK-ready or throughput claim.
+
+### Settlement engine (`src/settlement`)
+
+- Single payout executor: plans then commits (conservation `escrow = providerNet + fee + gas + buyerRefund`); `SETTLEMENT_ALREADY_EXECUTED` / `SETTLEMENT_REENTRANT`.
+- Marketplace `payout()` and category `settleHold()` go through it. Receipts are canonically hashed; batches use the shared RFC 9162 Merkle tree (`src/core/rfc9162-merkle.ts`).
+- Duplicate incoming `reference-ledger` and settlement `canonical.ts` removed; balances stay on the Marketplace.
+
+### Category modules (`src/category`)
+
+- **swap** / **relay** / **dispute** / **drip** operate on a once-issued `CategoryEscrowPort` / `SubsidyPort` from the Marketplace (no private ledgers or treasuries).
+- Amounts are `bigint` (ADR 0001); time is Marketplace height (ADR 0002). Auth is Marketplace `ActorAuth`.
+- One fee path: marketplace fee only on the provider part of a settlement; no protocol fee on business-layer releases.
+- Relay custody/delivery split: once the committed key is published, `custodyBps` (default 2000 = 20 %) is paid unless fraud is proven; disputes apply `releaseBps` to the remaining delivery tranche.
+- Drip claims only against the settlement index written by swap/relay; at most 50 % of that order's marketplace fee, once per order, from DISTRIBUTABLE_PROFIT within an admin-signed budget.
+- Dispute: k-of-n arbiter quorum; bond `max(50, 1 % of escrow)`; frivolous full-loss forfeit 80 % respondent / 20 % RISK_RESERVE; timeout default refunds the buyer.
+
+### Oracle layer (`src/oracle`)
+
+- Real Poseidon BN254 from `src/core/poseidon.ts` (the incoming homemade permutation is removed).
+- Heights for staleness / drift; synchronous Ed25519 via `src/core/ed25519.ts`; strict public-key equality.
+- Used only in policy evaluation (SVC SLA, IoT tariff, dispute evidence, AMM skew). Never imported from `src/core` / `src/testnet`; never holds balances.
+
+### Attack battery (BATTERY-2026-10-05)
+
+| Item | Status |
+| --- | --- |
+| Concurrent double spend | `LEDGER_BUSY` re-entrancy guard + `SpendSerializer`; concurrent tests |
+| Sybil slot saturation | `maxUnfundedReservationsPerListing` (default 3) on top of existing caps |
+| Cancel vs accept race | `order.version` + optional `expectedVersion` → `ORDER_STATE_CONFLICT` |
+| Paymaster drain | Sponsorship held and captured only on settle; create/cancel releases (test) |
+| Relay all-or-nothing | Custody 20 % / delivery 80 % (above) |
+| IoT synthetic telemetry | Deferred to Evidence (multi-attester); documented |
+| HPKE for relay payloads | Deferred; payload digests remain visible to relayers |
+
+### Tests and CI
+
+- Scripts `test:settlement`, `test:oracle`, `test:category` included in `npm test` / `test:all` and the poisoned-clock suite.
+- Determinism lint scans `src/settlement`, `src/category`, `src/oracle`.
+- Value accounting gains `categoryHeld`, `treasuryTransfers`, `subsidiesPaid`.
+
+### Residual limits
+
+- Category commitments (hashlock, relay key commitment, chunk trees) are SHA-256, not Poseidon.
+- In-process isolation only (capability object references).
+- Height is only as good as the height source.
+- No arbiter appeal / staking / rotation; oracle sources are configured keys (no on-network oracle consensus).
+
+
 ## 0.5.1-public-iot-m2m — 2026-10-03
 
 Version 0.5.1 combines deterministic, height-based transitions with domain delay windows and evidence value caps, a compatibility policy with chained snapshot migrations, and fixes from an external review of v0.5.0. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.

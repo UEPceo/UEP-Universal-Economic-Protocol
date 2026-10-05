@@ -1,6 +1,6 @@
 # Public Threat Model
 
-This threat model covers the **testnet reference path**: `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, the IoT/M2M service (`src/service/iot-m2m*`) and `src/network`. The research labs (`src/lab`, `src/agent`, the service/API lab in `src/service`, `uep-core/`) are experimental and outside this model; they carry no security claim (see [`LABS.md`](./LABS.md)). Per-release findings and their status are in the `PUBLIC-SECURITY-REMEDIATION-v0.4.x.md` files.
+This threat model covers the **testnet reference path**: `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/settlement`, `src/category`, `src/oracle`, the IoT/M2M service (`src/service/iot-m2m*`) and `src/network`. The research labs (`src/lab`, `src/agent`, the service/API lab in `src/service`, `uep-core/`) are experimental and outside this model; they carry no security claim (see [`LABS.md`](./LABS.md)). Per-release findings and their status are in the `PUBLIC-SECURITY-REMEDIATION-v0.4.x.md` files.
 
 ## Assets to protect
 
@@ -139,3 +139,14 @@ The public repository does not claim to solve:
 A test is evidence for one property. It is not evidence that all properties hold.
 New security claims should therefore come with an explicit invariant and a
 reproducible negative test whenever practical.
+
+
+## v0.5.2 settlement / categories / oracle
+
+- Concurrent double-spend of one note: process-local re-entrancy guard (`LEDGER_BUSY`) and `SpendSerializer` for async adapters. Multi-process deployments need a transactional store (out of scope).
+- Sybil reservation of listing slots: per-identity unfunded cap per listing (default 3) plus existing deposits and global caps. Sybil identities remain a residual risk without costly identity.
+- Cancel vs accept race: optimistic `order.version` / `ORDER_STATE_CONFLICT`.
+- Paymaster create/cancel drain: sponsorship captured only on settle.
+- Relay custody without delivery: 20 % custody / 80 % delivery split after key publication.
+- Oracle misuse on the spend path: architectural boundary (no imports from core/testnet; oracle holds no balances). Stale / replay / paused sources fail closed.
+- Deferred: IoT hardware attestation (Evidence phase); HPKE for relay payloads.

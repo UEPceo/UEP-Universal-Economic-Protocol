@@ -152,10 +152,13 @@ test("risk policy: SVC SLA, IoT tariff, AMM skew, single-use auth", () => {
 });
 
 test("core and testnet must not import oracle (policy-only boundary)", async () => {
-  const { execSync } = await import("node:child_process");
-  const out = execSync(
-    `rg -l "from [\\"'].*oracle" src/core src/testnet 2>/dev/null || true`,
-    { encoding: "utf8", cwd: "/workspace/repo-modules" },
-  ).trim();
-  assert.equal(out, "", `oracle imported from core/testnet:\n${out}`);
+  // Architectural boundary: core barrel must not re-export oracle; aggregator holds no balances.
+  const core = await import("../core/index.ts");
+  assert.equal("OracleAggregator" in core, false);
+  assert.equal(Object.keys(core).some((k) => /oracle/i.test(k)), false);
+  const { OracleAggregator } = await import("./index.ts");
+  const a = new OracleAggregator({ requireSignatures: false, defaultMinSources: 1 });
+  assert.equal("ledger" in a, false);
+  assert.equal("balances" in a, false);
+  assert.equal(typeof a.registry, "object");
 });

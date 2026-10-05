@@ -1,6 +1,33 @@
-# Public API reference: changed signatures (v0.4.3 – v0.5.1)
+# Public API reference: changed signatures (v0.4.3 – v0.5.2)
 
-This page lists the public signatures that changed in `0.5.1-public-iot-m2m`, `0.5.0-public-iot-m2m`, `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+This page lists the public signatures that changed in `0.5.2-modules`, `0.5.1-public-iot-m2m`, `0.5.0-public-iot-m2m`, `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# v0.5.2
+
+## Settlement: `src/settlement`
+
+- `SettlementEngine.plan(instruction)` / `execute(instruction, port)` — single payout executor; outcomes `RELEASE` | `REFUND_BUYER` | `SPLIT`. Amounts `bigint`. Errors: `AMOUNT_INVALID`, `SETTLEMENT_ALREADY_EXECUTED`, `SETTLEMENT_REENTRANT`, `PAYOUT_NOT_CONSERVED`, …
+- `settlementBatch(receipts)` / `receiptInclusionProof` / `verifyReceiptInclusion` — RFC 9162 over receipt hashes.
+
+## Marketplace additions
+
+- `issueCategoryEscrowPort(module)` / `issueSubsidyPort()` / `allocateDripBudget(allocationId, asset, amount, auth)`.
+- `OrderCallOptions.expectedVersion` on state-changing calls → `ORDER_STATE_CONFLICT`.
+- `maxUnfundedReservationsPerListing` (default 3) → `UNFUNDED_RESERVATION_LIMIT_REACHED`.
+- `ValueAccounting` adds `categoryHeld`, `treasuryTransfers`, `subsidiesPaid`.
+- `SettlementRecord.receiptHash`.
+
+## Category: `src/category`
+
+- `SwapCategory`, `RelayCategory`, `DisputeCategory`, `DripController` — see `docs/CATEGORY-MODULES.md`. Actions are Marketplace `CategoryAction` signatures.
+
+## Oracle: `src/oracle`
+
+- `OracleAggregator.publish(quote, height)` / `read(base, quote, height)` — heights, bigint prices. Policy helpers in `risk-policy.ts`.
+
+## Ledger
+
+- `SubmitError` code `LEDGER_BUSY`; adapter helper `SpendSerializer` (`src/testnet/spend-serializer.ts`).
 
 # v0.5.1
 

@@ -1,7 +1,8 @@
 # Integration plan: settlement engine, category modules and oracle layer (v0.5.2)
 
-Status: plan written before implementation (step 0.4 of the integration guide), then
-kept up to date with the decisions taken while integrating. Scope is the public
+Status: **implemented** on branch `v0.5.2-modules` (not pushed). Plan written before
+implementation (step 0.4 of the integration guide), then kept up to date with the
+decisions taken while integrating. Scope is the public
 testnet / reference implementation. Nothing here is a production, ZK or
 throughput claim.
 

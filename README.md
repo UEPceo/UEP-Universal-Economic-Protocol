@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.1-public-iot-m2m` (on `main`; not yet a GitHub Release)
+> **Version:** `0.5.2-modules` (integration branch; not pushed; not a GitHub Release)
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -33,17 +33,17 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 
 | Label | Meaning |
 |---|---|
-| **Implemented (testnet)** | Code in `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/service/iot-m2m*` and `src/network`, covered by `npm test`. Runs only on the local, single-node, in-process testnet. |
+| **Implemented (testnet)** | Code in `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/settlement`, `src/category`, `src/oracle`, `src/service/iot-m2m*` and `src/network`, covered by `npm test`. Runs only on the local, single-node, in-process testnet. |
 | **Experimental (lab)** | Code in `src/lab`, `src/agent`, the service/API lab in `src/service` and `uep-core/`. Tested by `npm run test:all`, but not part of the testnet rules and without any security claim. |
 | **Planned** | A roadmap milestone with deliverables and exit criteria ([`ROADMAP.md`](./ROADMAP.md)); not yet in code. |
 | **Research / future vision** | A direction of inquiry, such as delay-tolerant or interplanetary settlement. No settled design, nothing operational. |
 
-### Current status (v0.5.0)
+### Current status (v0.5.2)
 
 | Item | Status |
 |---|---|
-| Version | `0.5.1-public-iot-m2m`: deterministic height-based transitions (monotonic height producer, domain delay windows for Moon and Mars), evidence value caps, a compatibility policy with snapshot migrations, v3 account ids, object-route Host / Origin checks, lab domain binding, 130-bit self-certifying namespaces and development-only ZK keys, on top of v0.5.0: API authorization hardening, signed spends, paymaster caps, compressed Merkle tree, circuit v4 with pinned verifying keys, namespaced asset ids and the asset registry manifest, on top of the research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
-| Tests (testnet) | protocol **140/140**, Marketplace + IoT/M2M + HTTP authorization + height producer **173/173** (includes IoT **30/30** and scale **3/3**); the same suites under the poisoned clock **275/275** |
+| Version | `0.5.2-modules`: settlement engine, category modules (swap/relay/dispute/drip) and oracle policy layer on top of `0.5.1-public-iot-m2m`: deterministic height-based transitions (monotonic height producer, domain delay windows for Moon and Mars), evidence value caps, a compatibility policy with snapshot migrations, v3 account ids, object-route Host / Origin checks, lab domain binding, 130-bit self-certifying namespaces and development-only ZK keys, on top of v0.5.0: API authorization hardening, signed spends, paymaster caps, compressed Merkle tree, circuit v4 with pinned verifying keys, namespaced asset ids and the asset registry manifest, on top of the research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
+| Tests (testnet) | protocol **144/144**, Marketplace + IoT/M2M + HTTP + attack-battery **176/176**, settlement **5/5**, oracle **7/7**, category **4/4**; poisoned clock covers the same plus settlement/category/oracle |
 | Tests (research labs) | Rust **115** (uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99); labs **463** tests in 98 files; 14 lab files with known issues run in a non-blocking job |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 7, format 6 migrated ([compatibility policy](docs/COMPATIBILITY.md)) |
