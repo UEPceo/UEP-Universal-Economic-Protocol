@@ -1,5 +1,5 @@
 /**
- * v0.5.0 (ADR 0002 rules 1 and 2): Marketplace windows are block heights, and
+ * v0.5.1 (ADR 0002 rules 1 and 2): Marketplace windows are block heights, and
  * each listing fixes a domain profile (EARTH / MOON / MARS) at publication
  * whose fixed delay is added to every counterparty window.
  */

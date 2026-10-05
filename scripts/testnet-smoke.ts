@@ -26,7 +26,7 @@ async function main() {
     connected: true,
     allowFaucet: true,
   });
-  // v0.5.0 (ADR 0002): heights come from real time through the producer, outside the transitions.
+  // v0.5.1 (ADR 0002): heights come from real time through the producer, outside the transitions.
   const producer = new HeightProducer({ ledger: node }).start();
 
   const asset = "uep-test/tenergy";

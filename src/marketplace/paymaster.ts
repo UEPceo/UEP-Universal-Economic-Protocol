@@ -83,7 +83,7 @@ export class MarketplacePaymaster {
   readonly paymasterId: string;
   /** Quote validity in the paymaster's ticks (heights; ms with the test-only clock). */
   readonly quoteTtl: number;
-  /** v0.5.0 (ADR 0002): time source (block heights by default). */
+  /** v0.5.1 (ADR 0002): time source (block heights by default). */
   readonly clock: TransitionClock;
   /** Nominal quote validity in ms (heights x 5 s; the injected ms with the test-only clock). */
   get quoteTtlMs(): number {

@@ -59,10 +59,10 @@ export function signReservation(a: ReservationAuthorization, privateKey: Private
 export type ActorAuth = {
   actorId: string;
   signature: string;
-  /** Signed. Read / list: a Marketplace height (v0.5.0); a Unix-ms value is the deprecated pre-v0.5.0 form. */
+  /** Signed. Read / list: a Marketplace height (v0.5.1); a Unix-ms value is the deprecated pre-v0.5.1 form. */
   issuedAt?: number;
   /**
-   * v0.5.0 compatibility, not signed: the height a boundary adapter (service
+   * v0.5.1 compatibility, not signed: the height a boundary adapter (service
    * API, HTTP) derived from a legacy Unix-ms `issuedAt` with its own clock,
    * outside the Marketplace. Used only for the read-authorization freshness
    * check; the signature still covers `issuedAt`.
@@ -98,7 +98,7 @@ export function signAction(a: ActionAuthorization, privateKey: PrivateKeyLike): 
 
 /**
  * Canonical listing terms bound into a provider's publish signature.
- * v0.5.0 (ADR 0002): a non-EARTH `domainProfile` and an `evidencePolicy` are
+ * v0.5.1 (ADR 0002): a non-EARTH `domainProfile` and an `evidencePolicy` are
  * contract terms and are signed too; EARTH listings without an evidence
  * policy keep the previous terms (and signatures).
  */

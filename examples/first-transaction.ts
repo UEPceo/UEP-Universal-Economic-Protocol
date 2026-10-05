@@ -14,7 +14,7 @@ const ledger = new UepLedger({
   connected: true,
   allowFaucet: true,
 });
-// v0.5.0: the node's height advances with real time (one block per 5 s), outside the state transitions.
+// v0.5.1: the node's height advances with real time (one block per 5 s), outside the state transitions.
 const producer = new HeightProducer({ ledger }).start();
 
 const asset = "uep-test/teur";

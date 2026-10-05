@@ -16,7 +16,7 @@ test("determinism lint: transition paths have no clock reads or external calls o
 });
 
 test("determinism lint: every allowlist entry is justified; outside tests only the two key generators and the NODE_ENV guard, line-scoped", () => {
-  assert.ok(ALLOWLIST.length <= 7);
+  assert.ok(ALLOWLIST.length <= 8);
   const nonTest: string[] = [];
   for (const a of ALLOWLIST as Array<{ file: string; rule: string; reason: string; match?: string[] }>) {
     assert.ok(a.reason.length > 40, a.file);

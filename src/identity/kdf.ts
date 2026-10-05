@@ -85,7 +85,7 @@ export type IdentitySecrets = {
   /** v0.4.5: hex SPKI DER Ed25519 spend public key that `accountId` commits to. */
   spendPublicKey: string;
   /**
-   * v0.5.0: the v2 id of the same spend key (accounts created v0.4.5 to
+   * v0.5.1: the v2 id of the same spend key (accounts created v0.4.5 to
    * v0.5.0). `accountId` is the v3 id for new identities; withAccountIdV2()
    * selects the v2 id to spend notes still held there.
    */

@@ -1,5 +1,5 @@
 /**
- * v0.4.5: key-derived accounts and addresses (UEP-ADDR-002); v0.5.0: v3 ids
+ * v0.4.5: key-derived accounts and addresses (UEP-ADDR-002); v0.5.1: v3 ids
  * with a 64-bit check, v2 ids kept for existing accounts.
  * Note owners commit to an Ed25519 spend key; spends reveal the key and sign,
  * so any replica verifies ownership without a spend-key registry.

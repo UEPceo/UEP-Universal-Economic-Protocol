@@ -92,7 +92,7 @@ export function txIdFromCommitment(commitment: Fr, nullifier: Fr): Fr {
 
 /**
  * v0.4.5: the secrets control `senderId` iff their spend key hashes to it.
- * v0.5.0: the v3 id or the v2 id of that key (existing accounts).
+ * v0.5.1: the v3 id or the v2 id of that key (existing accounts).
  */
 export function verifyOwnership(secret: Fr, salt: Fr, senderId: Fr): boolean {
   const ids = accountIdsFromSecrets(secret, salt);
@@ -101,7 +101,7 @@ export function verifyOwnership(secret: Fr, salt: Fr, senderId: Fr): boolean {
 
 type SerializedNote = ReturnType<typeof serializeNote>;
 
-/** v0.5.0: canonical field element only (0 <= v < r); a value that Fr would silently reduce is refused. */
+/** v0.5.1: canonical field element only (0 <= v < r); a value that Fr would silently reduce is refused. */
 function canonicalFr(n: bigint): string {
   if (n < 0n || n >= BN254_FR_MODULUS) throw new Error("TX_NOTE_INVALID: field element is not canonical");
   return new Fr(n).toHex();
@@ -121,7 +121,7 @@ function frHex(v: unknown): string {
 }
 
 /**
- * v0.5.0 (R-3): one canonical serialized form for the notes a transaction
+ * v0.5.1 (R-3): one canonical serialized form for the notes a transaction
  * carries, whether they are in-memory Notes, already serialized, or Notes
  * that went through a bigint-preserving JSON codec. Without it a snapshot
  * taken after a restore wrote the notes in another form than before, so the

@@ -102,7 +102,7 @@ For each fixture, `snapshot-fixtures.test.ts` checks:
 |---|---|---|
 | Snapshot formats 1–5 | They use the SHA-256 field reference hash. Format 6 moved to Poseidon over BN254, which changes note commitments, nullifiers, transaction ids and every root. Spend signatures and mint signatures bind those values, and checkpoints hash them. A conversion would have to re-sign every spend and mint, which needs every owner's key and the mint keys. That is not a deterministic migration a verifier can check, so the restore refuses these formats and gives the reason. | Re-create the testnet state. Mnemonics, keys, account ids and `uep1…` addresses are unchanged. |
 | Code that relied on the default wall clock: Marketplace windows that expired by themselves, `prepareSpend()` stamping `Date.now()` | Transitions are clock-free by design (ADR 0002). Nothing can expire on wall-clock time without a clock inside the state machine. | Run the height producer: `new HeightProducer({ ledger }).start()` (`src/service/height-producer.ts`). It seals one block per 5 s of real time, outside the transitions, and windows then expire in real time as before. The smoke test, the quickstart, the 20k simulation and `listenUepHttpApi({ heightProducer })` use it. |
-| A Marketplace or paymaster built without a height source (`new DigitalServicesMarketplace()`) | Deliberate break. Before v0.5.0 such an instance read the wall clock; with heights it would keep a counter that never moves, so reservations, cancellations and disputes would silently never expire. It now fails closed with `HEIGHT_SOURCE_REQUIRED`. | Pass `height: () => ledger.height` (with a height producer running). Tests that drive the height by hand pass `testOnlyLocalHeight: true` and call `advanceHeight()`. |
+| A Marketplace or paymaster built without a height source (`new DigitalServicesMarketplace()`) | Deliberate break. Before v0.5.1 such an instance read the wall clock; with heights it would keep a counter that never moves, so reservations, cancellations and disputes would silently never expire. It now fails closed with `HEIGHT_SOURCE_REQUIRED`. | Pass `height: () => ledger.height` (with a height producer running). Tests that drive the height by hand pass `testOnlyLocalHeight: true` and call `advanceHeight()`. |
 | IoT telemetry signed with a Unix-ms `observedAt`, given to a height-based Marketplace | The machine signs `observedAt`. Rewriting it would break the signature, and converting it inside `deliverTelemetry()` would need a clock. The call fails with `IOT_TELEMETRY_OBSERVED_AT_UNIT`, not with a misleading `IOT_TELEMETRY_STALE`. | Machines sign the Marketplace height (`GET /v1/marketplace/height`). |
 | A Unix-ms `issuedAt` passed **in process** to `Marketplace` methods | The Marketplace has no clock to map it. The call fails with `ACTOR_AUTH_ISSUED_AT_UNIT`. | Use the service API or the HTTP adapter, which map it (section 6), or set `auth.issuedAtHeight`. |
 | A height source, `testOnlyLocalHeight` and the legacy `testOnlyNowMs` / `now` together (any two), or a `*Heights` option together with its `*Ms` form | The configuration is ambiguous. `CLOCK_CONFIG_CONFLICT` stays. | Pass one of them. |
@@ -112,7 +112,7 @@ For each fixture, `snapshot-fixtures.test.ts` checks:
 | A restored ledger restarted with a lower height (`restore()` of an older snapshot) | A rollback would rewind every window. The restore fails with `INVALID_SNAPSHOT_HEIGHT_REGRESSION` when the snapshot is below the replaced ledger, `minHeight` or the trusted checkpoint. | Restore the latest snapshot, or pass `allowHeightRegression: true` and rebuild the Marketplace (its open orders are lost). |
 | `ledger.advanceHeight(n)` with `n > 12` | One call seals at most 12 blocks (`HEIGHT_ADVANCE_CAP`). | Call it repeatedly, or build test ledgers with `testOnlyUnboundedHeightAdvance: true`. |
 | `listenUepHttpApi()` serving a Marketplace on an injected height source without `heightProducer` | The height would never move (`HEIGHT_PRODUCER_REQUIRED`). | Pass `heightProducer: new HeightProducer(ledger)`, or use `testOnlyLocalHeight` in tests. |
-| A paymaster and a Marketplace given two different height functions (for example two `() => ledger.height` closures) | Since v0.5.0 the clocks are compared by source, not only by unit (`CLOCK_CONFIG_CONFLICT`). | Pass the same function to both, e.g. `const height = heightOf(ledger)`; `heightOf()` returns the same function for the same target. |
+| A paymaster and a Marketplace given two different height functions (for example two `() => ledger.height` closures) | Since v0.5.1 the clocks are compared by source, not only by unit (`CLOCK_CONFIG_CONFLICT`). | Pass the same function to both, e.g. `const height = heightOf(ledger)`; `heightOf()` returns the same function for the same target. |
 | Attester sets that share a key, or keys that are not valid Ed25519 points | One set per key until phase 2.3; keys are validated (`docs/EVIDENCE.md`). | Give each set its own attester keys. |
 | `testOnly*` options under `NODE_ENV=production`, or in JSON-parsed options | Refused (`TEST_ONLY_OPTION_IN_PRODUCTION`, `TEST_ONLY_OPTION_UNTRUSTED`). | Remove them from deployed configuration. |
 | Lab proofs and keys of circuit v3 | Circuit v4 changes the statement. | Labs only, outside this policy. |
@@ -157,17 +157,17 @@ Behaviour:
 
 ## 5b. Account ids and addresses: v2 → v3
 
-Since v0.5.0 a key-derived account id is **v3**: `0x03 ‖ H23(key) ‖ C8`, where `H23` is the first 23 bytes of a domain-separated SHA-256 of the spend public key and `C8` a 64-bit check over the version byte and `H23`. A random or legacy id passes the check with probability 2^-64 or less, so `isKeyDerivedAccountId()` no longer misclassifies legacy ids (a v2 id was recognized by its top byte only, which 1 in 256 legacy ids have). Addresses are version 3 (`ADDRESS_VERSION = 3`); `decodeAddress()` also verifies the id check (`ADDRESS_ID_CHECK`).
+Since v0.5.1 a key-derived account id is **v3**: `0x03 ‖ H23(key) ‖ C8`, where `H23` is the first 23 bytes of a domain-separated SHA-256 of the spend public key and `C8` a 64-bit check over the version byte and `H23`. A random or legacy id passes the check with probability 2^-64 or less, so `isKeyDerivedAccountId()` no longer misclassifies legacy ids (a v2 id was recognized by its top byte only, which 1 in 256 legacy ids have). Addresses are version 3 (`ADDRESS_VERSION = 3`); `decodeAddress()` also verifies the id check (`ADDRESS_ID_CHECK`).
 
 Existing v2 ids (`0x02 ‖ H31(key)`) keep working and are classified as v2, never as v3:
 
 - `decodeAddress()` still decodes version-2 addresses (`version: 2`), and `encodeAddress()` of a v2 id writes a version-2 address.
-- `spendKeyMatchesAccount()`, the spend-ownership check and snapshot restore accept the v2 id of a key. Notes held by a v2 id are spent with `withAccountIdV2(secrets)` (`src/identity/kdf.ts`); `deriveIdentity()` returns both ids (`accountId` is v3, `accountIdV2` is v2) and a vault created before v0.5.0 unlocks as its v2 account.
+- `spendKeyMatchesAccount()`, the spend-ownership check and snapshot restore accept the v2 id of a key. Notes held by a v2 id are spent with `withAccountIdV2(secrets)` (`src/identity/kdf.ts`); `deriveIdentity()` returns both ids (`accountId` is v3, `accountIdV2` is v2) and a vault created before v0.5.1 unlocks as its v2 account.
 - A v2 id is accepted as a **recipient** only once it has been proven: a committed spend of that id revealed a key that hashes to it (`ledger.acceptsRecipient()`). The set is derived from the committed transactions, so every replica computes the same answer.
 - Snapshots are unchanged (format 7). Restored history is replayed under the rules it was written with.
 - `accountIdFromSpendKey()` returns the v3 id; `accountIdFromSpendKeyV2()` returns the v2 id and `accountIdsOfSpendKey()` both. `spendKeyHash()` is a deprecated alias of `spendKeyHashV2()`.
 
-## 6. Deprecated API shims (v0.5.0)
+## 6. Deprecated API shims (v0.5.1)
 
 Each shim converts deterministically and warns once per process with a stable code. `node --no-deprecation` silences the warnings. `node --throw-deprecation` turns them into errors, which is useful in CI to find remaining legacy callers. Every shim is covered by `src/service/compat-shims.test.ts` or the fixture tests.
 
@@ -178,19 +178,19 @@ Each shim converts deterministically and warns once per process with a stable co
 | `UEP_DEP_NOW_OPTION` | Marketplace or paymaster `now: () => number` | Renamed `testOnlyNowMs`; `now` is a deprecated alias of it (both → `CLOCK_CONFIG_CONFLICT`). A test-only ms counter (ADR 0002), never a real clock. Removed in 0.6.0. |
 | `UEP_DEP_IOT_NOW` | `IoTM2MService` `testOnlyNowMs` / `now` with a height-based Marketplace | Ignored: the service uses the Marketplace height. Before, this threw `CLOCK_CONFIG_CONFLICT`. |
 | `UEP_DEP_SPEND_NOW_MS` | `prepareSpend()` / `preparePayment()` with a Unix-ms `now` (≥ 10^11) | Replaced by the ledger height |
-| `UEP_DEP_POLICY_WINDOW_MS` | `SecurityPolicy({ windowMs })`, probe `nowMs` | `windowHeights = ceil(windowMs / 5000)` (60,000 ms → 12), the same rounding as in snapshots; a probe `nowMs` counts as `floor(nowMs / 5000)` heights, so a pre-v0.5.0 window keeps its length. |
+| `UEP_DEP_POLICY_WINDOW_MS` | `SecurityPolicy({ windowMs })`, probe `nowMs` | `windowHeights = ceil(windowMs / 5000)` (60,000 ms → 12), the same rounding as in snapshots; a probe `nowMs` counts as `floor(nowMs / 5000)` heights, so a pre-v0.5.1 window keeps its length. |
 | `UEP_DEP_ISSUED_AT_MS` | `x-uep-issued-at` or `auth.issuedAt` in Unix ms, through the service API or HTTP | At the boundary, `issuedAtHeight = height − ceil((wallNow − issuedAt) / 5000)` (`legacyMsToHeight`, with the adapter's own clock, `legacyWallClock`). The signature still covers the original `issuedAt`, and freshness is checked on the derived height. |
 | `UEP_DEP_SNAPSHOT_FORMAT` | snapshot of an older migratable format | Section 2 |
 
 Defaults that keep old call sites working, with no clock read:
 
-- `MarketplaceReputation.score(sellerId)` and `calculateBayesianReputation(events, sellerId)`: `now` defaults to the latest recorded event stamp. `ticksPerDay` defaults to 86,400,000 when the stamps are Unix ms (pre-v0.5.0 callers) and to 17,280 when they are heights.
+- `MarketplaceReputation.score(sellerId)` and `calculateBayesianReputation(events, sellerId)`: `now` defaults to the latest recorded event stamp. `ticksPerDay` defaults to 86,400,000 when the stamps are Unix ms (pre-v0.5.1 callers) and to 17,280 when they are heights.
 - `ledger.lastReconcileAt` keeps its name and holds a height. `lastReconcileHeight` is the clearer alias.
 - `balanceOf(account, assetFr)` keeps its signature and meaning (one encoding). `balanceOfAsset(account, asset)` adds up every encoding of an asset.
 
 Values below 10^11 are heights and values at or above it are Unix ms (`LEGACY_MS_THRESHOLD`). 10^11 ms is March 1973, and 10^11 heights at 5 s blocks are about 15,800 years.
 
-**Removal.** The shims above were deprecated in 0.5.0. The test-only millisecond mode (`testOnlyNowMs` / `now`, and `*Ms` options read in ms in that mode) is scheduled for removal in the next minor version, 0.6.0. The other shims stay until at least 0.6.0. A removal needs a CHANGELOG entry and, for HTTP, a major version of `UEP_HTTP_API_VERSION`.
+**Removal.** The shims above were deprecated in 0.5.1. The test-only millisecond mode (`testOnlyNowMs` / `now`, and `*Ms` options read in ms in that mode) is scheduled for removal in the next minor version, 0.6.0. The other shims stay until at least 0.6.0. A removal needs a CHANGELOG entry and, for HTTP, a major version of `UEP_HTTP_API_VERSION`.
 
 ## 7. HTTP API versioning
 

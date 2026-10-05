@@ -107,7 +107,7 @@ export function legacyAliasesOf(canonicalId: string): string[] {
 export function assetEncodings(canonicalId: string): readonly Fr[] {
   let enc = encodingCache.get(canonicalId);
   if (!enc) {
-    enc = Object.freeze([encodeStringToFr(canonicalId), ...legacyAliasesOf(canonicalId).map((a) => encodeStringToFr(a))]);
+    enc = Object.freeze([assetIdToFr(canonicalId), ...legacyAliasesOf(canonicalId).map((a) => encodeStringToFr(a))]);
     encodingCache.set(canonicalId, enc);
   }
   return enc;
@@ -134,7 +134,7 @@ export function validateAssetRegistry(records: readonly AssetRecord[]): string[]
     if (!isCanonicalLedgerAssetId(r.assetId)) { problems.push(`${r.assetId}: non-canonical asset id`); continue; }
     if (ids.has(r.assetId)) problems.push(`${r.assetId}: duplicate asset id`);
     ids.add(r.assetId);
-    const hex = encodeStringToFr(r.assetId).toHex();
+    const hex = assetIdToFr(r.assetId).toHex();
     if (encoded.has(hex)) problems.push(`${r.assetId}: field encoding collides`);
     encoded.add(hex);
     try { assertAssetDecimals(r.decimals, r.assetId); } catch { problems.push(`${r.assetId}: decimals out of range`); }

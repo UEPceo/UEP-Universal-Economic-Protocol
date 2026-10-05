@@ -14,6 +14,8 @@ import { MemoryStorageProvider } from "./memory-storage.ts";
 import { UepServiceApi } from "./uep-service-api.ts";
 import { listenUepHttpApi } from "./uep-http-api.ts";
 import type { Server } from "node:http";
+import { request as httpRequest } from "node:http";
+import { connect as netConnect } from "node:net";
 
 const ADMIN = createTestAuthority("admin-http");
 const ASSET = "uep-test/teur";
@@ -180,6 +182,98 @@ describe("objects endpoint access", () => {
     try {
       assert.equal((await fetch(`http://127.0.0.1:${open.port}/v1/objects/o2`, { method: "PUT", body: "y" })).status, 200);
     } finally { open.server.close(); }
+  });
+});
+
+/** Raw request with explicit Host / Origin headers (fetch cannot set Host). */
+function rawRequest(port: number, method: string, path: string, headers: Record<string, string>, body?: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const r = httpRequest({ host: "127.0.0.1", port, method, path, headers, setHost: false }, (res) => {
+      let d = "";
+      res.on("data", (c) => (d += c));
+      res.on("end", () => resolve({ status: res.statusCode!, body: d }));
+    });
+    r.on("error", reject);
+    if (body) r.write(body);
+    r.end();
+  });
+}
+
+/** HTTP/1.0 request without any Host header. */
+function noHostRequest(port: number, path: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const sock = netConnect(port, "127.0.0.1", () => sock.write(`GET ${path} HTTP/1.0\r\n\r\n`));
+    let d = "";
+    sock.on("data", (c) => (d += c));
+    sock.on("end", () => resolve(Number(d.split(" ")[1])));
+    sock.on("error", reject);
+  });
+}
+
+describe("objects endpoint: Host / Origin allowlist (DNS rebinding)", () => {
+  const newApi = () => new UepServiceApi({ storageProviders: new Map([["memory", new MemoryStorageProvider()]]) });
+
+  it("rebound Host / Origin get 403 on PUT, GET and LIST without a token; loopback Host and same-origin pass", async () => {
+    const { server, port } = await listenUepHttpApi({ api: newApi() });
+    try {
+      const evil = { host: `attacker.example:${port}`, origin: `http://attacker.example:${port}` };
+      const put = await rawRequest(port, "PUT", "/v1/objects/demo", { ...evil, "content-type": "application/octet-stream" }, "secret-bytes");
+      assert.equal(put.status, 403);
+      assert.equal(JSON.parse(put.body).error.code, "OBJECTS_HOST_NOT_ALLOWED");
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", evil)).status, 403);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects/demo", evil)).status, 403);
+      assert.equal((await rawRequest(port, "DELETE", "/v1/objects/demo", evil)).status, 403);
+      // Host alone rebound (no Origin) is still refused.
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: `attacker.example:${port}` })).status, 403);
+      // Loopback Host with a foreign Origin is refused.
+      const o = await rawRequest(port, "GET", "/v1/objects", { host: `127.0.0.1:${port}`, origin: "http://attacker.example" });
+      assert.equal(o.status, 403);
+      assert.equal(JSON.parse(o.body).error.code, "OBJECTS_ORIGIN_NOT_ALLOWED");
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: `127.0.0.1:${port}`, origin: "null" })).status, 403);
+      // Loopback Host on another port is refused.
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: `127.0.0.1:${port === 65535 ? 1 : port + 1}` })).status, 403);
+      // Malformed and missing Host are refused (fail closed).
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: "127.0.0.1:99999" })).status, 403);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: "user@127.0.0.1" })).status, 403);
+      assert.equal(await noHostRequest(port, "/v1/objects"), 403);
+      // Non-loopback names that resolve to loopback are not on the default list.
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: `localhost.attacker.example:${port}` })).status, 403);
+      // Allowed: loopback names, with or without port, and same-origin loopback Origin.
+      assert.equal((await rawRequest(port, "PUT", "/v1/objects/ok", { host: `127.0.0.1:${port}` }, "a")).status, 200);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects/ok", { host: `localhost:${port}` })).status, 200);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: `[::1]:${port}` })).status, 200);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: "localhost" })).status, 200);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: `localhost:${port}`, origin: `http://localhost:${port}` })).status, 200);
+      // Non-object routes are unchanged.
+      assert.equal((await rawRequest(port, "GET", "/v1/capabilities", evil)).status, 200);
+    } finally { server.close(); }
+  });
+
+  it("a bearer token does not bypass the Host / Origin check", async () => {
+    const { server, port } = await listenUepHttpApi({ api: newApi(), objectsToken: "test-only-objects-token" });
+    try {
+      const auth = { authorization: "Bearer test-only-objects-token" };
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { ...auth, host: `attacker.example:${port}` })).status, 403);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { ...auth, host: `127.0.0.1:${port}`, origin: "http://attacker.example" })).status, 403);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { ...auth, host: `127.0.0.1:${port}` })).status, 200);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { host: `127.0.0.1:${port}` })).status, 401);
+    } finally { server.close(); }
+  });
+
+  it("configured allowedHosts / objectsAllowedOrigins replace the defaults; CORS origins are accepted, '*' is not", async () => {
+    const { server, port } = await listenUepHttpApi({ api: newApi(), objectsToken: "test-only-objects-token", allowedHosts: ["objects.uep.example"], objectsAllowedOrigins: ["https://wallet.example"] });
+    try {
+      const auth = { authorization: "Bearer test-only-objects-token" };
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { ...auth, host: "objects.uep.example" })).status, 200);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { ...auth, host: `OBJECTS.UEP.EXAMPLE:${port}`, origin: "https://wallet.example" })).status, 200);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { ...auth, host: `127.0.0.1:${port}` })).status, 403);
+      assert.equal((await rawRequest(port, "GET", "/v1/objects", { ...auth, host: "objects.uep.example", origin: `http://127.0.0.1:${port}` })).status, 403);
+    } finally { server.close(); }
+    const c = await listenUepHttpApi({ api: newApi(), cors: { allowedOrigins: ["*", "https://app.example"] } });
+    try {
+      assert.equal((await rawRequest(c.port, "GET", "/v1/objects", { host: `127.0.0.1:${c.port}`, origin: "https://app.example" })).status, 200);
+      assert.equal((await rawRequest(c.port, "GET", "/v1/objects", { host: `127.0.0.1:${c.port}`, origin: "https://other.example" })).status, 403);
+    } finally { c.server.close(); }
   });
 });
 

@@ -35,7 +35,7 @@ import { looksLikeLegacyMs } from "../core/deprecation.ts";
 export const MARKETPLACE_VERSION = "0.4" as const;
 
 /*
- * v0.5.0 (ADR 0002): every window is measured in block heights. The *_MS
+ * v0.5.1 (ADR 0002): every window is measured in block heights. The *_MS
  * constants are the nominal durations at the 5 s reference block time; the
  * *_HEIGHTS constants are what the Marketplace uses.
  */
@@ -98,12 +98,12 @@ export type ServiceCategory = "COMPUTE" | "STORAGE" | "API" | "DATA" | "IOT_M2M"
 export type OrderStatus = "ACCEPTED" | "HELD" | "DELIVERED" | "DISPUTED" | "SETTLED" | "REFUNDED" | "CANCELLED" | "EXPIRED";
 
 /**
- * v0.5.0 (ADR 0002): windows of one contract, in Marketplace ticks (block
+ * v0.5.1 (ADR 0002): windows of one contract, in Marketplace ticks (block
  * heights; ms only with the test-only legacy clock). Each counterparty window
  * is the Marketplace base window plus the fixed delay of the domain profile.
  */
 export type ContractWindows = {
-  /** v0.5.0: block time (ms) the windows were computed with (REFERENCE_BLOCK_TIME_MS); informative, part of the published terms. */
+  /** v0.5.1: block time (ms) the windows were computed with (REFERENCE_BLOCK_TIME_MS); informative, part of the published terms. */
   referenceBlockTimeMs: number;
   /** Fixed domain-profile delay included in the windows below. */
   domainDelay: number;
@@ -126,13 +126,13 @@ export type ServiceListing = {
   active: boolean;
   sellerBond: bigint;
   catalogFingerprint: string;
-  /** v0.5.0: domain profile declared at publication (default EARTH); immutable. */
+  /** v0.5.1: domain profile declared at publication (default EARTH); immutable. */
   domainProfile: DomainProfileId;
-  /** v0.5.0: the profile's fixed delay in heights (EARTH 0, MOON 1, MARS 602). */
+  /** v0.5.1: the profile's fixed delay in heights (EARTH 0, MOON 1, MARS 602). */
   delayHeights: number;
-  /** v0.5.0: contract windows fixed at publication (copied to every order). */
+  /** v0.5.1: contract windows fixed at publication (copied to every order). */
   windows: ContractWindows;
-  /** v0.5.0: evidence terms (attester set and per-contract value cap), when the listing is bound to evidence. */
+  /** v0.5.1: evidence terms (attester set and per-contract value cap), when the listing is bound to evidence. */
   evidencePolicy?: ListingEvidencePolicy;
 };
 
@@ -140,9 +140,9 @@ export type ServiceListing = {
 export type ListingInput = Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint" | "domainProfile" | "delayHeights" | "windows" | "evidencePolicy"> & {
   listingId?: string;
   sellerBond?: bigint;
-  /** v0.5.0: EARTH (default), MOON or MARS; signed as part of the listing terms when not EARTH. */
+  /** v0.5.1: EARTH (default), MOON or MARS; signed as part of the listing terms when not EARTH. */
   domainProfile?: DomainProfileId;
-  /** v0.5.0: bind the listing to an attester set with a per-contract value cap (signed). */
+  /** v0.5.1: bind the listing to an attester set with a per-contract value cap (signed). */
   evidencePolicy?: ListingEvidencePolicy;
 };
 
@@ -192,12 +192,12 @@ export type ServiceOrder = {
   createdAt: number;
   updatedAt: number;
   reservationExpiresAt?: number;
-  /** v0.5.0: domain profile and windows of the listing at reserve() time (ticks). */
+  /** v0.5.1: domain profile and windows of the listing at reserve() time (ticks). */
   domainProfile: DomainProfileId;
   windows: ContractWindows;
-  /** v0.5.0: funded value counted against the attester set cap (set when the order is funded; 0n before and once closed). */
+  /** v0.5.1: funded value counted against the attester set cap (set when the order is funded; 0n before and once closed). */
   evidenceLocked?: bigint;
-  /** v0.5.0: why an order closed for a system reason (no fault of either party; the deposit was returned). */
+  /** v0.5.1: why an order closed for a system reason (no fault of either party; the deposit was returned). */
   closeReason?: "EVIDENCE_CAP_FULL";
 };
 
@@ -243,7 +243,7 @@ export type MarketplaceConfig = {
   treasury?: MarketplaceTreasury;
   reputation?: MarketplaceReputation;
   /**
-   * v0.5.0 (ADR 0002): block height source of the ledger the Marketplace
+   * v0.5.1 (ADR 0002): block height source of the ledger the Marketplace
    * settles against (e.g. `() => ledger.height`, with a HeightProducer
    * advancing the ledger). Every window is in heights. Required: without it
    * (or one of the test-only options below) the constructor throws
@@ -254,7 +254,7 @@ export type MarketplaceConfig = {
   testOnlyLocalHeight?: boolean;
   /**
    * TEST-ONLY: injected millisecond counter for tests and experiments written
-   * before v0.5.0 (never a real clock). Windows are then in ms (heights x
+   * before v0.5.1 (never a real clock). Windows are then in ms (heights x
    * 5000). The millisecond mode is removed in 0.6.0.
    */
   testOnlyNowMs?: () => number;
@@ -416,7 +416,7 @@ function makeId(prefix: string, payload: string, counter: number): string {
 export class DigitalServicesMarketplace {
   readonly version = MARKETPLACE_VERSION;
   readonly treasury: MarketplaceTreasury;
-  /** v0.5.0 (ADR 0002): the Marketplace's only time source (block heights by default). */
+  /** v0.5.1 (ADR 0002): the Marketplace's only time source (block heights by default). */
   readonly transitionClock: TransitionClock;
   private readonly now: () => number;
   private sequence = 0;
@@ -428,11 +428,11 @@ export class DigitalServicesMarketplace {
   /** Nominal base reservation TTL in ms (heights x 5 s; legacy clock: ms). */
   readonly reservationTtlMs: number;
   private readonly maxListingsPerWindow: number;
-  /** v0.5.0: base windows in ticks (EARTH; other profiles add their fixed delay). */
+  /** v0.5.1: base windows in ticks (EARTH; other profiles add their fixed delay). */
   readonly baseWindows: Readonly<Omit<ContractWindows, "domainDelay" | "referenceBlockTimeMs">> & { readonly readAuthorizationTtl: number; readonly listingWindow: number };
-  /** v0.5.0: read-only view of the evidence attester sets and their funded open value. */
+  /** v0.5.1: read-only view of the evidence attester sets and their funded open value. */
   readonly evidenceCaps: EvidenceCapsView;
-  // v0.5.0: an ECMAScript private field, so the caps cannot be locked or released through the instance at run time.
+  // v0.5.1: an ECMAScript private field, so the caps cannot be locked or released through the instance at run time.
   readonly #evidence: EvidenceCaps;
   private readonly listingAttempts = new Map<string, number[]>();
   private readonly orderIdempotency = new Map<string, string>();
@@ -503,7 +503,7 @@ export class DigitalServicesMarketplace {
     this.deliveryValidator = config.deliveryValidator;
     this.paymaster = config.paymaster;
     if (this.paymaster && this.paymaster.clock.unit !== clock.unit) throw new Error("CLOCK_CONFIG_CONFLICT: the paymaster and the Marketplace must use the same time unit");
-    // v0.5.0: and the same height source (not only the unit): pass one function, e.g. heightOf(ledger), to both.
+    // v0.5.1: and the same height source (not only the unit): pass one function, e.g. heightOf(ledger), to both.
     if (this.paymaster && !this.paymaster.clock.sameSourceAs(clock)) throw new Error("CLOCK_CONFIG_CONFLICT: the paymaster and the Marketplace must read the same height source (pass the same function, e.g. heightOf(ledger), to both)");
     this.adminIdentity = config.adminIdentity ?? "uep:marketplace-admin";
     if (this.adminIdentity === "marketplace-admin") throw new Error("LEGACY_ADMIN_ID_RESERVED");
@@ -548,13 +548,13 @@ export class DigitalServicesMarketplace {
     this.evidenceCaps = evidenceCapsView(this.#evidence);
   }
 
-  /** v0.5.0: "height" (default) or the test-only "legacy-ms" clock. */
+  /** v0.5.1: "height" (default) or the test-only "legacy-ms" clock. */
   get timeUnit(): TimeUnit {
     return this.transitionClock.unit;
   }
 
   /**
-   * v0.5.0: advance the local height counter by `blocks` (stand-alone
+   * v0.5.1: advance the local height counter by `blocks` (stand-alone
    * Marketplace without an injected height source). Throws when the height
    * comes from a ledger (`height`) or the test-only `now`.
    */
@@ -564,7 +564,7 @@ export class DigitalServicesMarketplace {
     return counter.advance(blocks);
   }
 
-  /** v0.5.0: contract windows of a domain profile (base windows plus the profile's fixed delay), in ticks. */
+  /** v0.5.1: contract windows of a domain profile (base windows plus the profile's fixed delay), in ticks. */
   contractWindowsFor(profile: DomainProfileId = DEFAULT_DOMAIN_PROFILE): ContractWindows {
     const delay = this.transitionClock.fromHeights(domainProfile(profile).delayHeights);
     const b = this.baseWindows;
@@ -712,7 +712,7 @@ export class DigitalServicesMarketplace {
     const signedTerms = listingTerms(input);
     input = { ...input, asset: resolveAssetIdAlias(input.asset) };
     this.assertAsset(input.asset);
-    // v0.5.0 (ADR 0002): the domain profile and the evidence terms are fixed here.
+    // v0.5.1 (ADR 0002): the domain profile and the evidence terms are fixed here.
     if (input.domainProfile !== undefined && !isDomainProfileId(input.domainProfile)) throw new Error("DOMAIN_PROFILE_INVALID");
     const profile: DomainProfileId = input.domainProfile ?? DEFAULT_DOMAIN_PROFILE;
     const evidencePolicy = input.evidencePolicy !== undefined ? this.#evidence.assertListingPolicy(input.evidencePolicy, input.asset) : undefined;
@@ -749,12 +749,12 @@ export class DigitalServicesMarketplace {
     const { domainProfile: _profile, evidencePolicy: _evidence, ...terms } = input;
     const listing: ServiceListing = { ...terms, listingId, available: input.capacity, active: true, sellerBond: input.sellerBond ?? 0n, catalogFingerprint: fingerprint, domainProfile: profile, delayHeights: domainProfile(profile).delayHeights, windows: Object.freeze(this.contractWindowsFor(profile)) };
     if (evidencePolicy) listing.evidencePolicy = Object.freeze(evidencePolicy);
-    // v0.5.0: the signed terms, the domain profile and the windows cannot change after publication,
+    // v0.5.1: the signed terms, the domain profile and the windows cannot change after publication,
     // also not through an in-process reference; only `available` and `active` stay writable.
     for (const key of Object.keys(listing) as Array<keyof ServiceListing>) {
       if (key !== "available" && key !== "active") Object.defineProperty(listing, key, { writable: false, configurable: false });
     }
-    // v0.5.0: and no term can be added later (e.g. an evidencePolicy on a listing published without one).
+    // v0.5.1: and no term can be added later (e.g. an evidencePolicy on a listing published without one).
     Object.preventExtensions(listing);
     this.listings.set(listingId, listing);
     this.fingerprintIndex.set(fingerprint, listingId);
@@ -824,7 +824,7 @@ export class DigitalServicesMarketplace {
     const deposit = this.reservationDepositFor(grossAmount, gasFee, listing.asset);
     // No reservation without funds.
     if (this.availableBalance(listing.asset, input.buyerId) < deposit) throw new Error("INSUFFICIENT_FUNDS_FOR_DEPOSIT");
-    // v0.5.0 (ADR 0002 rule 6): an evidence-bound order may not exceed its caps. The set cap is
+    // v0.5.1 (ADR 0002 rule 6): an evidence-bound order may not exceed its caps. The set cap is
     // only checked here (fail early) and taken when the order is funded, so unfunded
     // reservations cannot fill it.
     const evidenceValue = grossAmount + gasFee;
@@ -856,7 +856,7 @@ export class DigitalServicesMarketplace {
       domainProfile: listing.domainProfile,
       windows: Object.freeze({ ...listing.windows }),
     };
-    // v0.5.0: the contract windows of an order are fixed at reserve() (not writable, frozen).
+    // v0.5.1: the contract windows of an order are fixed at reserve() (not writable, frozen).
     Object.defineProperty(order, "windows", { enumerable: true, writable: false, configurable: false });
     this.orders.set(orderId, order);
     this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
@@ -913,7 +913,7 @@ export class DigitalServicesMarketplace {
     // The locked deposit counts toward the payment: the buyer funds the remainder.
     if (amount !== order.fundingDue) throw new Error("HOLD_AMOUNT_MISMATCH");
     if (this.availableBalance(order.asset, order.buyerId) < amount) throw new Error("INSUFFICIENT_FUNDS");
-    // v0.5.0 (ADR 0002 rule 6): funded value is what counts against the attester set cap.
+    // v0.5.1 (ADR 0002 rule 6): funded value is what counts against the attester set cap.
     const evidencePolicy = this.listing(order.listingId).evidencePolicy;
     const evidenceValue = order.grossAmount + (order.gasFee ?? 0n);
     if (evidencePolicy) {
@@ -1184,7 +1184,7 @@ export class DigitalServicesMarketplace {
     // first listing: attaching later would change the terms of existing listings and orders.
     for (const listing of this.listings.values()) if (listing.category === category) throw new Error("CATEGORY_SERVICE_IN_USE");
     for (const order of this.orders.values()) if (this.listings.get(order.listingId)?.category === category) throw new Error("CATEGORY_SERVICE_IN_USE");
-    // v0.5.0: copy and freeze the hooks, so mutating the caller's object later cannot change
+    // v0.5.1: copy and freeze the hooks, so mutating the caller's object later cannot change
     // how open orders settle (each hook is read once, here).
     if (!hooks || typeof hooks !== "object") throw new Error("CATEGORY_HOOKS_INVALID");
     const { settlementGuard, consumedUnits } = hooks;
@@ -1206,7 +1206,7 @@ export class DigitalServicesMarketplace {
   }
 
   private runSettlementGuard(order: ServiceOrder): void {
-    // v0.5.0 (ADR 0002 rule 6): an evidence-gated release never moves more than the per-contract cap.
+    // v0.5.1 (ADR 0002 rule 6): an evidence-gated release never moves more than the per-contract cap.
     const policy = this.listing(order.listingId).evidencePolicy;
     if (policy) this.#evidence.checkSettlement(policy, order.grossAmount + (order.gasFee ?? 0n));
     const category = this.listing(order.listingId).category;
@@ -1456,11 +1456,11 @@ export class DigitalServicesMarketplace {
   private authenticateRead(auth: ActorAuth | undefined, action: "read" | "list", target: string): string {
     const issuedAt = auth?.issuedAt;
     if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt)) throw new Error("ACTOR_AUTH_ISSUED_AT_REQUIRED");
-    // v0.5.0 compatibility: a Unix-ms issuedAt is checked against the height an adapter derived for it (docs/COMPATIBILITY.md).
+    // v0.5.1 compatibility: a Unix-ms issuedAt is checked against the height an adapter derived for it (docs/COMPATIBILITY.md).
     let freshness = issuedAt;
     if (this.transitionClock.unit === "height" && looksLikeLegacyMs(issuedAt)) {
       const h = auth?.issuedAtHeight;
-      if (typeof h !== "number" || !Number.isSafeInteger(h)) throw new Error("ACTOR_AUTH_ISSUED_AT_UNIT: issuedAt looks like Unix ms; since v0.5.0 it is a Marketplace height (the service API converts legacy values)");
+      if (typeof h !== "number" || !Number.isSafeInteger(h)) throw new Error("ACTOR_AUTH_ISSUED_AT_UNIT: issuedAt looks like Unix ms; since v0.5.1 it is a Marketplace height (the service API converts legacy values)");
       freshness = h;
     }
     if (Math.abs(this.now() - freshness) > this.baseWindows.readAuthorizationTtl) throw new Error("ACTOR_AUTH_EXPIRED");
@@ -1524,7 +1524,7 @@ export class DigitalServicesMarketplace {
     this.releaseEvidence(order);
   }
 
-  /** v0.5.0: release the order's open value from its attester set's cap (exactly once). */
+  /** v0.5.1: release the order's open value from its attester set's cap (exactly once). */
   private releaseEvidence(order: ServiceOrder): void {
     if (!order.evidenceLocked) return;
     const policy = this.listing(order.listingId).evidencePolicy;

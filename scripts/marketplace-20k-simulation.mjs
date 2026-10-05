@@ -6,7 +6,7 @@ import { HeightProducer, ProducedHeight } from '../src/service/height-producer.t
 import { heightOf } from '../src/core/height.ts';
 
 const regions=['EU','NA','LATAM','APAC','AFRICA','MENA'];
-// v0.5.0 (ADR 0002): the Marketplace reads the height of a chain advanced by the height producer.
+// v0.5.1 (ADR 0002): the Marketplace reads the height of a chain advanced by the height producer.
 // The simulation drives the producer with a simulated monotonic clock (50 ms per checkout), so it is deterministic.
 // Like start(), the producer ticks at least once per block time (one tick seals at most 12 blocks).
 const chain=new ProducedHeight();

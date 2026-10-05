@@ -1,5 +1,5 @@
 /**
- * v0.5.0 (ADR 0002 rule 6, docs/EVIDENCE.md): evidence certifies only that a
+ * v0.5.1 (ADR 0002 rule 6, docs/EVIDENCE.md): evidence certifies only that a
  * source published some data at a height, signed by k of n attesters, so the
  * value it can move is capped per contract and per attester set.
  */

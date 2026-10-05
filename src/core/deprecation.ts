@@ -9,7 +9,7 @@
  */
 const emitted = new Set<string>();
 
-/** Stable codes of the v0.5.0 compatibility shims. */
+/** Stable codes of the v0.5.1 compatibility shims. */
 export const DEPRECATIONS = Object.freeze({
   ASSET_ALIAS: "UEP_DEP_ASSET_ALIAS",
   MS_OPTION: "UEP_DEP_MS_OPTION",

@@ -22,7 +22,7 @@ export type NetworkProfile = {
   assetRegistry: readonly AssetRecord[];
   simulation: boolean;
   /**
-   * v0.5.0: block time (ms) the height-based windows are computed with. The
+   * v0.5.1: block time (ms) the height-based windows are computed with. The
    * single-node height producer never seals blocks closer than this. Safe range
    * for the published windows: blocks of at least 3.34 s keep the worst-case
    * Earth-Mars round trip inside the MARS reservation window, at least 1.82 s

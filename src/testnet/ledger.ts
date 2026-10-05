@@ -98,7 +98,7 @@ function ak(account: Fr, asset: Fr): AccountKey {
  * (UEP-26 domain composition) instead of the SHA-256 field reference hash. Account
  * ids, note commitments, nullifiers, SMT and note-tree roots all change, so v5 state
  * cannot be restored.
- * v7 (v0.5.0, ADR 0002): adds the block `height` of the single-node testnet;
+ * v7 (v0.5.1, ADR 0002): adds the block `height` of the single-node testnet;
  * `lastReconcileAt` and the `createdAt` of spends prepared by this ledger are
  * heights, and the policy window is `windowHeights`. No wall-clock value is
  * part of the state.
@@ -172,12 +172,12 @@ export type SnapshotCheckpoint = {
   txChainHash: string;
   mintCount: number;
   mintChainHash: string;
-  /** v0.5.0: block height of the checkpointed snapshot; a restore against it may not go lower (see RestoreOptions). */
+  /** v0.5.1: block height of the checkpointed snapshot; a restore against it may not go lower (see RestoreOptions). */
   height?: number;
 };
 
 /**
- * v0.5.0 restore options (ADR 0002, height never goes backwards):
+ * v0.5.1 restore options (ADR 0002, height never goes backwards):
  *  - `replaces`: the ledger this restore takes over. The restored height may
  *    not be below its height, and it is retired (advanceHeight throws
  *    LEDGER_RETIRED, so a producer still bound to it stops at its next tick).
@@ -288,7 +288,7 @@ export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Not
   if (tx.senderId.eq(tx.recipientId) || tx.senderId.eq(TREASURY_ID) || tx.recipientId.eq(TREASURY_ID)) {
     return { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." };
   }
-  // v0.5.0: the sender is a v3 id or a v2-form id; its spend key proves it (checked by the caller).
+  // v0.5.1: the sender is a v3 id or a v2-form id; its spend key proves it (checked by the caller).
   if (!isKeyDerivedOrV2Form(tx.senderId)) {
     return { code: "INVALID_PARTICIPANTS", message: "Sender must be a key-derived account." };
   }
@@ -356,7 +356,7 @@ export class UepLedger {
   }
   private readonly proofRequired: boolean;
   private readonly unboundedHeightAdvance: boolean;
-  /** v0.5.0: set when a restore with `replaces` took over this ledger; it no longer advances. */
+  /** v0.5.1: set when a restore with `replaces` took over this ledger; it no longer advances. */
   private retired = false;
   readonly networkId: string;
   readonly domainId: string;
@@ -377,26 +377,26 @@ export class UepLedger {
   balances = new Map<AccountKey, bigint>();
   notes: Note[] = [];
   txs: UepTransaction[] = [];
-  /** v0.5.0: v2 ids proven by a committed public-key spend (derived from txs; see acceptsRecipient). */
+  /** v0.5.1: v2 ids proven by a committed public-key spend (derived from txs; see acceptsRecipient). */
   private readonly provenV2 = new Set<string>();
   private provenV2Scanned = 0;
   pending: UepTransaction[] = [];
   noteCounter = 0n;
-  /** Height of the last reconcilePending() (v0.5.0; a wall-clock ms value before format 7, reset to 0 by the 6 -> 7 migration). */
+  /** Height of the last reconcilePending() (v0.5.1; a wall-clock ms value before format 7, reset to 0 by the 6 -> 7 migration). */
   lastReconcileAt = 0;
-  /** v0.5.0: clearer name of `lastReconcileAt` (a block height). */
+  /** v0.5.1: clearer name of `lastReconcileAt` (a block height). */
   get lastReconcileHeight(): number {
     return this.lastReconcileAt;
   }
   /**
-   * v0.5.0 (ADR 0002): block height of this single-node testnet. Starts at 0
+   * v0.5.1 (ADR 0002): block height of this single-node testnet. Starts at 0
    * and only moves through advanceHeight() (the local block producer); it is
    * part of the signed snapshot. Transitions read time from it, never from a
    * clock or a header timestamp.
    */
   private blockHeight = 0;
   /**
-   * v0.5.0: snapshot format this ledger was restored from and the migration
+   * v0.5.1: snapshot format this ledger was restored from and the migration
    * steps applied (empty for a current-format snapshot or a new ledger).
    */
   restoredFrom: { formatVersion: number; migrationSteps: string[] } | undefined;
@@ -428,7 +428,7 @@ export class UepLedger {
     issuerSigningKeys?: Record<string, PrivateKeyLike>;
     /** v0.4.7 TEST-ONLY: build a ledger with requireProof = false. Never set outside tests. */
     testOnlyDisableProof?: boolean;
-    /** v0.5.0 TEST-ONLY: advanceHeight(n) accepts n > MAX_BLOCKS_PER_TICK (tests and offline simulations). */
+    /** v0.5.1 TEST-ONLY: advanceHeight(n) accepts n > MAX_BLOCKS_PER_TICK (tests and offline simulations). */
     testOnlyUnboundedHeightAdvance?: boolean;
   }) {
     if ((opts as { snapshotAuthoritySecret?: unknown }).snapshotAuthoritySecret !== undefined) throw new Error("SNAPSHOT_SECRET_UNSUPPORTED: v0.4.3 uses Ed25519 snapshotSigningKeys");
@@ -450,13 +450,13 @@ export class UepLedger {
     this.nullifiers = new NullifierSet();
   }
 
-  /** v0.5.0: current block height (deterministic; see advanceHeight()). */
+  /** v0.5.1: current block height (deterministic; see advanceHeight()). */
   get height(): number {
     return this.blockHeight;
   }
 
   /**
-   * v0.5.0: seal `blocks` blocks (default 1) and return the new height. This
+   * v0.5.1: seal `blocks` blocks (default 1) and return the new height. This
    * is the single-node testnet's block producer: a node loop calls it, for
    * example once per 5 s target block time. Transitions committed between two
    * calls belong to the same height. It never reads a clock itself.
@@ -464,14 +464,14 @@ export class UepLedger {
   advanceHeight(blocks = 1): number {
     if (this.retired) throw new Error("LEDGER_RETIRED: this ledger was replaced by a restore; bind the producer to the restored ledger");
     if (!Number.isSafeInteger(blocks) || blocks < 0 || !Number.isSafeInteger(this.blockHeight + blocks)) throw new Error("HEIGHT_ADVANCE_INVALID");
-    // v0.5.0: at most MAX_BLOCKS_PER_TICK per call outside test mode (an operator fast-forward
+    // v0.5.1: at most MAX_BLOCKS_PER_TICK per call outside test mode (an operator fast-forward
     // moves every window at once; it is bounded per call and the producer then waits for real time).
     if (blocks > MAX_BLOCKS_PER_TICK && !this.unboundedHeightAdvance) throw new Error(`HEIGHT_ADVANCE_CAP: at most ${MAX_BLOCKS_PER_TICK} blocks per call (testOnlyUnboundedHeightAdvance lifts it in tests)`);
     this.blockHeight += blocks;
     return this.blockHeight;
   }
 
-  /** v0.5.0: true once a restore with `replaces: this` took over (advanceHeight then throws LEDGER_RETIRED). */
+  /** v0.5.1: true once a restore with `replaces: this` took over (advanceHeight then throws LEDGER_RETIRED). */
   get isRetired(): boolean {
     return this.retired;
   }
@@ -538,7 +538,7 @@ export class UepLedger {
   }
 
   /**
-   * v0.5.0: may `id` receive notes? A v3 id (version byte and 64-bit check)
+   * v0.5.1: may `id` receive notes? A v3 id (version byte and 64-bit check)
    * always; a v2-form id only once that account has proven its key, i.e. it
    * is the sender of a committed spend whose revealed key hashes to it. A
    * legacy H(secret, salt) id with the v2 byte can never get that proof.
@@ -720,7 +720,7 @@ export class UepLedger {
    * (`sender-signature`) and the node verifies it with `submit(tx)` without
    * secrets. `{ authorization: "development-mac" }` builds the legacy
    * development MAC, which only an in-process `submit(tx, secrets)` can check.
-   * v0.5.0: `now` is a height (default: this ledger's height); it is the
+   * v0.5.1: `now` is a height (default: this ledger's height); it is the
    * policy pre-check height and the spend's `createdAt`.
    */
   prepareSpend(
@@ -872,13 +872,13 @@ export class UepLedger {
   }
 
   /**
-   * v0.5.0: `now` of prepareSpend()/preparePayment() is a height. A legacy
-   * Unix-ms value (callers written before v0.5.0 passed Date.now()) is
+   * v0.5.1: `now` of prepareSpend()/preparePayment() is a height. A legacy
+   * Unix-ms value (callers written before v0.5.1 passed Date.now()) is
    * replaced by this ledger's height (deprecated, UEP_DEP_SPEND_NOW_MS).
    */
   private spendHeight(now: number): number {
     if (!looksLikeLegacyMs(now)) return now;
-    deprecate(DEPRECATIONS.SPEND_NOW_MS, "prepareSpend()/preparePayment(): `now` is a block height since v0.5.0; a Unix-ms value is replaced by the ledger height");
+    deprecate(DEPRECATIONS.SPEND_NOW_MS, "prepareSpend()/preparePayment(): `now` is a block height since v0.5.1; a Unix-ms value is replaced by the ledger height");
     return this.blockHeight;
   }
 
@@ -1420,7 +1420,7 @@ export class UepLedger {
   static restore(data: UepLedgerSnapshot, trust: SnapshotTrust, keys: LedgerSigningKeys = {}, opts: RestoreOptions = {}): UepLedger {
     const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
     if (!data || typeof data !== "object") fail("SHAPE");
-    // v0.5.0 (docs/COMPATIBILITY.md): older formats are migrated step by step
+    // v0.5.1 (docs/COMPATIBILITY.md): older formats are migrated step by step
     // (snapshot-migrations.ts) after their signatures and chain links are
     // checked against the bytes that were signed. Formats behind a hash change
     // cannot be migrated and are rejected with the reason.
@@ -1536,11 +1536,11 @@ export class UepLedger {
     l.notes = data.notes.map(deserializeNote);
     l.txs = data.txs.map(deserializeTx);
     l.noteCounter = BigInt(data.noteCounter);
-    // v0.5.0 (format 7): the block height is a non-negative safe integer and not below the last reconcile height.
+    // v0.5.1 (format 7): the block height is a non-negative safe integer and not below the last reconcile height.
     if (!Number.isSafeInteger(data.height) || data.height < 0 || !Number.isSafeInteger(data.lastReconcileAt) || data.lastReconcileAt < 0 || data.lastReconcileAt > data.height) fail("HEIGHT", "height must be a non-negative integer, at or above lastReconcileAt");
     l.lastReconcileAt = data.lastReconcileAt;
     l.blockHeight = data.height;
-    // v0.5.0: the height never goes backwards unless the operator forces a rollback.
+    // v0.5.1: the height never goes backwards unless the operator forces a rollback.
     if (opts.allowHeightRegression !== true) {
       const floors: Array<[string, unknown]> = [["checkpoint", trust.checkpoint?.height], ["minHeight", opts.minHeight], ["replaced ledger", opts.replaces?.height]];
       for (const [what, floor] of floors) {
@@ -1704,7 +1704,7 @@ export class UepLedger {
     return l;
   }
 
-  /** v0.5.0: retire this ledger (called by restore(..., { replaces: this })); advanceHeight then throws LEDGER_RETIRED. */
+  /** v0.5.1: retire this ledger (called by restore(..., { replaces: this })); advanceHeight then throws LEDGER_RETIRED. */
   retire(): void {
     this.retired = true;
   }

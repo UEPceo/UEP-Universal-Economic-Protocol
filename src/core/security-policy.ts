@@ -12,7 +12,7 @@
  * units of different assets are never added together. The spend count per
  * account and window stays asset-independent (it counts transactions, not units).
  *
- * v0.5.0 (ADR 0002): the rolling window is measured in block heights
+ * v0.5.1 (ADR 0002): the rolling window is measured in block heights
  * (`windowHeights`, default 12 = 60 s at 5 s blocks) and probes carry the
  * height of the ledger (`height`). The policy never reads a clock.
  */
@@ -34,7 +34,7 @@ export type SecurityPolicyConfig = {
   maxTransferAmount: bigint;
   /** Max amount per account and asset per rolling window. Default for assets without an override. */
   maxTransferPerWindow: bigint;
-  /** Window length in block heights (v0.5.0; default 12 = 60 s at 5 s blocks). */
+  /** Window length in block heights (v0.5.1; default 12 = 60 s at 5 s blocks). */
   windowHeights: number;
   /** Max spends per account per window. */
   maxTxPerWindow: number;
@@ -71,7 +71,7 @@ export type SpendProbe = {
   assetId: string;
   amount: bigint;
   fee: bigint;
-  /** v0.5.0: ledger height of the check. */
+  /** v0.5.1: ledger height of the check. */
   height?: number;
   /** @deprecated legacy Unix-ms (or any ms) time of the check; used when `height` is absent, as floor(nowMs / 5000). Removed in 0.6.0. */
   nowMs?: number;
@@ -81,7 +81,7 @@ export type SpendProbe = {
 function probeTick(p: SpendProbe): number {
   if (p.height !== undefined) return p.height;
   if (p.nowMs !== undefined) {
-    deprecate(DEPRECATIONS.POLICY_WINDOW_MS, "SecurityPolicy: probe.nowMs is deprecated since v0.5.0 and removed in 0.6.0; it is read as floor(nowMs / 5000) heights (pass probe.height)");
+    deprecate(DEPRECATIONS.POLICY_WINDOW_MS, "SecurityPolicy: probe.nowMs is deprecated since v0.5.1 and removed in 0.6.0; it is read as floor(nowMs / 5000) heights (pass probe.height)");
     return Math.floor(p.nowMs / REFERENCE_BLOCK_TIME_MS);
   }
   return 0;
@@ -141,7 +141,7 @@ export class SecurityPolicy {
   private windows = new Map<string, WindowBucket>();
 
   /**
-   * `windowMs` is the pre-v0.5.0 window in milliseconds; it is converted to
+   * `windowMs` is the pre-v0.5.1 window in milliseconds; it is converted to
    * `windowHeights = ceil(windowMs / REFERENCE_BLOCK_TIME_MS)` (60,000 ms -> 12),
    * the same rounding as every other `*Ms` option and the snapshot migration.
    */
@@ -149,7 +149,7 @@ export class SecurityPolicy {
     const { windowMs, ...rest } = config;
     if (windowMs !== undefined && rest.windowHeights !== undefined) throw new Error("CLOCK_CONFIG_CONFLICT: windowMs and windowHeights");
     if (windowMs !== undefined && (!Number.isFinite(windowMs) || windowMs <= 0)) throw new Error("POLICY_WINDOW_INVALID: windowMs must be a positive number");
-    if (windowMs !== undefined) deprecate(DEPRECATIONS.POLICY_WINDOW_MS, "SecurityPolicy: windowMs is deprecated since v0.5.0 and removed in 0.6.0; it is converted to windowHeights = ceil(windowMs / 5000) (pass windowHeights and probe.height)");
+    if (windowMs !== undefined) deprecate(DEPRECATIONS.POLICY_WINDOW_MS, "SecurityPolicy: windowMs is deprecated since v0.5.1 and removed in 0.6.0; it is converted to windowHeights = ceil(windowMs / 5000) (pass windowHeights and probe.height)");
     this.config = {
       ...DEFAULT_CONFIG,
       ...rest,

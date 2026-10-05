@@ -19,7 +19,12 @@ swap fee inside its simulation (see "Liquidity-pool lab fee" below). Nothing in
 the testnet charges it. All keys used by the labs are generated locally at run time
 or are trivial fixed test vectors (for example `secret = 1`, `salt = 2`); none has
 any value. The Groth16 keys produced by `uep-zk` are development keys: there is no
-ceremony.
+ceremony. The verifying keys pinned in `uep-core/vectors/UEP-ZK-DEV-VK-PINS.json`
+are those development keys: pinning decides which key a verifier uses, it does
+not make the key trustworthy. **ZK verification in the labs is not trustworthy
+until a real multi-party setup ceremony is held**; the pinned keys are for
+development and tests only and are refused when `NODE_ENV=production`
+or `UEP_ZK_KEY_MODE=production` is set. See `SECURITY.md`.
 
 ## What is in the labs
 

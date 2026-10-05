@@ -33,6 +33,10 @@ Reports should target the current `main` branch or the latest GitHub Release. Ol
 
 Passing the public tests does not establish production security. The public testnet is local/in-process and the cryptographic spend path is a development/reference mechanism.
 
+## Zero-knowledge labs: development keys only
+
+The Groth16 verifying keys pinned in `uep-core/vectors/UEP-ZK-DEV-VK-PINS.json` are **development keys only**. No multi-party setup ceremony has been held, so ZK proof verification in the labs is **not trustworthy** and must not be used to accept value. Pinning (v0.5.0) guarantees that verifiers never take a key from the message that carries a proof; it does not make the pinned keys safe. The earlier review item about verifiers trusting a carried key is therefore addressed with pinned keys for development only, not as a soundness fix. The testnet ledger does not accept ZK proofs. Since v0.5.1 the development pin file is refused when `NODE_ENV=production` or `UEP_ZK_KEY_MODE=production` is set, and a pin file not labelled `DEV-TEST-KEYS` may not list a development key. Promoting ZK verification beyond the labs requires a real ceremony and a separate pin file.
+
 ## Responsible disclosure
 
 For vulnerabilities that could materially affect users or future deployments, please avoid immediately publishing exploit details.

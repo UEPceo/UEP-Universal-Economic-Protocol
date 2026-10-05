@@ -5,7 +5,7 @@
  * Each identity has a deterministic Ed25519 "spend key" derived from its
  * account secret and salt. The account id itself commits to that key.
  *
- * v3 (since v0.5.0, the format of every new id):
+ * v3 (since v0.5.1, the format of every new id):
  *
  *   keyHash   = SHA-256("UEP-ACCOUNT-KEY-v3\n" || raw32(spendPublicKey))[0..23]
  *   check     = SHA-256("UEP-ACCOUNT-CHECK-v3\n" || 0x03 || keyHash)[0..8]

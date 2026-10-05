@@ -18,7 +18,7 @@ The model is registry → asset definition → issuer key set → controlled iss
 
 ### Asset ids (namespaced)
 
-- Format: `<namespace>/<symbol>`, lowercase ASCII, at most 31 bytes (`ASSET_ID_PATTERN`).
+- Format: `<namespace>/<symbol>`, lowercase ASCII, at most 31 bytes (`ASSET_ID_PATTERN`); up to 44 bytes under a v2 self-certifying `k-` namespace (see "Openability").
   - Namespace: `[a-z0-9][a-z0-9-]{0,14}`.
   - Symbol: `[a-z0-9][a-z0-9._-]{0,14}`.
 - Valid ids are short and never start with a zero byte, so `encodeStringToFr` is injective over them: two different ids never map to the same field element.
@@ -58,7 +58,7 @@ Rules:
 The manifest is designed so that the registry can be opened later without changing the id format:
 
 - **Namespace ownership.** Each namespace has an `owner` key set. Every asset under a namespace carries `approvals` from that owner over `assetAdmissionMessage(networkId, asset)`, which binds the namespace to its owner's keys.
-- **Self-certifying namespaces.** Namespaces starting with `k-` are derived from the owner key set (`selfCertifiedNamespace`, domain `UEP-NAMESPACE-v1`). Anyone can claim one without asking for a name, and nobody else can use it.
+- **Self-certifying namespaces.** Namespaces starting with `k-` are derived from the owner key set (`selfCertifiedNamespace`). Anyone can claim one without asking for a name, and nobody else can use it. Since v0.5.1 a name is `k-` + 26 base32 characters (130 bits, domain `UEP-NAMESPACE-v2`), so a second preimage costs about 2^130 and a collision about 2^65. Asset ids under such a namespace may be up to 44 bytes; `assetIdToFr` packs them above 2^248, so the field encoding stays injective and other ids keep their encoding. Compatibility: v0.5.0 names (`k-` + 13 characters, 65 bits, domain `UEP-NAMESPACE-v1`) stay valid wherever a manifest already lists them (`legacySelfCertifiedNamespace`), but a new manifest or version bump cannot introduce one.
 - **Extension points (not implemented, decision of the maintainers):**
   - who holds the governance keys in a public phase, and how they are rotated;
   - public admission requirements (anti-spam cost without a native token, or an allowlist);

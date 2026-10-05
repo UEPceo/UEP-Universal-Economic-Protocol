@@ -117,7 +117,7 @@ export class MarketplaceTreasury {
   private readonly authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
   /** v0.4.7: per-asset Marketplace fee floor (asset -> minimum, each >= MIN_MARKETPLACE_FEE). */
   private readonly minFeeByAsset = new Map<string, bigint>();
-  /** v0.5.0: default entry stamp (a height; the Marketplace passes its own). */
+  /** v0.5.1: default entry stamp (a height; the Marketplace passes its own). */
   private readonly height: HeightSource;
 
   constructor(opts?: {
@@ -127,7 +127,7 @@ export class MarketplaceTreasury {
     authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
     /** v0.4.7: per-asset fee floors in the asset's smallest unit (default MIN_MARKETPLACE_FEE for every asset). */
     minFeeByAsset?: Record<string, bigint>;
-    /** v0.5.0 (ADR 0002): height stamped on entries when no timestamp is passed (default: height 0). */
+    /** v0.5.1 (ADR 0002): height stamped on entries when no timestamp is passed (default: height 0). */
     height?: HeightSource;
   }) {
     this.height = opts?.height ?? (() => 0);

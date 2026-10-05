@@ -3,7 +3,7 @@
  * simulations (a local height counter, the millisecond test clock, a zero
  * reservation deposit, no spend proof, unbounded height advance).
  *
- * v0.5.0 rules:
+ * v0.5.1 rules:
  *  - Under NODE_ENV=production every `testOnly*` option (and the deprecated
  *    `now` alias of `testOnlyNowMs`) is rejected: TEST_ONLY_OPTION_IN_PRODUCTION.
  *  - Boolean flags must be the boolean `true` (or `false` / absent).

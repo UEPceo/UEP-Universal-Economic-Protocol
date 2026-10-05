@@ -1,5 +1,5 @@
 /**
- * v0.5.0 (ADR 0002 rule 2): IoT telemetry that travels at light speed from
+ * v0.5.1 (ADR 0002 rule 2): IoT telemetry that travels at light speed from
  * Mars settles when the listing declares the MARS domain profile, with no
  * window widened by hand. Earth-Mars one-way light time: 338.3 s minimum
  * and 1,203.6 s maximum between 2026-10 and 2028-12, computed offline from
@@ -38,7 +38,7 @@ function runRoundTrip(profile: DomainProfileId | undefined, out: number, wait: n
   return runHeights(profile, back, out + wait);
 }
 
-/** Pre-v0.5.0 setup (test-only legacy ms clock shared by both services); only the profile is added. */
+/** Pre-v0.5.1 setup (test-only legacy ms clock shared by both services); only the profile is added. */
 function runLegacyMs(profile: DomainProfileId | undefined, delayS: number): Outcome {
   let now = 1_000_000_000;
   const marketplace = new DigitalServicesMarketplace({ testOnlyNowMs: () => now, settlementArbiterId: "iot-arbiter", settlementArbiterPublicKey: ARBITER.publicKeyHex, adminIdentity: "iot-admin", adminPublicKey: ADMIN.publicKeyHex });
@@ -109,7 +109,7 @@ describe("IoT telemetry with Earth-Mars light-time delay (in heights)", () => {
     assert.equal(runHeights("MOON", 62), "REJECTED IOT_TELEMETRY_STALE");
   });
 
-  it("pre-v0.5.0 setup (test-only ms clock): MARS passes at 338.3 s and 1,203.6 s, EARTH defaults unchanged", () => {
+  it("pre-v0.5.1 setup (test-only ms clock): MARS passes at 338.3 s and 1,203.6 s, EARTH defaults unchanged", () => {
     assert.equal(runLegacyMs("MARS", LT_MIN_S), OK);
     assert.equal(runLegacyMs("MARS", LT_MAX_S), OK);
     assert.equal(runLegacyMs(undefined, 60), OK);

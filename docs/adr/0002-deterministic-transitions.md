@@ -1,6 +1,6 @@
 # ADR 0002: Deterministic transitions, height-based time and evidence caps
 
-- Status: accepted (v0.5.0). Rules 1, 2 and 6 below are implemented. Conjunction handling, attester selection and payment, and the default outcome when evidence is missing are open (see the end of this ADR).
+- Status: accepted (v0.5.1). Rules 1, 2 and 6 below are implemented. Conjunction handling, attester selection and payment, and the default outcome when evidence is missing are open (see the end of this ADR).
 - Scope: every state transition of the core, the single-node testnet ledger, the Marketplace (including `settle()`, `deliver()`, settlement guards and category validators) and the IoT/M2M service.
 - Code: `src/core/height.ts`, `src/core/domain-profiles.ts`, `src/core/test-only.ts`, `src/core/ed25519-point.ts`, `src/marketplace/evidence.ts`, `src/service/height-producer.ts`, `scripts/check-deterministic-transitions.mjs`, `scripts/poisoned-clock.mjs`. Tests in `src/core/height.test.ts`, `src/core/deterministic-transitions.test.ts`, `src/testnet/ledger-height.test.ts`, `src/marketplace/domain-windows.test.ts`, `src/marketplace/evidence-caps.test.ts`, `src/service/iot-mars-delay.test.ts`, `src/service/height-producer.test.ts` and `src/service/poisoned-clock.test.ts`.
 
@@ -50,6 +50,7 @@ Allowlist (each entry names a file, a rule, optionally the lines it covers, and 
 | `src/core/test-only.ts` | `process-state` | `process.env.NODE_ENV === "production"` | Configuration-time guard that rejects `testOnly*` options under `NODE_ENV=production`; called from constructors when such an option is passed, never from a transition. |
 | `src/testnet/key-derived-accounts.test.ts` | `net-import` (`node:fs`) | all | Test-only read of a committed golden snapshot fixture (v2 account ids); no live data. |
 | `src/marketplace/listing-index.test.ts` | `performance-now` | all | Test-only timing of the listing index; it measures the test, not a transition. |
+| `src/core/asset-registry.test.ts` | `net-import` (`node:fs`) | all | Test-only read of a committed, frozen v0.5.0 asset registry manifest; no live data. |
 | `src/core/poseidon.test.ts` | `net-import` (`node:fs`) | all | Test-only read of the committed Poseidon reference vectors in the repository; no live data. |
 | `src/testnet/snapshot-fixtures.test.ts` | `net-import` (`node:fs`) | all | Test-only read of the committed golden snapshot fixtures (ADR 0003); no live data. |
 | `src/core/ed25519.ts` | `randomness` | the `node:crypto` import (line 10) and `generateKeyPairSync("ed25519")` (line 18) | `generateEd25519KeyPair()` creates a key for an identity, a node or a test. Key owners and tooling call it, never a transition; checked by execution in the poisoned-clock run. |

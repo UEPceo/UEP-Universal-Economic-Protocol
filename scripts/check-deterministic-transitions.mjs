@@ -45,7 +45,7 @@ export const SCANNED_FILES = ["src/service/iot-m2m.ts", "src/service/iot-m2m-cod
 
 const FORBIDDEN_MODULES = [
   "http", "https", "http2", "net", "tls", "dgram", "dns", "dns/promises", "fs", "fs/promises", "child_process", "worker_threads", "perf_hooks", "readline", "inspector",
-  // v0.5.0 hardening (review of the first version): timers, OS state, module loaders and network clients.
+  // v0.5.1 hardening (review of the first version): timers, OS state, module loaders and network clients.
   "timers", "timers/promises", "os", "module", "vm", "cluster", "repl", "undici",
 ];
 const moduleAlternation = FORBIDDEN_MODULES.map((m) => m.replace("/", "\\/")).join("|");
@@ -101,6 +101,11 @@ export const ALLOWLIST = [
     file: "src/core/poseidon.test.ts",
     rule: "net-import",
     reason: "Test-only node:fs read of the committed, hash-pinned Poseidon vectors (uep-core/vectors); static repository data, not live data.",
+  },
+  {
+    file: "src/core/asset-registry.test.ts",
+    rule: "net-import",
+    reason: "Test-only node:fs read of a committed, frozen v0.5.0 asset registry manifest (src/core/fixtures); static repository data, not live data.",
   },
   {
     file: "src/core/ed25519.ts",

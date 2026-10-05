@@ -26,7 +26,7 @@ export const REFERENCE_BLOCK_TIME_MS = 5_000;
 /** Heights per day at the reference block time (17_280). */
 export const HEIGHTS_PER_DAY = (24 * 60 * 60 * 1000) / REFERENCE_BLOCK_TIME_MS;
 /**
- * v0.5.0: most blocks one producer tick (and one ledger advanceHeight() call
+ * v0.5.1: most blocks one producer tick (and one ledger advanceHeight() call
  * outside test mode) may seal: 12 blocks = 1 minute at the reference block
  * time. A longer gap (a stalled process, a restart) is not caught up: the
  * windows freeze for the rest of it (ADR 0002).
@@ -83,7 +83,7 @@ export class HeightCounter {
 const HEIGHT_SOURCES = new WeakMap<object, HeightSource>();
 
 /**
- * v0.5.0: the height source of a target with a `height` property (a ledger,
+ * v0.5.1: the height source of a target with a `height` property (a ledger,
  * a ProducedHeight). The same target always gives the same function, so
  * components that must share one height (the paymaster and its Marketplace)
  * can be checked for it: `const height = heightOf(ledger)`.
@@ -131,7 +131,7 @@ export class TransitionClock {
     const nowMs = config.testOnlyNowMs ?? config.now;
     const local = config.testOnlyLocalHeight === true;
     if (config.testOnlyLocalHeight !== undefined && typeof config.testOnlyLocalHeight !== "boolean") throw new Error("CLOCK_CONFIG_INVALID: testOnlyLocalHeight is a boolean");
-    // v0.5.0: test-only options are rejected under NODE_ENV=production (src/core/test-only.ts).
+    // v0.5.1: test-only options are rejected under NODE_ENV=production (src/core/test-only.ts).
     testOnlyOption("testOnlyLocalHeight", config.testOnlyLocalHeight);
     if (config.testOnlyNowMs !== undefined && typeof config.testOnlyNowMs === "function") testOnlyOption("testOnlyNowMs", config.testOnlyNowMs, "function");
     if (config.now !== undefined && typeof config.now === "function") testOnlyOption("now", config.now, "function");
@@ -142,7 +142,7 @@ export class TransitionClock {
     }
     if (nowMs !== undefined) {
       if (typeof nowMs !== "function") throw new Error("CLOCK_CONFIG_INVALID");
-      if (config.now !== undefined) deprecate(DEPRECATIONS.NOW_OPTION, "`now` is deprecated since v0.5.0: it is the test-only millisecond counter, renamed `testOnlyNowMs`; the millisecond mode is removed in 0.6.0. Pass `height: () => ledger.height` (with a HeightProducer) instead");
+      if (config.now !== undefined) deprecate(DEPRECATIONS.NOW_OPTION, "`now` is deprecated since v0.5.1: it is the test-only millisecond counter, renamed `testOnlyNowMs`; the millisecond mode is removed in 0.6.0. Pass `height: () => ledger.height` (with a HeightProducer) instead");
       return new TransitionClock("legacy-ms", nowMs);
     }
     if (local) {
@@ -153,7 +153,7 @@ export class TransitionClock {
   }
 
   /**
-   * v0.5.0: true iff both clocks read the same height source: the same
+   * v0.5.1: true iff both clocks read the same height source: the same
    * function (e.g. both built from heightOf(ledger)), not merely the same unit.
    * Two local counters are never the same source. The test-only millisecond
    * mode compares the unit only (removed in 0.6.0).
@@ -205,7 +205,7 @@ export class TransitionClock {
     if (heights !== undefined && ms !== undefined) throw new Error(`CLOCK_CONFIG_CONFLICT: ${name} is given both in heights and in ms`);
     if (heights !== undefined) return this.fromHeights(heights);
     if (ms !== undefined) {
-      deprecate(DEPRECATIONS.MS_OPTION, `${name}: millisecond options (*Ms) are deprecated since v0.5.0 and converted to heights (ceil, 5 s blocks); use the *Heights option`);
+      deprecate(DEPRECATIONS.MS_OPTION, `${name}: millisecond options (*Ms) are deprecated since v0.5.1 and converted to heights (ceil, 5 s blocks); use the *Heights option`);
       return this.fromMs(ms);
     }
     return this.fromHeights(defaultHeights);
@@ -213,7 +213,7 @@ export class TransitionClock {
 }
 
 /**
- * v0.5.0 compatibility (docs/COMPATIBILITY.md): the height that corresponds
+ * v0.5.1 compatibility (docs/COMPATIBILITY.md): the height that corresponds
  * to a legacy Unix-ms timestamp, given the current height and the current
  * Unix-ms time of the caller. Pure: boundary adapters (service API, HTTP)
  * pass their own wall-clock reading; transitions never call this.

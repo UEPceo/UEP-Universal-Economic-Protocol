@@ -1,5 +1,5 @@
 /**
- * v0.5.0 compatibility shims (docs/COMPATIBILITY.md): pre-v0.5.0 inputs keep
+ * v0.5.1 compatibility shims (docs/COMPATIBILITY.md): pre-v0.5.1 inputs keep
  * working through deterministic conversions, with deprecation warnings.
  */
 import assert from "node:assert/strict";
@@ -20,7 +20,7 @@ import { UepServiceApi } from "./uep-service-api.ts";
 import { IoTM2MService, IOT_M2M_CATEGORY } from "./iot-m2m.ts";
 import { holdAs, registerMachineAs, registerProviderAs, requestAs, simulateAs, deliverTelemetryAs } from "./iot-testkit.ts";
 
-describe("v0.5.0 compatibility shims", () => {
+describe("v0.5.1 compatibility shims", () => {
   it("asset ids: pre-v0.5.0 ids resolve to namespaced ids in the ledger and the Marketplace", async () => {
     assert.equal(resolveAssetIdAlias("asset:test:eur"), "uep-test/teur");
     assert.equal(resolveAssetIdAlias("uep-test/teur"), "uep-test/teur");
@@ -75,7 +75,7 @@ describe("v0.5.0 compatibility shims", () => {
     assert.ok(emittedDeprecations().includes("UEP_DEP_SPEND_NOW_MS"));
   });
 
-  it("SecurityPolicy windowMs is converted with ceil(windowMs / 5000); legacy nowMs probes keep their pre-v0.5.0 meaning", () => {
+  it("SecurityPolicy windowMs is converted with ceil(windowMs / 5000); legacy nowMs probes keep their pre-v0.5.1 meaning", () => {
     assert.equal(new SecurityPolicy({ windowMs: 60_000 }).config.windowHeights, 12);
     assert.equal(new SecurityPolicy({ windowMs: 60_001 }).config.windowHeights, 13);
     assert.equal(new SecurityPolicy({ windowMs: 1 }).config.windowHeights, 1);
@@ -114,7 +114,7 @@ describe("v0.5.0 compatibility shims", () => {
     const order = reserveAs(m, { listingId: listing.listingId, buyerId: "buyer", quantity: 1n });
     m.advanceHeight(100);
     const read = (issuedAt: number) => api.marketplaceGetOrder(order.orderId, { auth: { ...act(m, "buyer", "read", order.orderId, { issuedAt }), issuedAt } });
-    assert.equal((read(100) as { ok: boolean }).ok, true); // v0.5.0 form: the height
+    assert.equal((read(100) as { ok: boolean }).ok, true); // v0.5.1 form: the height
     assert.equal((read(wall - 60_000) as { ok: boolean }).ok, true); // legacy: 1 min old -> 12 heights old
     const stale = read(wall - 10 * 60_000) as { ok: boolean; error?: { message: string } };
     assert.equal(stale.ok, false);

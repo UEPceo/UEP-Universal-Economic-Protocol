@@ -1,7 +1,7 @@
 /**
  * Height producer for the single-node testnet (ADR 0002).
  *
- * Since v0.5.0 no state transition reads a clock: every window is a number of
+ * Since v0.5.1 no state transition reads a clock: every window is a number of
  * block heights. This producer is the one place that turns real time into
  * heights. It runs OUTSIDE the state machine (it is node tooling, not a
  * transition), measures elapsed time with a MONOTONIC clock and seals one

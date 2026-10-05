@@ -1,5 +1,5 @@
 /**
- * v0.5.0 (ADR 0002): the single-node testnet exposes a deterministic block
+ * v0.5.1 (ADR 0002): the single-node testnet exposes a deterministic block
  * height. It starts at 0, only moves through advanceHeight(), is part of the
  * signed snapshot (format 7) and is the only time the ledger's transitions use.
  */

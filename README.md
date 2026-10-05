@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.0-public-iot-m2m` (unreleased)
+> **Version:** `0.5.1-public-iot-m2m` (on `main`; not yet a GitHub Release)
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -42,9 +42,9 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 
 | Item | Status |
 |---|---|
-| Version | `0.5.0-public-iot-m2m` (unreleased): API authorization hardening, signed spends, paymaster caps, compressed Merkle tree, circuit v4 with pinned verifying keys, namespaced asset ids and the asset registry manifest, on top of the research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
-| Tests (testnet) | protocol **135/135**, Marketplace + IoT/M2M + HTTP authorization + height producer **170/170** (includes IoT **30/30** and scale **3/3**); the same suites under the poisoned clock **272/272** |
-| Tests (research labs) | Rust **115** (uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99); labs **455** tests in 96 files; 14 lab files with known issues run in a non-blocking job |
+| Version | `0.5.1-public-iot-m2m`: deterministic height-based transitions (monotonic height producer, domain delay windows for Moon and Mars), evidence value caps, a compatibility policy with snapshot migrations, v3 account ids, object-route Host / Origin checks, lab domain binding, 130-bit self-certifying namespaces and development-only ZK keys, on top of v0.5.0: API authorization hardening, signed spends, paymaster caps, compressed Merkle tree, circuit v4 with pinned verifying keys, namespaced asset ids and the asset registry manifest, on top of the research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.4.6-public-iot-m2m` |
+| Tests (testnet) | protocol **140/140**, Marketplace + IoT/M2M + HTTP authorization + height producer **173/173** (includes IoT **30/30** and scale **3/3**); the same suites under the poisoned clock **275/275** |
+| Tests (research labs) | Rust **115** (uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99); labs **463** tests in 98 files; 14 lab files with known issues run in a non-blocking job |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 7, format 6 migrated ([compatibility policy](docs/COMPATIBILITY.md)) |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
@@ -223,7 +223,7 @@ These public testnet releases harden the ledger, the IoT/M2M service layer and M
 
 ### Address format and migration (v0.4.5)
 
-Accounts are identified by **v3 addresses** (since v0.5.0; v2 addresses from v0.4.5 still decode and keep working):
+Accounts are identified by **v3 addresses** (since v0.5.1; v2 addresses from v0.4.5 still decode and keep working):
 
 ```text
 address    = Bech32m(hrp = "uep", version ‖ networkTag ‖ keyHash ‖ check)   (68 characters)
@@ -334,7 +334,7 @@ npm run test:all
 `npm run test:all` runs, in order and stopping at the first failure:
 
 1. `npm run lint:determinism` and `npm run check:snapshot-compat`: no clock or external call in transitions (ADR 0002); no snapshot format change without a migration step and golden fixtures ([`docs/COMPATIBILITY.md`](./docs/COMPATIBILITY.md));
-2. `npm test`: protocol/testnet (128, including the golden snapshot fixtures), Marketplace + IoT/M2M + HTTP authorization + compatibility shims + height producer (161, including the IoT and 3 scale tests); then `npm run test:poisoned-clock` (257 tests with the clock, timers, network and randomness poisoned inside transitions);
+2. `npm test`: protocol/testnet (140, including the golden snapshot fixtures), Marketplace + IoT/M2M + HTTP authorization + compatibility shims + height producer (173, including the IoT and 3 scale tests); then `npm run test:poisoned-clock` (275 tests with the clock, timers, network and randomness poisoned inside transitions);
 3. `npm run smoke:testnet`: prints `SMOKE OK`;
 4. `npm run quickstart`: the first-transaction example;
 5. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`;

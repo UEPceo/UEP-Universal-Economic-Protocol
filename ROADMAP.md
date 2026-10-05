@@ -18,7 +18,7 @@ For the layer-by-layer architecture and the current status of each layer, see [`
 
 | Item | Status |
 |---|---|
-| Current version | `0.5.0-public-iot-m2m` (unreleased), on top of the research-labs integration and Poseidon protocol hash (latest GitHub Release `v0.4.6-public-iot-m2m`) |
+| Current version | `0.5.1-public-iot-m2m` (deterministic height-based transitions, evidence caps, compatibility policy, review fixes), on top of v0.5.0 and the research-labs integration and Poseidon protocol hash (latest GitHub Release `v0.4.6-public-iot-m2m`) |
 | Tests | testnet: protocol 96/96, Marketplace + IoT/M2M + HTTP authorization 121/121 (includes IoT 23/23 and scale 3/3); research labs: Rust 115, labs 455 in 96 files (`npm run test:all` runs everything) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process, not a throughput claim) |
 | CI | GitHub Actions: `npm run test:all` on Node.js 22.x and 24.x (blocking); 14 lab files with known issues in a separate non-blocking job |

@@ -1,6 +1,6 @@
 # ADR 0003: Compatibility, snapshot migrations and deprecation shims
 
-- Status: accepted (v0.5.0).
+- Status: accepted (v0.5.1).
 - Scope: ledger snapshots, the public TypeScript API, the HTTP adapter and asset ids. The policy itself is [`docs/COMPATIBILITY.md`](../COMPATIBILITY.md).
 - Code:
   - `src/testnet/snapshot-migrations.ts` (registry), `src/testnet/snapshot-json.ts` (JSON codec), `src/core/deprecation.ts`;
@@ -10,7 +10,7 @@
 
 ## Context
 
-v0.5.0 changed several things that broke existing users:
+v0.5.1 changed several things that broke existing users:
 
 - the snapshot format (6 → 7, block height; ADR 0002);
 - the asset ids (`asset:test:eur` → `uep-test/teur`);

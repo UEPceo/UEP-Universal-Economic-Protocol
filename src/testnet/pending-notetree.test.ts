@@ -268,7 +268,7 @@ test("note tree: restore checks the signed root and every committed spend's memb
     old.formatVersion = v;
     assert.throws(() => UepLedger.restore(resign(old), TRUST), new RegExp(`INVALID_SNAPSHOT_VERSION: snapshot formatVersion ${v} is no longer supported`));
   }
-  // v0.5.0: format 6 is migrated (docs/COMPATIBILITY.md); a format 7 payload relabelled as 6 fails the 6 -> 7 step.
+  // v0.5.1: format 6 is migrated (docs/COMPATIBILITY.md); a format 7 payload relabelled as 6 fails the 6 -> 7 step.
   const relabelled = structuredClone(snap) as any;
   relabelled.formatVersion = 6;
   assert.throws(() => UepLedger.restore(resign(relabelled), TRUST), /INVALID_SNAPSHOT_MIGRATION: MIGRATION_6_7/);

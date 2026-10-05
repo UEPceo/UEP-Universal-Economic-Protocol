@@ -3,7 +3,7 @@
  *
  *   address = Bech32m(hrp = "uep", data = version || networkTag || body)
  *
- * v3 (since v0.5.0, the format of new addresses):
+ * v3 (since v0.5.1, the format of new addresses):
  *   version    1 byte   0x03 (= ACCOUNT_ID_VERSION)
  *   networkTag 4 bytes  SHA-256("UEP-ADDR-NETWORK-v2\n" || networkId)[0..4]
  *   body       31 bytes 23-byte key hash || 8-byte check (see spend-key.ts)

@@ -1,5 +1,5 @@
 /**
- * v0.5.0: a snapshot survives a generic JSON round trip (bigints as tagged
+ * v0.5.1: a snapshot survives a generic JSON round trip (bigints as tagged
  * objects, field elements as hex) and repeated restarts without changing a
  * byte of its payload. Transactions are serialized with canonical input and
  * output notes, and the transaction chain hash is computed over that form, so

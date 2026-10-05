@@ -178,7 +178,7 @@ export function validateZkSpendInstance(
 
     // v0.4.5: senderId = key-derived account id of the spend key of (secret, salt).
     // A future circuit has to prove this binding (or the signature) in-circuit.
-    // v0.5.0: the v3 id, or the v2 id of the same key for existing accounts.
+    // v0.5.1: the v3 id, or the v2 id of the same key for existing accounts.
     const expectIds = accountIdsFromSecrets(w.senderSecret, w.senderSalt);
     if (!expectIds.v3.eq(pub.senderId) && !expectIds.v2.eq(pub.senderId)) {
       errors.push("senderId != accountIdFromSpendKey(spendKey(secret, salt))");

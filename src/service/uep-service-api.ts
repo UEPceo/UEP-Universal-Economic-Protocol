@@ -53,7 +53,7 @@ export type ServiceApiConfig = {
   marketplace?: DigitalServicesMarketplace;
   iotM2M?: IoTM2MService;
   /**
-   * v0.5.0 compatibility: Unix-ms clock used only to map a deprecated Unix-ms
+   * v0.5.1 compatibility: Unix-ms clock used only to map a deprecated Unix-ms
    * `issuedAt` to a Marketplace height (boundary code, never a transition).
    * Default: Date.now.
    */
@@ -270,10 +270,10 @@ export class UepServiceApi {
       throw new UepApiError("UNAUTHORIZED", "signed actor authorization required", 401);
     }
     const auth: ActorAuth = { actorId: a.actorId, signature: a.signature, ...(typeof a.issuedAt === "number" ? { issuedAt: a.issuedAt } : {}) };
-    // v0.5.0 compatibility: a legacy Unix-ms issuedAt (pre-v0.5.0 clients) is mapped to a Marketplace
+    // v0.5.1 compatibility: a legacy Unix-ms issuedAt (pre-v0.5.1 clients) is mapped to a Marketplace
     // height here, at the boundary, with this adapter's clock; the Marketplace itself reads no clock.
     if (auth.issuedAt !== undefined && looksLikeLegacyMs(auth.issuedAt) && this.marketplace?.timeUnit === "height") {
-      deprecate(DEPRECATIONS.ISSUED_AT_MS, "x-uep-issued-at / auth.issuedAt in Unix ms is deprecated since v0.5.0; sign the Marketplace height (GET /v1/marketplace/height)");
+      deprecate(DEPRECATIONS.ISSUED_AT_MS, "x-uep-issued-at / auth.issuedAt in Unix ms is deprecated since v0.5.1; sign the Marketplace height (GET /v1/marketplace/height)");
       auth.issuedAtHeight = Math.max(0, legacyMsToHeight(auth.issuedAt, this.marketplace.clock(), this.legacyWallClock()));
     }
     return auth;
@@ -295,7 +295,7 @@ export class UepServiceApi {
   }
 
   /**
-   * v0.5.0: current Marketplace time (public). Clients sign read / list
+   * v0.5.1: current Marketplace time (public). Clients sign read / list
    * authorizations with `issuedAt` = this height.
    */
   marketplaceHeight(meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
