@@ -57,7 +57,9 @@ export type SubmitError =
   /** v0.4.4: the bounded pending queue is full. */
   | { code: "PENDING_FULL"; message: string }
   /** v0.4.7: a multi-note payment batch is malformed (size, mixed sender / asset / recipient, shared inputs). */
-  | { code: "BATCH_INVALID"; message: string };
+  | { code: "BATCH_INVALID"; message: string }
+  /** v0.5.2: a spend was submitted while another spend of this ledger was being checked or applied (re-entry). */
+  | { code: "LEDGER_BUSY"; message: string };
 
 export type SubmitResult = { tx: UepTransaction } | { error: SubmitError };
 /** A spend that passed every check and can be applied without further validation. */
@@ -338,6 +340,8 @@ function planPayment(available: Note[], amount: bigint, minFee: bigint): { plan:
 }
 
 export class UepLedger {
+  /** v0.5.2: re-entrancy guard of submit() / submitBatch(). */
+  private spendInProgress = false;
   /** Optional security policy gate (TESTNET). */
   policy: SecurityPolicyType = new SecurityPolicy();
   /**
@@ -997,7 +1001,26 @@ export class UepLedger {
     this.outputStash.set(txId, { outputs, inputs, debit, balances });
   }
 
+  /**
+   * v0.5.2 (attack battery, concurrent double spend): check + nullifier insert +
+   * apply run in one synchronous turn, so two spends of one note cannot
+   * interleave inside one process; this guard also refuses re-entry (a spend
+   * submitted from inside another spend's checks). Adapters that await an
+   * asynchronous verifier first must serialize through SpendSerializer
+   * (src/testnet/spend-serializer.ts). Multi-process deployments need a shared
+   * transactional store; that is outside this reference implementation.
+   */
   submit(tx: UepTransaction, secrets?: IdentitySecrets): SubmitResult {
+    if (this.spendInProgress) return { error: { code: "LEDGER_BUSY", message: "Another spend is being processed by this ledger." } };
+    this.spendInProgress = true;
+    try {
+      return this.submitUnguarded(tx, secrets);
+    } finally {
+      this.spendInProgress = false;
+    }
+  }
+
+  private submitUnguarded(tx: UepTransaction, secrets?: IdentitySecrets): SubmitResult {
 
     if (tx.amount <= 0n) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Transaction amount must be greater than zero." } };
@@ -1044,6 +1067,16 @@ export class UepLedger {
    * Batches are not queued offline.
    */
   submitBatch(txs: UepTransaction[], secrets?: IdentitySecrets): BatchResult {
+    if (this.spendInProgress) return { error: { code: "LEDGER_BUSY", message: "Another spend is being processed by this ledger." } };
+    this.spendInProgress = true;
+    try {
+      return this.submitBatchUnguarded(txs, secrets);
+    } finally {
+      this.spendInProgress = false;
+    }
+  }
+
+  private submitBatchUnguarded(txs: UepTransaction[], secrets?: IdentitySecrets): BatchResult {
     if (!Array.isArray(txs) || txs.length === 0 || txs.length > MAX_PAYMENT_PARTS) return { error: { code: "BATCH_INVALID", message: `A batch carries 1 to ${MAX_PAYMENT_PARTS} spends.` } };
     if (!this.connected) return { error: { code: "NOT_CONNECTED", message: "Payment batches are not queued offline." } };
     const first = txs[0]!;
