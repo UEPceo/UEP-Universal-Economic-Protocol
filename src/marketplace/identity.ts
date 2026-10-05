@@ -73,7 +73,27 @@ export type ActorAuth = {
 export type MarketplaceAction =
   | "publish" | "fund" | "deliver" | "settle" | "cancel" | "expire" | "read" | "list"
   | "dispute" | "resolve" | "refund" | "review" | "credit"
-  | "iot-provider-register" | "iot-provider-deactivate" | "iot-machine-register" | "iot-machine-deactivate";
+  | "iot-provider-register" | "iot-provider-deactivate" | "iot-machine-register" | "iot-machine-deactivate"
+  | "drip-budget"
+  | CategoryAction;
+
+/**
+ * v0.5.2: actions of the category modules (src/category). They are signed with
+ * the same domain-separated action message as Marketplace actions, by keys
+ * registered with the Marketplace; the category port only accepts these.
+ */
+export type CategoryAction =
+  | "swap-intent" | "swap-accept"
+  | "relay-offer" | "relay-commit" | "relay-key" | "relay-confirm" | "relay-fraud"
+  | "dispute-open" | "dispute-evidence" | "dispute-verdict"
+  | "drip-claim";
+
+export const CATEGORY_ACTIONS: readonly CategoryAction[] = Object.freeze([
+  "swap-intent", "swap-accept",
+  "relay-offer", "relay-commit", "relay-key", "relay-confirm", "relay-fraud",
+  "dispute-open", "dispute-evidence", "dispute-verdict",
+  "drip-claim",
+]);
 
 export type ActionAuthorization = {
   marketplaceId?: string;

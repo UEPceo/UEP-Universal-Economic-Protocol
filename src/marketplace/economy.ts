@@ -39,8 +39,16 @@ export type TreasuryEntry = {
   asset: string;
   amount: bigint;
   bucket: TreasuryBucket;
-  reason: "SETTLED_MARKETPLACE_FEE" | "REVERSAL" | "WITHDRAWAL";
+  /**
+   * v0.5.2: RISK_RESERVE_TRANSFER = treasury share of a slashed relay bond or a
+   * forfeited dispute bond (category modules); DRIP_SUBSIDY = a drip subsidy paid
+   * out of DISTRIBUTABLE_PROFIT within the administrator-signed drip budget.
+   */
+  reason: "SETTLED_MARKETPLACE_FEE" | "REVERSAL" | "WITHDRAWAL" | "RISK_RESERVE_TRANSFER" | "DRIP_SUBSIDY";
 };
+
+/** v0.5.2: capability for the drip budget, issued once (to the Marketplace). */
+export type TreasuryDripCapability = { readonly kind: "treasury-drip-capability" };
 
 export type TreasuryBalance = Record<TreasuryBucket, bigint>;
 
@@ -119,6 +127,12 @@ export class MarketplaceTreasury {
   private readonly minFeeByAsset = new Map<string, bigint>();
   /** v0.5.1: default entry stamp (a height; the Marketplace passes its own). */
   private readonly height: HeightSource;
+  /** v0.5.2: ids of risk-reserve transfers already recorded (each accepted once). */
+  private readonly transferRefs = new Set<string>();
+  /** v0.5.2: drip budget per asset (an allowance on DISTRIBUTABLE_PROFIT, not a bucket). */
+  private readonly dripBudget = new Map<string, bigint>();
+  private readonly dripAllocationRefs = new Set<string>();
+  private dripCapability?: TreasuryDripCapability;
 
   constructor(opts?: {
     treasuryId?: string;
@@ -201,6 +215,78 @@ export class MarketplaceTreasury {
 
     this.settledOrders.add(orderId);
     return quote;
+  }
+
+  /** v0.5.2: true once the Marketplace fee of `orderId` was allocated (settleMarketplaceFee would throw). */
+  hasSettled(orderId: string): boolean {
+    return this.settledOrders.has(orderId);
+  }
+
+  /**
+   * v0.5.2: record a non-fee amount already paid into the treasury (treasury
+   * share of a slashed relay bond or a forfeited dispute bond). It goes to
+   * RISK_RESERVE, which exists to absorb abuse. Each `refId` is accepted once.
+   */
+  creditRiskReserve(refId: string, asset: string, amount: bigint, timestamp = this.height()): TreasuryEntry {
+    if (!refId || !asset) throw new Error("TREASURY_TRANSFER_INVALID");
+    if (typeof amount !== "bigint" || amount <= 0n) throw new Error("TREASURY_TRANSFER_INVALID");
+    if (this.transferRefs.has(refId)) throw new Error("TREASURY_TRANSFER_REPLAY");
+    this.balance(asset).RISK_RESERVE += amount;
+    this.transferRefs.add(refId);
+    const entry: TreasuryEntry = { id: `${this.treasuryId}:transfer:${refId}`, timestamp, orderId: refId, asset, amount, bucket: "RISK_RESERVE", reason: "RISK_RESERVE_TRANSFER" };
+    this.entries.push(entry);
+    return { ...entry };
+  }
+
+  /** v0.5.2: issue the drip capability (once). The Marketplace takes it on first use. */
+  issueDripCapability(): TreasuryDripCapability {
+    if (this.dripCapability) throw new Error("TREASURY_CAPABILITY_ALREADY_ISSUED");
+    this.dripCapability = Object.freeze({ kind: "treasury-drip-capability" as const });
+    return this.dripCapability;
+  }
+
+  private assertDripCapability(cap: TreasuryDripCapability): void {
+    if (!this.dripCapability || cap !== this.dripCapability) throw new Error("TREASURY_CAPABILITY_INVALID");
+  }
+
+  /** v0.5.2: drip budget left for an asset. */
+  dripBudgetOf(asset: string): bigint {
+    return this.dripBudget.get(asset) ?? 0n;
+  }
+
+  /**
+   * v0.5.2: raise the drip budget of an asset by `amount` (administrator
+   * decision, checked by the Marketplace). The budget can never exceed the
+   * DISTRIBUTABLE_PROFIT bucket. Each `allocationId` is accepted once.
+   */
+  allocateDripBudget(cap: TreasuryDripCapability, allocationId: string, asset: string, amount: bigint): bigint {
+    this.assertDripCapability(cap);
+    if (!allocationId || !asset || typeof amount !== "bigint" || amount <= 0n) throw new Error("DRIP_BUDGET_INVALID");
+    if (this.dripAllocationRefs.has(allocationId)) throw new Error("DRIP_BUDGET_REPLAY");
+    const next = this.dripBudgetOf(asset) + amount;
+    if (next > this.balance(asset).DISTRIBUTABLE_PROFIT) throw new Error("DRIP_BUDGET_EXCEEDS_DISTRIBUTABLE");
+    this.dripBudget.set(asset, next);
+    this.dripAllocationRefs.add(allocationId);
+    return next;
+  }
+
+  /**
+   * v0.5.2: pay a drip subsidy out of DISTRIBUTABLE_PROFIT within the budget.
+   * Only the bucket and the budget change here; the Marketplace credits the
+   * node's account in the same call.
+   */
+  spendDripBudget(cap: TreasuryDripCapability, claimId: string, asset: string, amount: bigint, timestamp = this.height()): TreasuryEntry {
+    this.assertDripCapability(cap);
+    if (!claimId || !asset || typeof amount !== "bigint" || amount <= 0n) throw new Error("DRIP_BUDGET_INVALID");
+    const budget = this.dripBudgetOf(asset);
+    const b = this.balance(asset);
+    if (budget < amount) throw new Error("DRIP_BUDGET_EXHAUSTED");
+    if (b.DISTRIBUTABLE_PROFIT < amount) throw new Error("INSUFFICIENT_TREASURY_BALANCE");
+    b.DISTRIBUTABLE_PROFIT -= amount;
+    this.dripBudget.set(asset, budget - amount);
+    const entry: TreasuryEntry = { id: `${this.treasuryId}:drip:${claimId}`, timestamp, orderId: claimId, asset, amount, bucket: "DISTRIBUTABLE_PROFIT", reason: "DRIP_SUBSIDY" };
+    this.entries.push(entry);
+    return { ...entry };
   }
 
   balanceOf(asset: string): TreasuryBalance {

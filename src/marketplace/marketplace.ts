@@ -31,6 +31,11 @@ import { HEIGHTS_PER_DAY, REFERENCE_BLOCK_TIME_MS, TransitionClock, type HeightS
 import { domainProfile, isDomainProfileId, DEFAULT_DOMAIN_PROFILE, type DomainProfileId } from "../core/domain-profiles.ts";
 import { EvidenceCaps, evidenceCapsView, type EvidenceCapsConfig, type EvidenceCapsView, type ListingEvidencePolicy } from "./evidence.ts";
 import { looksLikeLegacyMs } from "../core/deprecation.ts";
+import { SettlementEngine } from "../settlement/engine.ts";
+import type { PayoutInstruction, SettlementLedgerPort, SettlementOutcome } from "../settlement/types.ts";
+import { CATEGORY_ACTIONS, type CategoryAction } from "./identity.ts";
+import type { CategoryEscrowPort, CategoryHoldState, CategoryModuleName, CategoryPayout, SubsidyPort } from "./category-escrow.ts";
+import type { TreasuryDripCapability } from "./economy.ts";
 
 export const MARKETPLACE_VERSION = "0.4" as const;
 
@@ -51,6 +56,11 @@ export const DEFAULT_RESERVATION_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_RESERVATION_TTL_HEIGHTS = 120;
 /** Default limit of concurrent open reservations per identity. */
 export const DEFAULT_MAX_ACTIVE_RESERVATIONS = 8;
+/**
+ * v0.5.2 (attack battery, slot saturation): unfunded (ACCEPTED) reservations one
+ * identity may hold on one listing at a time. Funding a reservation frees its slot.
+ */
+export const DEFAULT_MAX_UNFUNDED_RESERVATIONS_PER_LISTING = 3;
 /** Default time the arbiter has to resolve an open dispute (7 days). */
 export const DEFAULT_DISPUTE_RESOLUTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_DISPUTE_RESOLUTION_WINDOW_HEIGHTS = 7 * HEIGHTS_PER_DAY;
@@ -199,7 +209,18 @@ export type ServiceOrder = {
   evidenceLocked?: bigint;
   /** v0.5.1: why an order closed for a system reason (no fault of either party; the deposit was returned). */
   closeReason?: "EVIDENCE_CAP_FULL";
+  /**
+   * v0.5.2: optimistic concurrency version. 1 at reserve(), +1 on every state
+   * change. State-changing calls accept `{ expectedVersion }` and throw
+   * ORDER_STATE_CONFLICT when the order changed since the caller read it.
+   */
+  version: number;
+  /** v0.5.2: hash of the settlement engine receipt that closed the order (settled or refunded after funding). */
+  settlementReceiptHash?: string;
 };
+
+/** v0.5.2: optional precondition of state-changing order calls (unsigned, like HTTP If-Match). */
+export type OrderCallOptions = { expectedVersion?: number };
 
 export type SettlementRecord = {
   orderId: string;
@@ -224,6 +245,8 @@ export type SettlementRecord = {
   categoryGuard?: "PASSED" | "TIMEOUT_REFUNDED" | "ARBITER_OVERRIDE";
   /** v0.4.6 (UEP-D05): units returned to the listing's capacity by this outcome. */
   capacityRestored?: bigint;
+  /** v0.5.2: hash of the settlement engine receipt (src/settlement). */
+  receiptHash?: string;
 };
 
 /** v0.4.6 (UEP-D05): capacity accounting of one listing. */
@@ -312,6 +335,8 @@ export type MarketplaceConfig = {
   reservationDepositBps?: number;
   /** Concurrent open (not settled / cancelled / expired) reservations per identity. Default 8. */
   maxActiveReservationsPerIdentity?: number;
+  /** v0.5.2: unfunded (ACCEPTED) reservations per identity and listing. Default 3. */
+  maxUnfundedReservationsPerListing?: number;
   /** Buyer cancellation within this window after reserve() refunds the deposit; later it is forfeited. Default 24 heights = 2 min. */
   cancellationGraceHeights?: number;
   cancellationGraceMs?: number;
@@ -354,9 +379,21 @@ export type ValueAccounting = {
   held: bigint;
   marketplaceFees: bigint;
   gasCaptured: bigint;
-  /** credited === available + lockedDeposits + held + marketplaceFees + gasCaptured */
+  /** v0.5.2: value in open category holds (swap, relay, dispute bonds). */
+  categoryHeld: bigint;
+  /** v0.5.2: treasury RISK_RESERVE shares of slashed or forfeited category bonds. */
+  treasuryTransfers: bigint;
+  /** v0.5.2: drip subsidies paid out of the treasury into node accounts. */
+  subsidiesPaid: bigint;
+  /**
+   * credited === available + lockedDeposits + held + categoryHeld + marketplaceFees
+   *             + gasCaptured + treasuryTransfers - subsidiesPaid
+   * (before v0.5.2 the last three terms did not exist and are 0 without category modules).
+   */
   conserved: boolean;
 };
+
+type CategoryHold = { holdId: string; module: CategoryModuleName; accountId: string; asset: string; amount: bigint; state: CategoryHoldState };
 
 function normalizeCatalogText(value: string): string {
   return value.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
@@ -482,6 +519,17 @@ export class DigitalServicesMarketplace {
   private readonly credited = new Map<string, bigint>();
   private readonly feesCollected = new Map<string, bigint>();
   private readonly gasCollected = new Map<string, bigint>();
+  /** v0.5.2: the single payout executor (src/settlement). */
+  readonly settlementEngine: SettlementEngine;
+  readonly maxUnfundedReservationsPerListing: number;
+  private readonly unfundedByIdentityListing = new Map<string, number>();
+  private readonly categoryHolds = new Map<string, CategoryHold>();
+  private readonly categoryHeldTotals = new Map<string, bigint>();
+  private readonly treasuryTransfers = new Map<string, bigint>();
+  private readonly subsidiesPaid = new Map<string, bigint>();
+  private readonly issuedCategoryPorts = new Set<CategoryModuleName>();
+  private subsidyPortIssued = false;
+  private dripCapability?: TreasuryDripCapability;
 
   constructor(config: MarketplaceConfig = {}) {
     this.transitionClock = TransitionClock.from(config);
@@ -544,6 +592,9 @@ export class DigitalServicesMarketplace {
       this.minReservationDepositByAsset.set(asset, min);
     }
     this.requireSignedCredits = config.requireSignedCredits === true;
+    this.maxUnfundedReservationsPerListing = config.maxUnfundedReservationsPerListing ?? DEFAULT_MAX_UNFUNDED_RESERVATIONS_PER_LISTING;
+    if (!Number.isSafeInteger(this.maxUnfundedReservationsPerListing) || this.maxUnfundedReservationsPerListing < 1) throw new Error("INVALID_RESERVATION_LIMIT");
+    this.settlementEngine = new SettlementEngine({ treasury: this.treasury, paymaster: this.paymaster, height: () => this.now() });
     this.#evidence = new EvidenceCaps(config.evidence);
     this.evidenceCaps = evidenceCapsView(this.#evidence);
   }
@@ -699,7 +750,11 @@ export class DigitalServicesMarketplace {
     const held = this.held.total(asset);
     const marketplaceFees = this.feesCollected.get(asset) ?? 0n;
     const gasCaptured = this.gasCollected.get(asset) ?? 0n;
-    return { asset, credited, available, lockedDeposits, held, marketplaceFees, gasCaptured, conserved: credited === available + lockedDeposits + held + marketplaceFees + gasCaptured };
+    const categoryHeld = this.categoryHeldTotals.get(asset) ?? 0n;
+    const treasuryTransfers = this.treasuryTransfers.get(asset) ?? 0n;
+    const subsidiesPaid = this.subsidiesPaid.get(asset) ?? 0n;
+    const conserved = credited === available + lockedDeposits + held + categoryHeld + marketplaceFees + gasCaptured + treasuryTransfers - subsidiesPaid;
+    return { asset, credited, available, lockedDeposits, held, marketplaceFees, gasCaptured, categoryHeld, treasuryTransfers, subsidiesPaid, conserved };
   }
 
   /**
@@ -813,6 +868,9 @@ export class DigitalServicesMarketplace {
     if (input.quantity <= 0n || input.quantity > listing.available) throw new Error("INSUFFICIENT_CAPACITY");
     const activeReservations = this.activeReservationsByIdentity.get(input.buyerId) ?? 0;
     if (activeReservations >= this.maxActiveReservationsPerIdentity) throw new Error("RESERVATION_LIMIT_REACHED");
+    // v0.5.2: bounded unfunded reservations per identity and listing (slot saturation).
+    const unfundedKey = tupleKey(input.buyerId, listing.listingId);
+    if ((this.unfundedByIdentityListing.get(unfundedKey) ?? 0) >= this.maxUnfundedReservationsPerListing) throw new Error("UNFUNDED_RESERVATION_LIMIT_REACHED");
     // This synchronous state transition is atomic within the process: the availability check and decrement
     // happen in one turn. Production SQL adapters MUST use an atomic conditional UPDATE/SELECT FOR UPDATE.
     const grossAmount = input.quantity * listing.unitPrice;
@@ -820,6 +878,8 @@ export class DigitalServicesMarketplace {
     if (input.gasQuote && input.gasQuote.asset !== listing.asset) throw new Error("GAS_ASSET_MISMATCH");
     const orderId = input.orderId ?? makeId("ord", `${listing.listingId}|${input.buyerId}|${input.quantity}`, ++this.sequence);
     if (this.orders.has(orderId)) throw new Error("ORDER_ID_CONFLICT");
+    // v0.5.2: category settlement ids ("swap:", "relay:", "dispute:") share the treasury and engine id space.
+    if (/^(?:swap|relay|dispute):/.test(orderId)) throw new Error("ORDER_ID_RESERVED");
     const gasFee = input.gasQuote?.gasFee ?? 0n;
     const deposit = this.reservationDepositFor(grossAmount, gasFee, listing.asset);
     // No reservation without funds.
@@ -855,11 +915,13 @@ export class DigitalServicesMarketplace {
       reservationExpiresAt: now + listing.windows.reservationTtl,
       domainProfile: listing.domainProfile,
       windows: Object.freeze({ ...listing.windows }),
+      version: 1,
     };
     // v0.5.1: the contract windows of an order are fixed at reserve() (not writable, frozen).
     Object.defineProperty(order, "windows", { enumerable: true, writable: false, configurable: false });
     this.orders.set(orderId, order);
     this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
+    this.adjustUnfunded(order, 1);
     this.enqueueReservation(order);
     if (input.gasQuote && this.paymaster) {
       try {
@@ -872,6 +934,7 @@ export class DigitalServicesMarketplace {
         this.orders.delete(orderId);
         this.removeQueuedReservation(order);
         this.decrementActiveReservation(input.buyerId);
+        this.adjustUnfunded(order, -1);
         this.releaseEvidence(order);
         throw error;
       }
@@ -897,7 +960,7 @@ export class DigitalServicesMarketplace {
   }
 
   /** Buyer funds the remainder of an order (v0.4.4: buyer "fund" signature over { amount }). */
-  fundOrder(orderId: string, amount: bigint, auth: ActorAuth | undefined, idempotencyKey?: string): ServiceOrder {
+  fundOrder(orderId: string, amount: bigint, auth: ActorAuth | undefined, idempotencyKey?: string, opts?: OrderCallOptions): ServiceOrder {
     const actor = this.authenticateActor(auth, "fund", orderId, { amount });
     const order = this.order(orderId);
     if (actor !== order.buyerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
@@ -908,6 +971,7 @@ export class DigitalServicesMarketplace {
         return { ...order };
       }
     }
+    this.checkVersion(order, opts);
     this.assertReservationLive(order);
     if (order.status !== "ACCEPTED") throw new Error("ORDER_NOT_FUNDABLE");
     // The locked deposit counts toward the payment: the buyer funds the remainder.
@@ -938,14 +1002,16 @@ export class DigitalServicesMarketplace {
     order.depositLocked = 0n;
     order.fundingDue = 0n;
     order.depositOutcome = "APPLIED_TO_PAYMENT";
+    this.adjustUnfunded(order, -1);
     order.status = "HELD";
     order.updatedAt = this.now();
+    order.version++;
     if (idempotencyKey) this.operationIdempotency.set(tupleKey("fund", orderId, idempotencyKey), tupleKey(orderId, amount.toString()));
     return { ...order };
   }
 
   /** Provider delivers (v0.4.4: provider "deliver" signature over { deliveryHash }). */
-  deliver(orderId: string, auth: ActorAuth | undefined, bytes: Uint8Array | Buffer, idempotencyKey?: string): ServiceOrder {
+  deliver(orderId: string, auth: ActorAuth | undefined, bytes: Uint8Array | Buffer, idempotencyKey?: string, opts?: OrderCallOptions): ServiceOrder {
     const hash = contentHash(bytes);
     const actor = this.authenticateActor(auth, "deliver", orderId, { deliveryHash: hash });
     const order = this.order(orderId);
@@ -957,6 +1023,7 @@ export class DigitalServicesMarketplace {
         return { ...order };
       }
     }
+    this.checkVersion(order, opts);
     this.assertReservationLive(order);
     if (order.status !== "HELD") throw new Error("ORDER_NOT_DELIVERABLE");
     if (this.deliveryValidator) {
@@ -969,14 +1036,15 @@ export class DigitalServicesMarketplace {
     order.status = "DELIVERED";
     order.deliveredAt = this.now();
     order.updatedAt = order.deliveredAt;
+    order.version++;
     if (idempotencyKey) this.operationIdempotency.set(tupleKey("deliver", orderId, idempotencyKey), orderId);
     return { ...order };
   }
 
-  deliverWithExpectedHash(orderId: string, auth: ActorAuth | undefined, bytes: Uint8Array | Buffer, expectedHash: string, idempotencyKey?: string): ServiceOrder {
+  deliverWithExpectedHash(orderId: string, auth: ActorAuth | undefined, bytes: Uint8Array | Buffer, expectedHash: string, idempotencyKey?: string, opts?: OrderCallOptions): ServiceOrder {
     const check = verifyContentHash(bytes, expectedHash);
     if (!check.ok) throw new Error(check.reason);
-    return this.deliver(orderId, auth, bytes, idempotencyKey);
+    return this.deliver(orderId, auth, bytes, idempotencyKey, opts);
   }
 
   /**
@@ -990,7 +1058,7 @@ export class DigitalServicesMarketplace {
    * Category settlement guards (e.g. IoT verified telemetry) apply to every release
    * path here; a RELEASE timeout whose guard fails refunds the buyer (v0.4.6, UEP-D04).
    */
-  settle(orderId: string, auth: ActorAuth | undefined): SettlementRecord {
+  settle(orderId: string, auth: ActorAuth | undefined, opts?: OrderCallOptions): SettlementRecord {
     const actor = this.authenticateActor(auth, "settle", orderId);
     const order = this.order(orderId);
     const isBuyer = actor === order.buyerId;
@@ -1002,6 +1070,7 @@ export class DigitalServicesMarketplace {
       if (existing) return { ...existing };
       throw new Error("SETTLEMENT_RECORD_MISSING");
     }
+    this.checkVersion(order, opts);
     if (order.status === "DISPUTED") {
       if (this.now() >= (order.disputeDeadline ?? Number.POSITIVE_INFINITY)) {
         return this.timeoutDispute(order);
@@ -1026,7 +1095,7 @@ export class DigitalServicesMarketplace {
    * Funds stay in escrow until the arbiter resolves, the buyer withdraws, the
    * provider refunds, or the resolution deadline passes.
    */
-  openDispute(orderId: string, auth: ActorAuth | undefined, reason: string): ServiceOrder {
+  openDispute(orderId: string, auth: ActorAuth | undefined, reason: string, opts?: OrderCallOptions): ServiceOrder {
     if (typeof reason !== "string" || !reason) throw new Error("DISPUTE_REASON_REQUIRED");
     const reasonHash = disputeReasonHash(reason);
     const actor = this.authenticateActor(auth, "dispute", orderId, { reasonHash });
@@ -1034,6 +1103,7 @@ export class DigitalServicesMarketplace {
     if (actor !== order.buyerId) throw new Error("DISPUTE_NOT_AUTHORIZED");
     if (!this.settlementArbiterId || !this.arbiterKey) throw new Error("DISPUTE_ARBITER_NOT_CONFIGURED");
     if (order.status === "DISPUTED") return { ...order };
+    this.checkVersion(order, opts);
     if (order.status !== "DELIVERED") throw new Error("ORDER_NOT_DISPUTABLE");
     const now = this.now();
     if (now >= (order.deliveredAt ?? order.updatedAt) + order.windows.deliveryDisputeWindow) throw new Error("DISPUTE_WINDOW_CLOSED");
@@ -1042,6 +1112,7 @@ export class DigitalServicesMarketplace {
     order.disputeReasonHash = reasonHash;
     order.disputeDeadline = now + order.windows.disputeResolutionWindow;
     order.updatedAt = now;
+    order.version++;
     return { ...order };
   }
 
@@ -1054,7 +1125,7 @@ export class DigitalServicesMarketplace {
    *  - SPLIT: `providerAmount` (0 < x < gross) goes to the provider minus the
    *    Marketplace fee on x; gross - x returns to the buyer; gas is captured.
    */
-  resolveDispute(orderId: string, auth: ActorAuth | undefined, resolution: DisputeResolution): SettlementRecord {
+  resolveDispute(orderId: string, auth: ActorAuth | undefined, resolution: DisputeResolution, opts?: OrderCallOptions): SettlementRecord {
     if (!resolution || !["RELEASE", "REFUND_BUYER", "SPLIT"].includes(resolution.outcome)) throw new Error("DISPUTE_OUTCOME_INVALID");
     const providerAmount = resolution.outcome === "SPLIT" ? resolution.providerAmount : undefined;
     if (resolution.outcome === "SPLIT" && typeof providerAmount !== "bigint") throw new Error("DISPUTE_SPLIT_INVALID");
@@ -1066,6 +1137,7 @@ export class DigitalServicesMarketplace {
       if (existing) return { ...existing };
     }
     if (order.status !== "DISPUTED") throw new Error("DISPUTE_NOT_OPEN");
+    this.checkVersion(order, opts);
     // The arbiter's explicit decision is final (documented arbiter trust); for guarded
     // categories the record shows whether the guard passed (v0.4.6, UEP-D04).
     if (resolution.outcome === "RELEASE") return this.payout(order, order.grossAmount, "RELEASE", undefined, this.arbiterGuardStatus(order));
@@ -1077,12 +1149,13 @@ export class DigitalServicesMarketplace {
   }
 
   /** Provider refunds the buyer in full for a DELIVERED or DISPUTED order ("refund" signature). */
-  refundBuyer(orderId: string, auth: ActorAuth | undefined): SettlementRecord {
+  refundBuyer(orderId: string, auth: ActorAuth | undefined, opts?: OrderCallOptions): SettlementRecord {
     const actor = this.authenticateActor(auth, "refund", orderId);
     const order = this.order(orderId);
     if (actor !== order.providerId) throw new Error("REFUND_NOT_AUTHORIZED");
     if (order.status === "REFUNDED") return { ...this.settlements.get(orderId)! };
     if (order.status !== "DELIVERED" && order.status !== "DISPUTED") throw new Error("ORDER_NOT_REFUNDABLE");
+    this.checkVersion(order, opts);
     return this.payout(order, 0n, "REFUND_BUYER", "PROVIDER_REFUND");
   }
 
@@ -1092,7 +1165,7 @@ export class DigitalServicesMarketplace {
    *    afterwards it is forfeited to the provider. Any funded remainder is refunded.
    *  - Provider or authenticated admin: the buyer is refunded in full.
    */
-  cancel(orderId: string, auth: ActorAuth | undefined, _reason = "buyer_or_provider_cancelled"): ServiceOrder {
+  cancel(orderId: string, auth: ActorAuth | undefined, _reason = "buyer_or_provider_cancelled", opts?: OrderCallOptions): ServiceOrder {
     const actor = this.authenticateActor(auth, "cancel", orderId);
     const order = this.order(orderId);
     const isAdmin = this.isAdmin(actor);
@@ -1102,6 +1175,7 @@ export class DigitalServicesMarketplace {
     if (order.status === "SETTLED" || order.status === "REFUNDED") throw new Error("ORDER_ALREADY_SETTLED");
     if (order.status === "DELIVERED" || order.status === "DISPUTED") throw new Error("DELIVERED_ORDER_NOT_CANCELLABLE");
     if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
+    this.checkVersion(order, opts);
     const forfeit = isBuyer && !isAdmin && !isProvider;
     const withinGrace = this.now() - order.createdAt <= order.windows.cancellationGrace;
     this.closeOrder(order, "CANCELLED", forfeit && !withinGrace);
@@ -1109,13 +1183,14 @@ export class DigitalServicesMarketplace {
   }
 
   /** Close an order whose reservation TTL has passed ("expire" signature; party or admin). */
-  expire(orderId: string, auth: ActorAuth | undefined): ServiceOrder {
+  expire(orderId: string, auth: ActorAuth | undefined, opts?: OrderCallOptions): ServiceOrder {
     const actor = this.authenticateActor(auth, "expire", orderId);
     const order = this.order(orderId);
     if (!this.isAdmin(actor) && actor !== order.buyerId && actor !== order.providerId) throw new Error("ORDER_ACTION_FORBIDDEN");
     if (order.status === "SETTLED" || order.status === "REFUNDED") throw new Error("ORDER_ALREADY_SETTLED");
     if (order.status === "DELIVERED" || order.status === "DISPUTED") throw new Error("DELIVERED_ORDER_NOT_EXPIRABLE");
     if (order.status === "CANCELLED" || order.status === "EXPIRED") return { ...order };
+    this.checkVersion(order, opts);
     // Expiry is a TTL outcome, never an early exit (it can forfeit the deposit).
     if (order.reservationExpiresAt === undefined || this.now() < order.reservationExpiresAt) throw new Error("RESERVATION_NOT_EXPIRED");
     this.closeOrder(order, "EXPIRED", order.status === "ACCEPTED");
@@ -1329,30 +1404,23 @@ export class DigitalServicesMarketplace {
     // v0.4.6 (UEP-D05): decide and validate the capacity return before any value moves.
     const capacity = this.capacityToRestore(order, providerAmount);
     this.assertCapacityRestorable(order, capacity.restore);
-    let fee = 0n;
-    let providerNet = 0n;
-    let gasCaptured = 0n;
-    if (providerAmount > 0n) {
-      if (gas > 0n) {
-        if (!this.paymaster || !order.gasQuoteId) throw new Error("PAYMASTER_STATE_MISSING");
-        const gasQuote = this.paymaster.sponsoredQuote(order.orderId, order.gasQuoteId);
-        if (gasQuote.asset !== order.asset || gasQuote.gasFee !== gas) throw new Error("GAS_QUOTE_MISMATCH");
-        this.paymaster.capture(order.orderId, gasQuote, this.now());
-        gasCaptured = gas;
-      }
-      const quote = this.treasury.settleMarketplaceFee(order.orderId, providerAmount, order.asset, this.now());
-      fee = quote.marketplaceFee;
-      providerNet = quote.providerNet;
-    } else {
-      this.releasePaymaster(order);
-    }
-    const buyerRefund = order.heldAmount - providerNet - fee - gasCaptured;
-    if (buyerRefund < 0n || buyerRefund !== order.grossAmount - providerAmount + (gas - gasCaptured)) throw new Error("PAYOUT_NOT_CONSERVED");
-    this.held.add(order.asset, order.buyerId, -order.heldAmount);
-    if (providerNet > 0n) this.accounts.add(order.asset, order.providerId, providerNet);
-    if (buyerRefund > 0n) this.accounts.add(order.asset, order.buyerId, buyerRefund);
-    this.add(this.feesCollected, order.asset, fee);
-    this.add(this.gasCollected, order.asset, gasCaptured);
+    // v0.5.2: the settlement engine is the single payout executor (fee path, paymaster, conservation).
+    const instruction: PayoutInstruction = {
+      settlementId: order.orderId,
+      asset: order.asset,
+      payerId: order.buyerId,
+      payeeId: order.providerId,
+      escrowAmount: order.heldAmount,
+      grossAmount: order.grossAmount,
+      providerAmount,
+      gas: gas > 0n ? { fee: gas, quoteId: order.gasQuoteId } : undefined,
+      outcome: outcome as SettlementOutcome,
+    };
+    const receipt = this.settlementEngine.execute(instruction, this.orderLedgerPort());
+    const fee = receipt.marketplaceFee;
+    const providerNet = receipt.providerNet;
+    const gasCaptured = receipt.gasCaptured;
+    const buyerRefund = receipt.buyerRefund;
     order.heldAmount = 0n;
     order.settledFee = fee;
     order.providerPayout = providerNet;
@@ -1360,6 +1428,8 @@ export class DigitalServicesMarketplace {
     order.status = providerAmount > 0n ? "SETTLED" : "REFUNDED";
     if (disputeOutcome || order.disputedAt !== undefined) order.disputeOutcome = disputeOutcome ?? outcome;
     order.updatedAt = this.now();
+    order.settlementReceiptHash = receipt.receiptHash;
+    order.version++;
     this.applyCapacityRestore(order, capacity.consumed, capacity.restore);
     this.decrementActiveReservation(order.buyerId);
     this.releaseEvidence(order);
@@ -1375,6 +1445,7 @@ export class DigitalServicesMarketplace {
       outcome,
       buyerRefund,
       capacityRestored: capacity.restore,
+      receiptHash: receipt.receiptHash,
     };
     if (categoryGuard) record.categoryGuard = categoryGuard;
     this.settlements.set(order.orderId, record);
@@ -1494,6 +1565,7 @@ export class DigitalServicesMarketplace {
     this.assertCapacityRestorable(order, order.quantity);
     let refund = 0n;
     let deposit = 0n;
+    const wasUnfunded = order.status === "ACCEPTED";
     if (order.status === "ACCEPTED") {
       if (this.lockedDeposit(order.asset, order.buyerId) < order.depositLocked) throw new Error("LOCKED_DEPOSIT_INSUFFICIENT");
       this.locked.add(order.asset, order.buyerId, -order.depositLocked);
@@ -1520,8 +1592,206 @@ export class DigitalServicesMarketplace {
     this.applyCapacityRestore(order, 0n, order.quantity);
     order.status = status;
     order.updatedAt = this.now();
+    order.version++;
+    if (wasUnfunded) this.adjustUnfunded(order, -1);
     this.decrementActiveReservation(order.buyerId);
     this.releaseEvidence(order);
+  }
+
+  /** v0.5.2: optimistic concurrency precondition (see OrderCallOptions). */
+  private checkVersion(order: ServiceOrder, opts?: OrderCallOptions): void {
+    if (opts === undefined || opts.expectedVersion === undefined) return;
+    if (!Number.isSafeInteger(opts.expectedVersion) || opts.expectedVersion < 1) throw new Error("ORDER_VERSION_INVALID");
+    if (opts.expectedVersion !== order.version) throw new Error(`ORDER_STATE_CONFLICT: order is at version ${order.version}, caller expected ${opts.expectedVersion}`);
+  }
+
+  /** v0.5.2: count of unfunded reservations per (buyer, listing). */
+  private adjustUnfunded(order: ServiceOrder, delta: 1 | -1): void {
+    const key = tupleKey(order.buyerId, order.listingId);
+    const next = (this.unfundedByIdentityListing.get(key) ?? 0) + delta;
+    if (next <= 0) this.unfundedByIdentityListing.delete(key);
+    else this.unfundedByIdentityListing.set(key, next);
+  }
+
+  /** v0.5.2: settlement engine port over the order escrow (`held`) and the account maps. */
+  private orderLedgerPort(): SettlementLedgerPort {
+    return {
+      escrowBalance: (i) => this.held.get(i.asset, i.payerId),
+      closeEscrow: (i, amount) => { this.held.add(i.asset, i.payerId, -amount); },
+      credit: (accountId, asset, amount) => { this.accounts.add(asset, accountId, amount); },
+      recordFee: (asset, amount) => this.add(this.feesCollected, asset, amount),
+      recordGas: (asset, amount) => this.add(this.gasCollected, asset, amount),
+    };
+  }
+
+  private categoryAuthenticate(auth: ActorAuth | undefined, action: CategoryAction, target: string, details: Record<string, unknown>): string {
+    if (!(CATEGORY_ACTIONS as readonly string[]).includes(action)) throw new Error("CATEGORY_ACTION_INVALID");
+    const actor = this.authenticateActor(auth, action, target, details);
+    if (!this.identities.has(actor)) throw new Error("IDENTITY_NOT_REGISTERED");
+    return actor;
+  }
+
+  private assertCategoryAmount(amount: unknown): asserts amount is bigint {
+    if (typeof amount !== "bigint" || amount <= 0n) throw new Error("AMOUNT_INVALID: a positive bigint is required");
+  }
+
+  private categoryHoldKey(module: CategoryModuleName, holdId: string): string {
+    return tupleKey(module, holdId);
+  }
+
+  private addCategoryHeld(asset: string, delta: bigint): void {
+    this.add(this.categoryHeldTotals, asset, delta);
+  }
+
+  /**
+   * v0.5.2: issue the escrow port of a category module (once per module name).
+   * The swap, relay and dispute modules (src/category) hold, release and settle
+   * funds only through it, on the Marketplace's own balances and treasury.
+   */
+  issueCategoryEscrowPort(module: CategoryModuleName): CategoryEscrowPort {
+    if (module !== "swap" && module !== "relay" && module !== "dispute") throw new Error("CATEGORY_MODULE_INVALID");
+    if (this.issuedCategoryPorts.has(module)) throw new Error("CATEGORY_PORT_ALREADY_ISSUED");
+    this.issuedCategoryPorts.add(module);
+    const self = this;
+    const openHold = (holdId: string): CategoryHold => {
+      const h = self.categoryHolds.get(self.categoryHoldKey(module, holdId));
+      if (!h) throw new Error("CATEGORY_HOLD_UNKNOWN");
+      if (h.state !== "OPEN") throw new Error("CATEGORY_HOLD_CLOSED");
+      return h;
+    };
+    const instructionFor = (h: CategoryHold, payeeId: string, providerAmount: bigint, settlementId: string): PayoutInstruction => {
+      if (typeof providerAmount !== "bigint" || providerAmount < 0n || providerAmount > h.amount) throw new Error("PAYOUT_AMOUNT_INVALID");
+      if (!self.identities.has(payeeId)) throw new Error("IDENTITY_NOT_REGISTERED");
+      const outcome: SettlementOutcome = providerAmount === h.amount ? "RELEASE" : providerAmount === 0n ? "REFUND_BUYER" : "SPLIT";
+      return { settlementId: `${module}:${settlementId}`, asset: h.asset, payerId: h.accountId, payeeId, escrowAmount: h.amount, grossAmount: h.amount, providerAmount, outcome };
+    };
+    const holdPort = (h: CategoryHold): SettlementLedgerPort => ({
+      escrowBalance: () => (h.state === "OPEN" ? h.amount : 0n),
+      closeEscrow: (_i, amount) => {
+        if (amount !== h.amount) throw new Error("PAYOUT_NOT_CONSERVED");
+        self.addCategoryHeld(h.asset, -amount);
+        h.state = "SETTLED";
+      },
+      credit: (accountId, asset, amount) => { self.accounts.add(asset, accountId, amount); },
+      recordFee: (asset, amount) => self.add(self.feesCollected, asset, amount),
+      recordGas: () => { throw new Error("CATEGORY_GAS_UNSUPPORTED"); },
+    });
+    return Object.freeze({
+      module,
+      marketplaceId: self.marketplaceId,
+      height: () => self.now(),
+      authenticate: (auth: ActorAuth | undefined, action: CategoryAction, target: string, details: Record<string, unknown>) => self.categoryAuthenticate(auth, action, target, details),
+      isRegistered: (identityId: string) => self.identities.has(identityId),
+      assertAsset: (asset: string) => {
+        if (typeof asset !== "string" || !asset) throw new Error("ASSET_REQUIRED");
+        const canonical = resolveAssetIdAlias(asset);
+        self.assertAsset(canonical);
+        return canonical;
+      },
+      available: (accountId: string, asset: string) => self.accounts.get(asset, accountId),
+      quoteFee: (amount: bigint, asset: string) => self.treasury.quote(amount, asset).marketplaceFee,
+      assertCanOpen: (holds: readonly { accountId: string; asset: string; amount: bigint }[]) => {
+        const need = new Map<string, { accountId: string; asset: string; amount: bigint }>();
+        for (const h of holds) {
+          self.assertCategoryAmount(h.amount);
+          if (!self.identities.has(h.accountId)) throw new Error("IDENTITY_NOT_REGISTERED");
+          const k = tupleKey(h.accountId, h.asset);
+          const cur = need.get(k);
+          need.set(k, { accountId: h.accountId, asset: h.asset, amount: (cur?.amount ?? 0n) + h.amount });
+        }
+        for (const n of need.values()) if (self.accounts.get(n.asset, n.accountId) < n.amount) throw new Error("INSUFFICIENT_FUNDS");
+      },
+      openHold: (holdId: string, accountId: string, asset: string, amount: bigint) => {
+        if (typeof holdId !== "string" || !holdId || holdId.length > 256) throw new Error("CATEGORY_HOLD_ID_INVALID");
+        self.assertCategoryAmount(amount);
+        if (!self.identities.has(accountId)) throw new Error("IDENTITY_NOT_REGISTERED");
+        const key = self.categoryHoldKey(module, holdId);
+        if (self.categoryHolds.has(key)) throw new Error("CATEGORY_HOLD_EXISTS");
+        if (self.accounts.get(asset, accountId) < amount) throw new Error("INSUFFICIENT_FUNDS");
+        self.accounts.add(asset, accountId, -amount);
+        self.addCategoryHeld(asset, amount);
+        self.categoryHolds.set(key, { holdId, module, accountId, asset, amount, state: "OPEN" });
+      },
+      hold: (holdId: string) => {
+        const h = self.categoryHolds.get(self.categoryHoldKey(module, holdId));
+        return h ? { ...h } : undefined;
+      },
+      refundHold: (holdId: string) => {
+        const h = openHold(holdId);
+        self.addCategoryHeld(h.asset, -h.amount);
+        self.accounts.add(h.asset, h.accountId, h.amount);
+        h.state = "REFUNDED";
+      },
+      releaseHold: (holdId: string, payouts: readonly CategoryPayout[], riskReserve?: { refId: string; amount: bigint }) => {
+        const h = openHold(holdId);
+        let sum = 0n;
+        for (const p of payouts) {
+          self.assertCategoryAmount(p.amount);
+          if (!self.identities.has(p.to)) throw new Error("IDENTITY_NOT_REGISTERED");
+          sum += p.amount;
+        }
+        if (riskReserve) {
+          self.assertCategoryAmount(riskReserve.amount);
+          if (typeof riskReserve.refId !== "string" || !riskReserve.refId) throw new Error("TREASURY_TRANSFER_INVALID");
+          sum += riskReserve.amount;
+        }
+        if (sum !== h.amount) throw new Error("PAYOUT_NOT_CONSERVED");
+        const refId = riskReserve ? `${module}:${riskReserve.refId}` : undefined;
+        if (refId) self.treasury.creditRiskReserve(refId, h.asset, riskReserve!.amount, self.now());
+        self.addCategoryHeld(h.asset, -h.amount);
+        for (const p of payouts) self.accounts.add(h.asset, p.to, p.amount);
+        if (riskReserve) self.add(self.treasuryTransfers, h.asset, riskReserve.amount);
+        h.state = "RELEASED";
+      },
+      planSettlement: (holdId: string, payeeId: string, providerAmount: bigint, settlementId: string) => {
+        const h = openHold(holdId);
+        return self.settlementEngine.plan(instructionFor(h, payeeId, providerAmount, settlementId));
+      },
+      settleHold: (holdId: string, payeeId: string, providerAmount: bigint, settlementId: string) => {
+        const h = openHold(holdId);
+        return self.settlementEngine.execute(instructionFor(h, payeeId, providerAmount, settlementId), holdPort(h));
+      },
+    });
+  }
+
+  private takeDripCapability(): TreasuryDripCapability {
+    this.dripCapability ??= this.treasury.issueDripCapability();
+    return this.dripCapability;
+  }
+
+  /**
+   * v0.5.2: raise the drip budget of an asset (administrator "drip-budget"
+   * signature over { asset, amount }, each allocationId once). The budget is an
+   * allowance on the treasury's DISTRIBUTABLE_PROFIT bucket.
+   */
+  allocateDripBudget(allocationId: string, asset: string, amount: bigint, auth: ActorAuth | undefined): bigint {
+    if (typeof allocationId !== "string" || !allocationId) throw new Error("DRIP_BUDGET_INVALID");
+    this.assertCategoryAmount(amount);
+    const actor = this.authenticateActor(auth, "drip-budget", allocationId, { asset, amount });
+    if (!this.isAdmin(actor)) throw new Error("DRIP_BUDGET_NOT_AUTHORIZED");
+    return this.treasury.allocateDripBudget(this.takeDripCapability(), allocationId, resolveAssetIdAlias(asset), amount);
+  }
+
+  /** v0.5.2: issue the drip subsidy port (once). */
+  issueSubsidyPort(): SubsidyPort {
+    if (this.subsidyPortIssued) throw new Error("SUBSIDY_PORT_ALREADY_ISSUED");
+    this.subsidyPortIssued = true;
+    const self = this;
+    return Object.freeze({
+      height: () => self.now(),
+      authenticate: (auth: ActorAuth | undefined, action: CategoryAction, target: string, details: Record<string, unknown>) => self.categoryAuthenticate(auth, action, target, details),
+      isRegistered: (identityId: string) => self.identities.has(identityId),
+      budgetOf: (asset: string) => self.treasury.dripBudgetOf(asset),
+      pay: (claimId: string, nodeId: string, asset: string, amount: bigint) => {
+        self.assertCategoryAmount(amount);
+        if (!self.identities.has(nodeId)) throw new Error("IDENTITY_NOT_REGISTERED");
+        // Paid from collected fees: never more than the fees still accounted for this asset.
+        if ((self.feesCollected.get(asset) ?? 0n) - (self.subsidiesPaid.get(asset) ?? 0n) < amount) throw new Error("DRIP_EXCEEDS_COLLECTED_FEES");
+        self.treasury.spendDripBudget(self.takeDripCapability(), claimId, asset, amount, self.now());
+        self.accounts.add(asset, nodeId, amount);
+        self.add(self.subsidiesPaid, asset, amount);
+      },
+    });
   }
 
   /** v0.5.1: release the order's open value from its attester set's cap (exactly once). */
