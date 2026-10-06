@@ -1,0 +1,12 @@
+# CODEOWNERS
+
+# Security and governance-sensitive paths require maintainer review.
+README.md @UEPceo
+CHANGELOG.md @UEPceo
+SECURITY.md @UEPceo
+docs/LEGAL-DISCLAIMER.md @UEPceo
+docs/ECONOMIC-MODEL.md @UEPceo
+docs/SECURITY-COVERAGE.md @UEPceo
+docs/SETTLEMENT-BRIDGE.md @UEPceo
+.github/workflows/** @UEPceo
+scripts/** @UEPceo
