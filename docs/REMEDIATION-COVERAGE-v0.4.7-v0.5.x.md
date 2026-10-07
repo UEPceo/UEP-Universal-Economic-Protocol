@@ -87,7 +87,7 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 
 | Change | Tests | Status |
 |---|---|---|
-| Asset registry manifest wired into the ledger; snapshot format 8 binds the registry; migration 7 → 8; golden fixtures v7 and v8 | `src/testnet/ledger-asset-registry.test.ts`, `snapshot-fixtures.test.ts`, `snapshot-migration-chain.test.ts` | Implemented (testnet), tested |
+| Asset registry manifest wired into the ledger; snapshot format 8 binds the registry; migration 7 → 8; golden fixtures v7 and v8 | `src/testnet/ledger-asset-registry.test.ts`, `snapshot-fixtures.test.ts`, `snapshot-migration-chain.test.ts` | **Partial**: listed assets, decimals, network, deprecation, fee floor and the snapshot binding are enforced; mints are still signed by the node's faucet key or the per-asset issuer key (v0.4.7), not by the manifest's issuer key set and threshold. Next step: require a manifest issuer key for every mint under a registry and disable the faucet fallback there |
 | Multi-input transactions (UEP-C04): up to 8 inputs of one sender and asset, one fee, change consolidation; single-input transactions and ids unchanged; reconciliation over all nullifiers (ADR 0004) | `src/testnet/multi-input.test.ts` | Implemented (testnet), tested. The dev-MAC path and zk-spend refuse multi-input |
 | zk-spend on the transaction path: verifier allowed only with non-development keys in production; public inputs 4..11 bound to the transaction | `src/testnet/zk-tx-path.test.ts`, `src/lab/zk-witness-contract.test.ts` | **Partial**: roots (inputs 0..3) are not bound (tree depth 254 vs 32), the circuit proves a different account-id derivation, the sender signature is still required, restore does not re-verify proofs; see `LABS.md` point 7 |
 
