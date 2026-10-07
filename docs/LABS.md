@@ -118,6 +118,28 @@ skipped with a note in the test.
    the signature check, plus the key hash), with a migration path from the
    Ed25519 key-derived accounts of the testnet. It was not implemented in v0.5.0:
    it changes the account derivation, the wallet and the snapshot format at once.
+   **v0.5.3 adapter:** the witness contract checks the core derivation by default
+   and the circuit derivation only in an explicit mode
+   (`accountIdDerivation: "circuit-h-account"`, `circuitAccountId()` in
+   `src/core/zk-tx-adapter.ts`); the two witness-contract tests are unskipped and
+   cover both modes. The ledger accepts a `zk-spend` only with a configured
+   verifier, after binding public inputs 4..11 (ids, asset, amount, fee, nullifier,
+   commitment) to the transaction; the sender signature is still required because
+   the circuit does not prove the key-derived id.
+7. **Crypto alignment, what remains (v0.5.3, precise list):**
+   - roots (public inputs 0..3) are not bound to the ledger: core SMT depth 254
+     (full key) vs circuit depth 32 (low bits, `circuitSlotIndex`);
+   - account ids: circuit proves H_ACCOUNT(secret, salt), core uses Ed25519
+     key-derived ids (needs BabyJubJub EdDSA-Poseidon in the circuit);
+   - the circuit proves one nullifier: multi-input transactions (ADR 0004) cannot
+     use zk-spend;
+   - the ledger verifier hook is synchronous; the Groth16 verifier is the lab
+     `uep-zk` binary (asynchronous), so no production verifier is wired;
+   - snapshot restore does not re-verify zk-spend proofs (it re-checks signatures,
+     nullifier sets and commitments);
+   - Groth16 keys are development keys from a public seed; a verifier with
+     `keyMode: "development"` is refused under NODE_ENV=production (ledger) and the
+     lab pins refuse them too (`src/lab/zk-vk-pins.ts`). No ceremony has been run.
 5. **Address v1: resolved.** Retired in the public core and in the labs; labs use v2.
 6. **Domain binding: resolved.** The ZK verification helpers require the expected
    `domain_id` and reject a proof for another domain (public input 12).
@@ -134,7 +156,5 @@ separate non-blocking job, so the CI badge reflects the core.
 
 Individual lab tests that are still skipped, each with a note in the test:
 
-- two `zk-witness-contract` tests that need one account-id derivation in the core
-  and the circuit (point 4 above);
 - two tests that pin the SHA-256 of a prebuilt `uep-zk` binary; the binary is
   built from source and its hash depends on the toolchain and platform.

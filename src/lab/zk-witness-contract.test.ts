@@ -13,20 +13,22 @@ import {
 } from "../core/zk-witness-contract.ts";
 import { SPEND_PUBLIC_INPUT_NAMES } from "../core/spend-proof.ts";
 import { creatorFee } from "../core/fee.ts";
+import { accountIdsFromSecrets } from "../core/spend-key.ts";
 import { WitnessOnlyProvider } from "./zk-spend-provider.ts";
 
 function balanceLeaf(owner: Fr, asset: Fr, amount: bigint, blinding: Fr): Fr {
   return defaultBalanceLeaf(owner, asset, amount, blinding);
 }
 
-function makeInstance(overrides?: { noteBlinding?: Fr; wrongNonce?: boolean }) {
+function makeInstance(overrides?: { noteBlinding?: Fr; wrongNonce?: boolean; circuitId?: boolean }) {
   const depth = 8;
   const state = new SparseMerkleTree(depth);
   const ntree = new SparseMerkleTree(depth);
 
   const senderSecret = Fr.from(11n);
   const senderSalt = Fr.from(22n);
-  const senderId = hAccount(senderSecret, senderSalt);
+  // v0.5.3: shared derivation — the core key-derived id by default, the circuit H_ACCOUNT id on request.
+  const senderId = overrides?.circuitId ? hAccount(senderSecret, senderSalt) : accountIdsFromSecrets(senderSecret, senderSalt).v3;
   const recipientId = Fr.from(33n);
   const treasuryId = Fr.from(44n);
   const assetId = Fr.from(55n);
@@ -78,8 +80,8 @@ describe("zk witness contract 28.4", () => {
     assert.equal(SPEND_PUBLIC_INPUT_NAMES.length, 12);
   });
 
-  // INTEGRATION CONFLICT (C-4: public core derives account ids from the Ed25519 spend key since v0.4.5; the UEP-26 circuit proves H_ACCOUNT(secret, salt)). Account-id unification needs a circuit-friendly spend signature; see docs/LABS.md (known difference: account ids).
-  it.skip("builds with unified noteBlinding and passes crypto+tree checks", () => {
+  // v0.5.3: unskipped. The witness uses the core derivation; the circuit derivation is an explicit adapter mode.
+  it("builds with unified noteBlinding and passes crypto+tree checks", () => {
     const inst = makeInstance();
     assert.equal(inst.witness.contractVersion, ZK_WITNESS_CONTRACT_VERSION);
     const expectNonce = deriveNoteNonce(inst.witness.senderOldLeaf, inst.witness.noteBlinding);
@@ -87,6 +89,12 @@ describe("zk witness contract 28.4", () => {
 
     const v = validateZkSpendInstance(inst, { checkTrees: true, checkCrypto: true });
     assert.equal(v.ok, true, v.ok ? "" : v.errors.join("; "));
+    // Adapter: a circuit-derived (H_ACCOUNT) witness passes only in circuit mode.
+    const circuit = makeInstance({ circuitId: true });
+    assert.equal(validateZkSpendInstance(circuit, { checkTrees: true, checkCrypto: true }).ok, false);
+    const cv = validateZkSpendInstance(circuit, { checkTrees: true, checkCrypto: true, accountIdDerivation: "circuit-h-account" });
+    assert.equal(cv.ok, true, cv.ok ? "" : cv.errors.join("; "));
+    assert.equal(validateZkSpendInstance(inst, { checkCrypto: true, accountIdDerivation: "circuit-h-account" }).ok, false);
   });
 
   it("rejects wrong noteNonce / secret / nullifier / index", () => {
@@ -117,8 +125,7 @@ describe("zk witness contract 28.4", () => {
     assert.equal(validateZkSpendInstance(badIdx, { checkCrypto: true }).ok, false);
   });
 
-  // INTEGRATION CONFLICT (C-4: public core derives account ids from the Ed25519 spend key since v0.4.5; the UEP-26 circuit proves H_ACCOUNT(secret, salt)). Account-id unification needs a circuit-friendly spend signature; see docs/LABS.md (known difference: account ids).
-  it.skip("WitnessOnlyProvider proves after validation", async () => {
+  it("WitnessOnlyProvider proves after validation", async () => {
     const inst = makeInstance();
     const provider = new WitnessOnlyProvider();
     const proof = await provider.prove(inst);
@@ -126,5 +133,8 @@ describe("zk witness contract 28.4", () => {
     assert.equal(await provider.verify(proof, inst.publicInputs), true);
     const ser = serializeZkSpendInstance(inst) as { contractVersion: string };
     assert.equal(ser.contractVersion, ZK_WITNESS_CONTRACT_VERSION);
+    await assert.rejects(new WitnessOnlyProvider({ accountIdDerivation: "circuit-h-account" }).prove(inst), /Witness invalid/);
+    const circuitProof = await new WitnessOnlyProvider({ accountIdDerivation: "circuit-h-account" }).prove(makeInstance({ circuitId: true }));
+    assert.equal(circuitProof.kind, "zk-spend");
   });
 });

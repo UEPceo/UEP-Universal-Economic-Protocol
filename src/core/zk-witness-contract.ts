@@ -15,7 +15,7 @@
  */
 
 import { Fr } from "./field.ts";
-import { hLeaf, hNullifier } from "./hash.ts";
+import { hAccount, hLeaf, hNullifier } from "./hash.ts";
 import { accountIdsFromSecrets } from "./spend-key.ts";
 import {
   ACCOUNT_DEPTH,
@@ -98,6 +98,12 @@ export type ValidateOpts = {
   checkCrypto?: boolean;
   /** Leaf hasher for crypto checks (defaults to UEP-25 nested hLeaf). */
   balanceLeaf?: (owner: Fr, asset: Fr, amount: bigint, blinding: Fr) => Fr;
+  /**
+   * v0.5.3 adapter: which account-id derivation senderId must follow.
+   * "core-key-derived" (default) = the public core (Ed25519 spend key, v3 or v2 id);
+   * "circuit-h-account" = what the UEP-26 circuit proves today, H_ACCOUNT(secret, salt).
+   */
+  accountIdDerivation?: "core-key-derived" | "circuit-h-account";
 };
 
 function pathLenOk(path: ZkMerklePath, depth: number): boolean {
@@ -179,9 +185,13 @@ export function validateZkSpendInstance(
     // v0.4.5: senderId = key-derived account id of the spend key of (secret, salt).
     // A future circuit has to prove this binding (or the signature) in-circuit.
     // v0.5.1: the v3 id, or the v2 id of the same key for existing accounts.
-    const expectIds = accountIdsFromSecrets(w.senderSecret, w.senderSalt);
-    if (!expectIds.v3.eq(pub.senderId) && !expectIds.v2.eq(pub.senderId)) {
-      errors.push("senderId != accountIdFromSpendKey(spendKey(secret, salt))");
+    if (opts.accountIdDerivation === "circuit-h-account") {
+      if (!hAccount(w.senderSecret, w.senderSalt).eq(pub.senderId)) errors.push("senderId != H_ACCOUNT(secret, salt) (circuit derivation)");
+    } else {
+      const expectIds = accountIdsFromSecrets(w.senderSecret, w.senderSalt);
+      if (!expectIds.v3.eq(pub.senderId) && !expectIds.v2.eq(pub.senderId)) {
+        errors.push("senderId != accountIdFromSpendKey(spendKey(secret, salt))");
+      }
     }
 
     // sender leaves use noteBlinding only

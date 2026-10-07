@@ -51,6 +51,14 @@ export type UepTransaction = {
   senderAuth?: { publicKey: string; signature: string };
   /** v0.4.4: membership proof of each input commitment in the note-commitment tree. */
   inputMembership?: Array<{ leafIndex: string; root: string; siblings: string[] }>;
+  /**
+   * v0.5.3 (UEP-C04): multi-input spend. Present only when a transaction
+   * consumes 2..MAX_TX_INPUTS notes: element i is the nonce / nullifier of input
+   * i, element 0 equals `nonce` / `nullifier`. Absent = single-input (v0.5.2 form,
+   * same commitment and txId as before). Requires version 2.
+   */
+  inputNonces?: Fr[];
+  inputNullifiers?: Fr[];
   phase: TxPhase;
   inConflict: boolean;
   createdAt: number;
@@ -68,7 +76,13 @@ export function computeTxCommitment(input: {
   nullifier: Fr;
   inputCommitments: Fr[];
   outputCommitments: Fr[];
+  /** v0.5.3: multi-input vectors; bound only when they carry 2 or more inputs. */
+  inputNonces?: Fr[];
+  inputNullifiers?: Fr[];
 }): Fr {
+  const multi = input.inputNullifiers && input.inputNullifiers.length > 1
+    ? [MULTI_INPUT_COMMITMENT_TAG, new Fr(input.inputNullifiers.length), ...(input.inputNonces ?? []), ...input.inputNullifiers]
+    : [];
   return canonicalTxCommitment([
     encodeStringToFr(input.networkId),
     encodeStringToFr(input.domainId),
@@ -83,7 +97,61 @@ export function computeTxCommitment(input: {
     ...input.inputCommitments,
     new Fr(input.outputCommitments.length),
     ...input.outputCommitments,
+    ...multi,
   ]);
+}
+
+/** v0.5.3 (UEP-C04): largest number of input notes in one transaction. */
+export const MAX_TX_INPUTS = 8;
+/** Version of a multi-input transaction (single-input transactions keep version 1). */
+export const MULTI_INPUT_TX_VERSION = 2;
+/** Domain tag appended to the commitment of a multi-input transaction (never present for single input). */
+export const MULTI_INPUT_COMMITMENT_TAG = encodeStringToFr("UEP-TX-MULTI-INPUT-v1");
+
+/** All nullifiers a transaction consumes (one per input). */
+export function txNullifiers(tx: Pick<UepTransaction, "nullifier" | "inputNullifiers">): Fr[] {
+  return tx.inputNullifiers && tx.inputNullifiers.length > 0 ? tx.inputNullifiers : [tx.nullifier];
+}
+
+/** All input nonces of a transaction (one per input). */
+export function txNonces(tx: Pick<UepTransaction, "nonce" | "inputNonces">): Fr[] {
+  return tx.inputNonces && tx.inputNonces.length > 0 ? tx.inputNonces : [tx.nonce];
+}
+
+/** Commitment of a transaction from its own fields (single- or multi-input). */
+export function txCommitmentOf(tx: UepTransaction): Fr {
+  return computeTxCommitment({
+    networkId: tx.networkId,
+    domainId: tx.domainId,
+    senderId: tx.senderId,
+    recipientId: tx.recipientId,
+    assetId: tx.assetId,
+    amount: tx.amount,
+    fee: tx.fee,
+    nonce: tx.nonce,
+    nullifier: tx.nullifier,
+    inputCommitments: tx.inputCommitments,
+    outputCommitments: tx.outputCommitments,
+    inputNonces: tx.inputNonces,
+    inputNullifiers: tx.inputNullifiers,
+  });
+}
+
+/**
+ * v0.5.3: shape of the multi-input vectors. undefined = well formed (or a
+ * single-input transaction without vectors).
+ */
+export function multiInputShapeError(tx: UepTransaction): string | undefined {
+  const nf = tx.inputNullifiers;
+  const nn = tx.inputNonces;
+  if (nf === undefined && nn === undefined) return tx.version === MULTI_INPUT_TX_VERSION ? "version 2 requires input vectors" : undefined;
+  if (!Array.isArray(nf) || !Array.isArray(nn)) return "input vectors must both be present";
+  if (nf.length < 2 || nf.length > MAX_TX_INPUTS) return `a multi-input transaction has 2 to ${MAX_TX_INPUTS} inputs`;
+  if (nn.length !== nf.length || tx.inputCommitments.length !== nf.length) return "one nonce, one nullifier and one input commitment per input";
+  if (!(nf[0] instanceof Fr) || !(nn[0] instanceof Fr) || !nf[0].eq(tx.nullifier) || !nn[0].eq(tx.nonce)) return "input 0 must be the primary nonce / nullifier";
+  if (new Set(nf.map((x) => x.toHex())).size !== nf.length) return "duplicate nullifier";
+  if (tx.version !== MULTI_INPUT_TX_VERSION) return "a multi-input transaction is version 2";
+  return undefined;
 }
 
 export function txIdFromCommitment(commitment: Fr, nullifier: Fr): Fr {
@@ -169,6 +237,8 @@ export function serializeTx(tx: UepTransaction) {
     transactionCommitment: tx.transactionCommitment.toHex(),
     ...(tx.inputNotes ? { inputNotes: tx.inputNotes.map(canonicalSerializedNote) } : {}),
     ...(tx.outputNotes ? { outputNotes: tx.outputNotes.map(canonicalSerializedNote) } : {}),
+    ...(tx.inputNonces ? { inputNonces: tx.inputNonces.map((x) => x.toHex()) } : {}),
+    ...(tx.inputNullifiers ? { inputNullifiers: tx.inputNullifiers.map((x) => x.toHex()) } : {}),
   };
 }
 
@@ -195,6 +265,8 @@ export function deserializeTx(data: ReturnType<typeof serializeTx>): UepTransact
     spendProof: data.spendProof,
     ...(data.senderAuth ? { senderAuth: { publicKey: data.senderAuth.publicKey, signature: data.senderAuth.signature } } : {}),
     ...(data.inputMembership ? { inputMembership: data.inputMembership.map((p) => ({ leafIndex: p.leafIndex, root: p.root, siblings: [...p.siblings] })) } : {}),
+    ...(Array.isArray(data.inputNonces) ? { inputNonces: (data.inputNonces as unknown as string[]).map((x) => new Fr(x)) } : {}),
+    ...(Array.isArray(data.inputNullifiers) ? { inputNullifiers: (data.inputNullifiers as unknown as string[]).map((x) => new Fr(x)) } : {}),
     phase: data.phase,
     inConflict: data.inConflict,
     createdAt: data.createdAt,

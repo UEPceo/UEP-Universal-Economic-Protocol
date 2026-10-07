@@ -1,7 +1,11 @@
 /**
  * UEP-009 deterministic asynchronous reconciliation.
  *
- * Conflict key: nullifier (primary). Two spends of the same note conflict.
+ * Conflict key: nullifier. Two spends of the same note conflict. v0.5.3
+ * (UEP-C04): a multi-input spend conflicts with any spend sharing one of its
+ * nullifiers; spends are taken in min(TxID) order and a spend settles only if
+ * none of its nullifiers is already taken (for single-input spends this is
+ * exactly "min(TxID) per nullifier").
  * Experimental winner rule: min(TxID) lexicographic on the field element.
  *
  * ADVERSARIAL NOTE: min(TxID) is grindable if the sender can influence TxID
@@ -20,7 +24,7 @@
  */
 import { Fr } from "./field.ts";
 import { Domain, hFold } from "./hash.ts";
-import type { TxPhase, UepTransaction } from "./transaction.ts";
+import { txNullifiers, type TxPhase, type UepTransaction } from "./transaction.ts";
 
 export type Settlement = {
   txId: Fr;
@@ -42,27 +46,14 @@ export function reconcile(txs: UepTransaction[]): Settlement[] {
   const unique = new Map<string, UepTransaction>();
   for (const tx of txs) unique.set(tx.txId.toHex(), tx);
 
-  const groups = new Map<string, UepTransaction[]>();
-  for (const tx of unique.values()) {
-    const key = tx.nullifier.toHex();
-    const g = groups.get(key);
-    if (g) g.push(tx);
-    else groups.set(key, [tx]);
-  }
-
+  const ordered = [...unique.values()].sort((a, b) => compareTxId(a.txId, b.txId));
+  const taken = new Set<string>();
   const out: Settlement[] = [];
-  for (const group of groups.values()) {
-    group.sort((a, b) => compareTxId(a.txId, b.txId));
-    const winner = group[0]!;
-    for (const tx of group) {
-      const isWinner = tx.txId.eq(winner.txId);
-      out.push({
-        txId: tx.txId,
-        status: isWinner ? "SETTLED" : "INVALIDATED",
-        fee: isWinner ? tx.fee : 0n,
-        nullifier: tx.nullifier,
-      });
-    }
+  for (const tx of ordered) {
+    const keys = txNullifiers(tx).map((nf) => nf.toHex());
+    const isWinner = keys.every((k) => !taken.has(k));
+    if (isWinner) for (const k of keys) taken.add(k);
+    out.push({ txId: tx.txId, status: isWinner ? "SETTLED" : "INVALIDATED", fee: isWinner ? tx.fee : 0n, nullifier: tx.nullifier });
   }
   out.sort((a, b) => compareTxId(a.txId, b.txId));
   return out;
@@ -81,13 +72,12 @@ export function applySettlements(txs: UepTransaction[], settlements: Settlement[
 export function markConflicts(txs: UepTransaction[]): UepTransaction[] {
   const counts = new Map<string, number>();
   for (const tx of txs) {
-    const k = tx.nullifier.toHex();
-    counts.set(k, (counts.get(k) ?? 0) + 1);
+    for (const nf of txNullifiers(tx)) counts.set(nf.toHex(), (counts.get(nf.toHex()) ?? 0) + 1);
   }
   return txs.map((tx) => ({
     ...tx,
     inConflict:
-      (counts.get(tx.nullifier.toHex()) ?? 0) > 1 &&
+      txNullifiers(tx).some((nf) => (counts.get(nf.toHex()) ?? 0) > 1) &&
       tx.phase !== "SETTLED" &&
       tx.phase !== "INVALIDATED",
   }));

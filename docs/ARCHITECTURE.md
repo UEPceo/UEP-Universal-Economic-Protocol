@@ -164,7 +164,7 @@ The testnet maintains:
 
 Since v0.4.7 every asset is isolated: asset ids follow a canonical grammar (since v0.5.0 `<namespace>/<symbol>`, see [`adr/0001-asset-model.md`](./adr/0001-asset-model.md)), notes of another asset are rejected (`ASSET_MISMATCH`), each asset can have its own issuer key (rotation and revocation in snapshot trust), `restore()` rejects unregistered assets, and policy limits and fee floors are per asset.
 
-Known limits: one input note per transaction (UEP-C04). Since v0.4.7 `preparePayment()` + `submitBatch()` pay from several notes as an atomic batch of single-input spends (one fee per part); a true multi-input spend and self-consolidation are not available. The unit and asset model are decided in ADR 0001; the signed registry manifest exists as a module (`src/core/asset-registry.ts`) and its ledger integration is the next milestone (see the roadmap).
+Multi-input (UEP-C04, v0.5.3, ADR 0004): a transaction may consume 1 to 8 notes with a nonce / nullifier vector, one protocol fee per transaction and one change note; single-input transactions keep the v0.5.2 form. Self-consolidation (sender = recipient) is still refused, and the ZK circuits prove one nullifier. The unit and asset model are decided in ADR 0001; the signed registry manifest exists as a module (`src/core/asset-registry.ts`) and its ledger integration is the next milestone (see the roadmap).
 
 ### C. Cryptography / ZK — Partial
 

@@ -17,7 +17,8 @@ import { hAccount, hLeaf } from "../core/hash.ts";
 import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
 import { deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, type Note } from "../core/note.ts";
-import { canonicalSerializedTx, computeTxCommitment, deserializeTx, serializeTx, txIdFromCommitment, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
+import { assertVerifierAllowed, parseZkSpendPayload, zkBindingMismatches, type ZkSpendVerifier } from "../core/zk-tx-adapter.ts";
+import { canonicalSerializedTx, computeTxCommitment, deserializeTx, MAX_TX_INPUTS, MULTI_INPUT_TX_VERSION, multiInputShapeError, serializeTx, txCommitmentOf, txIdFromCommitment, txNonces, txNullifiers, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
 import { u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
 import { TREASURY_ID } from "../network/profiles.ts";
@@ -310,15 +311,22 @@ export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Not
   if (!acceptsRecipient(tx.recipientId)) {
     return { code: "INVALID_PARTICIPANTS", message: "Recipient must be a v3 key-derived account or a proven v2 account." };
   }
-  if (inputs.length !== 1) return { code: "AMOUNT_MISMATCH", message: "Public testnet spends use exactly one input note." };
-  const input = inputs[0]!;
-  if (!input.owner.eq(tx.senderId)) return { code: "WRONG_OWNER", message: "Input note belongs to a different identity." };
-  if (!input.assetId.eq(tx.assetId)) return { code: "ASSET_MISMATCH", message: "Input note asset does not match transaction." };
-  if (!input.nonce.eq(noteNonce(input.commitment, input.blinding)) || !input.nonce.eq(tx.nonce)) {
-    return { code: "NOTE_NONCE", message: "Transaction nonce is not bound to the consumed note." };
+  // v0.5.3 (UEP-C04): 1 input (v0.5.2 form) or 2..MAX_TX_INPUTS inputs with nonce / nullifier vectors.
+  const nonces = txNonces(tx);
+  if (inputs.length < 1 || inputs.length > MAX_TX_INPUTS || inputs.length !== nonces.length) {
+    return { code: "AMOUNT_MISMATCH", message: `A spend uses 1 to ${MAX_TX_INPUTS} input notes, one nonce and one nullifier each.` };
   }
-  if (input.amount < tx.amount + tx.fee) return { code: "AMOUNT_MISMATCH", message: "Transaction amount plus fee exceeds the value of the input note." };
-  const change = input.amount - tx.amount - tx.fee;
+  let total = 0n;
+  for (const [i, input] of inputs.entries()) {
+    if (!input.owner.eq(tx.senderId)) return { code: "WRONG_OWNER", message: "Input note belongs to a different identity." };
+    if (!input.assetId.eq(tx.assetId)) return { code: "ASSET_MISMATCH", message: "Input note asset does not match transaction." };
+    if (!input.nonce.eq(noteNonce(input.commitment, input.blinding)) || !input.nonce.eq(nonces[i]!)) {
+      return { code: "NOTE_NONCE", message: "Transaction nonce is not bound to the consumed note." };
+    }
+    total += input.amount;
+  }
+  if (total < tx.amount + tx.fee) return { code: "AMOUNT_MISMATCH", message: "Transaction amount plus fee exceeds the value of the input notes." };
+  const change = total - tx.amount - tx.fee;
   const expected: Array<{ owner: Fr; amount: bigint }> = [{ owner: tx.recipientId, amount: tx.amount }];
   if (change > 0n) expected.push({ owner: tx.senderId, amount: change });
   if (outputs.length !== expected.length) return { code: "OUTPUT_BINDING", message: "Unexpected number of output notes." };
@@ -353,6 +361,8 @@ function planPayment(available: Note[], amount: bigint, minFee: bigint): { plan:
 }
 
 export class UepLedger {
+  /** v0.5.3: zk-spend verifier (see src/core/zk-tx-adapter.ts). */
+  private zkSpendVerifier: ZkSpendVerifier | undefined;
   /** v0.5.2: re-entrancy guard of submit() / submitBatch(). */
   private spendInProgress = false;
   /** Optional security policy gate (TESTNET). */
@@ -453,6 +463,13 @@ export class UepLedger {
     assetRegistry?: AssetRegistry;
     /** v0.4.7 TEST-ONLY: build a ledger with requireProof = false. Never set outside tests. */
     testOnlyDisableProof?: boolean;
+    /**
+     * v0.5.3: verifier for `zk-spend` proofs on the transaction path (crypto
+     * alignment). The ledger first binds public inputs 4..11 to the transaction;
+     * development keys are refused under NODE_ENV=production. Without it a
+     * zk-spend is refused.
+     */
+    zkSpendVerifier?: ZkSpendVerifier;
     /** v0.5.1 TEST-ONLY: advanceHeight(n) accepts n > MAX_BLOCKS_PER_TICK (tests and offline simulations). */
     testOnlyUnboundedHeightAdvance?: boolean;
   }) {
@@ -465,6 +482,10 @@ export class UepLedger {
     if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > MAX_PENDING_TRANSACTIONS_LIMIT) throw new Error("INVALID_MAX_PENDING_TRANSACTIONS");
     this.maxPendingTransactions = maxPending;
     this.proofRequired = !testOnlyOption("testOnlyDisableProof", opts.testOnlyDisableProof);
+    if (opts.zkSpendVerifier) {
+      assertVerifierAllowed(opts.zkSpendVerifier);
+      this.zkSpendVerifier = opts.zkSpendVerifier;
+    }
     this.unboundedHeightAdvance = testOnlyOption("testOnlyUnboundedHeightAdvance", opts.testOnlyUnboundedHeightAdvance);
     this.installSigningKeys(
       opts.snapshotSigningKeys ?? [generateEd25519KeyPair().privateKey],
@@ -693,7 +714,7 @@ export class UepLedger {
       return { error: { code: "NOTE_OPENING", message: "Transaction has no input notes." } };
     }
     const uniqueInputs = new Set(tx.inputCommitments.map((c) => c.toHex()));
-    if (tx.inputCommitments.length !== 1 || uniqueInputs.size !== tx.inputCommitments.length || inputs.length !== tx.inputCommitments.length) {
+    if (tx.inputCommitments.length !== txNullifiers(tx).length || uniqueInputs.size !== tx.inputCommitments.length || inputs.length !== tx.inputCommitments.length) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Input commitments must be unique and exactly match the referenced notes." } };
     }
     return { inputs };
@@ -727,7 +748,11 @@ export class UepLedger {
   /** v0.5.0: a signed spend uses the public, sender-bound nullifier of its note. */
   private checkSignedNullifier(tx: UepTransaction): SubmitError | undefined {
     if (tx.spendProof.backend !== SENDER_SIGNATURE_PROOF.backend || tx.spendProof.payload !== "") return { code: "PROOF", message: "Unknown sender-signature scheme." };
-    if (!signedSpendNullifier(tx.senderId, tx.nonce).eq(tx.nullifier)) return { code: "WRONG_OWNER", message: "Nullifier is not the sender-bound nullifier of the consumed note." };
+    const nonces = txNonces(tx);
+    const nfs = txNullifiers(tx);
+    if (nonces.length !== nfs.length || nfs.some((nf, i) => !signedSpendNullifier(tx.senderId, nonces[i]!).eq(nf))) {
+      return { code: "WRONG_OWNER", message: "Nullifier is not the sender-bound nullifier of the consumed note." };
+    }
     return undefined;
   }
 
@@ -925,6 +950,54 @@ export class UepLedger {
     return { txs };
   }
 
+  /**
+   * v0.5.3 (UEP-C04): one multi-input transaction paying `amount` from up to
+   * MAX_TX_INPUTS of the sender's notes of one asset encoding, with ONE protocol
+   * fee for the whole transaction and at most one change note (consolidation of
+   * the consumed notes). A single covering note gives a plain single-input
+   * spend (v0.5.2 form). Always a sender-signature spend; submit with submit(tx).
+   */
+  prepareMultiInputSpend(
+    secrets: IdentitySecrets,
+    recipientOrAddress: Fr | string,
+    assetIdStr: string,
+    amount: bigint,
+    now = this.blockHeight,
+  ): SubmitResult {
+    assetIdStr = resolveAssetIdAlias(assetIdStr);
+    now = this.spendHeight(now);
+    const pre = this.prepareChecks(secrets, recipientOrAddress, assetIdStr, amount, now);
+    if ("error" in pre) return pre;
+    const { recipient, minFee } = pre;
+    const senderId = secrets.accountId;
+    const required = amount + creatorFee(amount, minFee);
+    for (const enc of assetEncodings(assetIdStr)) {
+      const notes = this.spendableNotes(senderId, enc).filter((n) => n.assetId.eq(enc));
+      const single = notes.find((n) => n.amount >= required);
+      let chosen: Note[] | undefined = single ? [single] : undefined;
+      if (!chosen) {
+        const byValue = [...notes].sort((a, b) => (a.amount === b.amount ? 0 : a.amount > b.amount ? -1 : 1));
+        const pick: Note[] = [];
+        let sum = 0n;
+        for (const n of byValue) {
+          if (sum >= required || pick.length === MAX_TX_INPUTS) break;
+          pick.push(n);
+          sum += n.amount;
+        }
+        if (sum >= required) chosen = pick;
+      }
+      if (!chosen) continue;
+      const tr = transition(
+        { sender: this.balanceOf(senderId, enc), recipient: this.balanceOf(recipient, enc), treasury: this.balanceOf(TREASURY_ID, enc) },
+        amount,
+        minFee,
+      );
+      if ("err" in tr) return { error: { code: "INSUFFICIENT", message: tr.err } };
+      return { tx: this.buildSpend(secrets, recipient, enc, amount, minFee, chosen, now, tr.ok.new, { authorization: "sender-signature" }) };
+    }
+    return { error: { code: "INSUFFICIENT", message: `At most ${MAX_TX_INPUTS} unspent notes of one encoding do not cover amount plus one fee.` } };
+  }
+
   /** Shared preconditions of prepareSpend() / preparePayment(). */
   private prepareChecks(
     secrets: IdentitySecrets,
@@ -1006,7 +1079,7 @@ export class UepLedger {
     assetId: Fr,
     amount: bigint,
     minFee: bigint,
-    spent: Note,
+    spent: Note | Note[],
     now: number,
     balancesAfter: { sender: bigint; recipient: bigint; treasury: bigint },
     opts: SpendBuildOptions = {},
@@ -1015,15 +1088,21 @@ export class UepLedger {
     const mode = opts.authorization ?? "sender-signature";
     if (mode !== "sender-signature" && mode !== "development-mac") throw new Error("SPEND_AUTHORIZATION_INVALID");
     const fee = creatorFee(amount, minFee);
-    const selected: Note[] = [spent];
-    const total = spent.amount;
+    const selected: Note[] = Array.isArray(spent) ? spent : [spent];
+    if (selected.length < 1 || selected.length > MAX_TX_INPUTS) throw new Error("SPEND_INPUTS_INVALID");
+    const multi = selected.length > 1;
+    if (multi && mode !== "sender-signature") throw new Error("SPEND_MULTI_INPUT_REQUIRES_SENDER_SIGNATURE");
+    const total = selected.reduce((t, n) => t + n.amount, 0n);
     const debit = requiredSenderDebit(amount, minFee);
     const change = total - amount - fee;
     // Single-note spend: consume the selected note, emit the recipient output
     // (`amount`) plus optional change (`total - amount - fee`). The nullifier is
     // derived from that note (single-nullifier transition, matching UEP-25).
-    const nonce = spent.nonce;
+    // v0.5.3 (UEP-C04): several notes -> one nonce / nullifier per input, one fee for the transaction.
+    const nonce = selected[0]!.nonce;
     const nullifier = mode === "sender-signature" ? signedSpendNullifier(senderId, nonce) : deriveNullifier(secrets.secret, nonce);
+    const inputNonces = multi ? selected.map((n) => n.nonce) : undefined;
+    const inputNullifiers = multi ? selected.map((n) => signedSpendNullifier(senderId, n.nonce)) : undefined;
     const outBlinding = hLeaf(secrets.secret, new Fr(++this.noteCounter));
     const output = makeNote(recipient, assetId, amount, outBlinding);
     const outputs = [output];
@@ -1046,6 +1125,8 @@ export class UepLedger {
       nullifier,
       inputCommitments,
       outputCommitments,
+      inputNonces,
+      inputNullifiers,
     });
     const txId = txIdFromCommitment(transactionCommitment, nullifier);
 
@@ -1068,7 +1149,7 @@ export class UepLedger {
       : DevelopmentSpendProofProvider.prove(pub, { senderSecret: secrets.secret, senderSalt: secrets.salt, nonce });
 
     const tx: UepTransaction = {
-      version: 1,
+      version: multi ? MULTI_INPUT_TX_VERSION : 1,
       protocol: "UEP-25-prototype",
       networkId: this.networkId,
       domainId: this.domainId,
@@ -1086,6 +1167,7 @@ export class UepLedger {
       outputNotes: outputs.map(serializeNote),
       transactionCommitment,
       spendProof,
+      ...(multi ? { inputNonces, inputNullifiers } : {}),
       phase: "LOCAL_VALID",
       inConflict: false,
       createdAt: now,
@@ -1196,7 +1278,7 @@ export class UepLedger {
     const seen = new Set<string>();
     for (const tx of txs) {
       if (!tx || !tx.senderId?.eq(first.senderId) || !tx.assetId?.eq(first.assetId) || !tx.recipientId?.eq(first.recipientId)) return { error: { code: "BATCH_INVALID", message: "Every part of a batch must have the same sender, asset and recipient." } };
-      const ids = [`tx:${tx.txId.toHex()}`, `nf:${tx.nullifier.toHex()}`, ...tx.inputCommitments.map((c) => `in:${c.toHex()}`), ...tx.outputCommitments.map((c) => `out:${c.toHex()}`)];
+      const ids = [`tx:${tx.txId.toHex()}`, ...txNullifiers(tx).map((nf) => `nf:${nf.toHex()}`), ...tx.inputCommitments.map((c) => `in:${c.toHex()}`), ...tx.outputCommitments.map((c) => `out:${c.toHex()}`)];
       for (const id of ids) {
         if (seen.has(id)) return { error: { code: "BATCH_INVALID", message: "Parts of a batch must not share a transaction id, nullifier, input or output note." } };
         seen.add(id);
@@ -1253,7 +1335,9 @@ export class UepLedger {
     if (this.txs.some((t) => t.txId.eq(tx.txId))) {
       return { error: { code: "REPLAY", message: "Transaction already present (idempotent reject)." } };
     }
-    if (this.nullifiers.contains(tx.nullifier)) {
+    const shape = multiInputShapeError(tx);
+    if (shape) return { error: { code: "AMOUNT_MISMATCH", message: `Multi-input transaction: ${shape}.` } };
+    if (txNullifiers(tx).some((nf) => this.nullifiers.contains(nf))) {
       return { error: { code: "DOUBLE_SPEND", message: "Nullifier already spent." } };
     }
     // v0.4.7: every transported note must be in the transaction asset.
@@ -1265,19 +1349,7 @@ export class UepLedger {
       }
     }
 
-    const recomputed = computeTxCommitment({
-      networkId: tx.networkId,
-      domainId: tx.domainId,
-      senderId: tx.senderId,
-      recipientId: tx.recipientId,
-      assetId: tx.assetId,
-      amount: tx.amount,
-      fee: tx.fee,
-      nonce: tx.nonce,
-      nullifier: tx.nullifier,
-      inputCommitments: tx.inputCommitments,
-      outputCommitments: tx.outputCommitments,
-    });
+    const recomputed = txCommitmentOf(tx);
     if (!recomputed.eq(tx.transactionCommitment)) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Transaction commitment does not match fields." } };
     }
@@ -1297,9 +1369,23 @@ export class UepLedger {
       // input owner keys are checked below); no secret is needed or used.
       const nullifierError = this.checkSignedNullifier(tx);
       if (nullifierError) return { error: nullifierError };
+    } else if (tx.spendProof?.kind === "zk-spend") {
+      // v0.5.3: witness contract on the tx path. Bound public inputs first, then the verifier.
+      if (!this.zkSpendVerifier) return { error: { code: "PROOF", message: "zk-spend proofs need a configured verifier on this ledger." } };
+      if (tx.inputNullifiers) return { error: { code: "PROOF", message: "The spend circuit proves one nullifier; multi-input zk-spends are not supported." } };
+      const payload = parseZkSpendPayload(tx.spendProof);
+      if (!payload) return { error: { code: "PROOF", message: "Malformed zk-spend payload." } };
+      const mismatch = zkBindingMismatches(tx, TREASURY_ID, payload);
+      if (mismatch.length > 0) return { error: { code: "PROOF", message: `zk-spend public inputs ${mismatch.join(",")} do not match the transaction.` } };
+      let ok = false;
+      try { ok = this.zkSpendVerifier.verify(payload) === true; } catch { ok = false; }
+      if (!ok) return { error: { code: "PROOF", message: "zk-spend proof does not verify." } };
     } else if (secrets) {
       if (!verifyOwnership(secrets.secret, secrets.salt, tx.senderId)) {
         return { error: { code: "WRONG_OWNER", message: "Spender is not the note owner." } };
+      }
+      if (tx.inputNullifiers) {
+        return { error: { code: "PROOF", message: "Multi-input spends are sender-signature spends (the development MAC covers one nullifier)." } };
       }
       const expectN = deriveNullifier(secrets.secret, tx.nonce);
       if (!expectN.eq(tx.nullifier)) {
@@ -1377,9 +1463,10 @@ export class UepLedger {
     const { inputs, outputs } = checked;
     const tr = { ok: { new: checked.next } };
 
-    const inserted = this.nullifiers.insertOnce(tx.nullifier);
-    // checkSpend() verified the nullifier is unused; a failure here is an internal error.
-    if (!inserted) throw new Error("LEDGER_INTERNAL: nullifier inserted twice");
+    // checkSpend() verified every nullifier is unused; a failure here is an internal error.
+    for (const nf of txNullifiers(tx)) {
+      if (!this.nullifiers.insertOnce(nf)) throw new Error("LEDGER_INTERNAL: nullifier inserted twice");
+    }
 
     this.setBalance(tx.senderId, tx.assetId, tr.ok.new.sender);
     this.setBalance(tx.recipientId, tx.assetId, tr.ok.new.recipient);
@@ -1435,9 +1522,10 @@ export class UepLedger {
     // Validate canonical fields and note commitments without mutating live state.
     if (tx.networkId !== this.networkId || tx.domainId !== this.domainId || tx.amount <= 0n) return { error: { code: "POLICY", message: "Pending transaction envelope invalid." } };
     if (tx.fee !== creatorFee(tx.amount, this.feeFloorOf(tx.assetId))) return { error: { code: "AMOUNT_MISMATCH", message: "Pending fee invalid." } };
-    const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
+    if (multiInputShapeError(tx)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending multi-input transaction malformed." } };
+    const recomputed = txCommitmentOf(tx);
     if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction commitment invalid." } };
-    if (this.nullifiers.contains(tx.nullifier) || this.txs.some((x) => x.txId.eq(tx.txId))) return { error: { code: "REPLAY", message: "Pending transaction already committed." } };
+    if (txNullifiers(tx).some((nf) => this.nullifiers.contains(nf)) || this.txs.some((x) => x.txId.eq(tx.txId))) return { error: { code: "REPLAY", message: "Pending transaction already committed." } };
     const ins = tx.inputNotes?.map(deserializeNote) ?? [];
     const outs = tx.outputNotes?.map(deserializeNote) ?? [];
     if (ins.length !== tx.inputCommitments.length || outs.length !== tx.outputCommitments.length) return { error: { code: "NOTE_OPENING", message: "Pending transaction notes are missing." } };
@@ -1478,11 +1566,11 @@ export class UepLedger {
     //   - structurally valid ones STAY queued in phase LOCAL_VALID (never SETTLED
     //     without a state transition), flagged `inConflict` when several queued
     //     spends share a nullifier. They must be applied through submit().
-    const committedNullifiers = new Set(this.txs.map((t) => t.nullifier.toHex()));
+    const committedNullifiers = new Set(this.txs.flatMap((t) => txNullifiers(t).map((nf) => nf.toHex())));
     const rejected: Array<{ txId: string; code: SubmitError["code"]; message: string }> = [];
     const validCandidates: UepTransaction[] = [];
     for (const candidate of this.pending) {
-      if (committedNullifiers.has(candidate.nullifier.toHex())) {
+      if (txNullifiers(candidate).some((nf) => committedNullifiers.has(nf.toHex()))) {
         rejected.push({ txId: candidate.txId.toHex(), code: "REPLAY", message: "Nullifier already committed locally." });
         continue;
       }
@@ -1789,12 +1877,13 @@ export class UepLedger {
       if (tx.networkId !== l.networkId || tx.domainId !== l.domainId) fail("TX_NETWORK");
       if (txIds.has(tx.txId.toHex())) fail("TX_DUPLICATE");
       txIds.add(tx.txId.toHex());
-      if (!rebuiltNullifiers.insertOnce(tx.nullifier)) fail("NULLIFIER_SET");
-      if (tx.spendProof?.kind === "sender-signature" && !signedSpendNullifier(tx.senderId, tx.nonce).eq(tx.nullifier)) fail("TX_NULLIFIER");
+      if (multiInputShapeError(tx)) fail("TX_INPUTS");
+      for (const nf of txNullifiers(tx)) if (!rebuiltNullifiers.insertOnce(nf)) fail("NULLIFIER_SET");
+      if (tx.spendProof?.kind === "sender-signature" && txNullifiers(tx).some((nf, i) => !signedSpendNullifier(tx.senderId, txNonces(tx)[i]!).eq(nf))) fail("TX_NULLIFIER");
       if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount, l.feeFloorOf(tx.assetId))) fail("TX_VALUE");
       if (!l.assetRecordByFr(tx.assetId)) fail("TX_ASSET");
       if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) fail("TX_NOTES");
-      const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
+      const recomputed = txCommitmentOf(tx);
       if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) fail("TX_COMMITMENT");
       const ins = tx.inputNotes!.map(deserializeNote); const outs = tx.outputNotes!.map(deserializeNote);
       if (ins.some((n, i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) fail("TX_NOTES");
@@ -1832,7 +1921,8 @@ export class UepLedger {
     // 4. Nullifier tree and seen set equal exactly the committed nullifiers.
     if (!rebuiltNullifiers.root().eq(new NullifierSet(SparseMerkleTree.fromJSON(data.nullifiers.tree)).root())) fail("NULLIFIER_ROOT");
     const seen = new Set(data.nullifiers.seen);
-    if (seen.size !== data.nullifiers.seen.length || seen.size !== l.txs.length || l.txs.some((t) => !seen.has(t.nullifier.toHex()))) fail("NULLIFIER_SEEN");
+    const committedNfs = l.txs.flatMap((t) => txNullifiers(t).map((nf) => nf.toHex()));
+    if (seen.size !== data.nullifiers.seen.length || seen.size !== committedNfs.length || committedNfs.some((nf) => !seen.has(nf))) fail("NULLIFIER_SEEN");
     l.nullifiers = rebuiltNullifiers;
 
     // 5. A note is spent iff it was consumed by a committed transaction.

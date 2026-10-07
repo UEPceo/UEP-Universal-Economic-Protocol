@@ -62,11 +62,18 @@ export interface ZkSpendProofProvider {
 export class WitnessOnlyProvider implements ZkSpendProofProvider {
   readonly name = "witness-only";
   readonly isZeroKnowledge = false;
+  /** v0.5.3: account-id derivation the witness must follow (core by default). */
+  private readonly accountIdDerivation: "core-key-derived" | "circuit-h-account";
+
+  constructor(opts: { accountIdDerivation?: "core-key-derived" | "circuit-h-account" } = {}) {
+    this.accountIdDerivation = opts.accountIdDerivation ?? "core-key-derived";
+  }
 
   async prove(instance: ZkSpendInstance): Promise<ZkSpendProof> {
     const v = validateZkSpendInstance(instance, {
       checkTrees: !instance.witness.usePoseidon,
       checkCrypto: true,
+      accountIdDerivation: this.accountIdDerivation,
     });
     if (!v.ok) throw new Error(`Witness invalid: ${v.errors.join("; ")}`);
     const hex = publicInputsToHex(instance.publicInputs);
