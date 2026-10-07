@@ -1,13 +1,4 @@
 {
-  "note": "Lab suites with known, documented failures. Skipped by scripts/test-lab.mjs unless --include-known or --only-known. See docs/LABS.md. v0.5.3: 12 files left this list (TCP mesh tie-break for simultaneous dials, full-mesh wait in the process cluster, economic commitment on single-batch proposals).",
-  "files": [
-    {
-      "file": "src/lab/uep37.5-stress.test.ts",
-      "reason": "Poseidon-zk leaf mode on 4 OS processes with the uep-zk prover: three sequential transactions must each change the root within 120 s; under load the second or third root change can exceed the timeout (proving time, not a consensus disagreement). Still failing after the v0.5.3 mesh fix."
-    },
-    {
-      "file": "src/lab/uep38-p4-view-mesh.test.ts",
-      "reason": "P4 process cluster: proposal delivery to every replica after a TCP view change without an explicit flush times out on one replica ('timeout p4-1'). Still failing after the v0.5.3 mesh fix; needs a re-proposal or catch-up path after a view change."
-    }
-  ]
+  "note": "Lab suites with known, documented failures. Skipped by scripts/test-lab.mjs unless --include-known or --only-known. See docs/LABS.md. v0.5.3: 12 files left this list (TCP mesh tie-break for simultaneous dials, full-mesh wait in the process cluster, economic commitment on single-batch proposals); uep37.5-stress (the test proposed every height from mn-0 while the leader rotates with the height) and uep38-p4-view-mesh (proposals did not carry their view, so replicas checked the leader of view 0) left it too. The list is empty; the mechanism stays for future lab issues.",
+  "files": []
 }

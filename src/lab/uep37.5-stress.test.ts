@@ -119,9 +119,15 @@ describe("UEP-37.5 stress Poseidon network", () => {
       }
       let last = cluster.statusRoots()[0]!;
       for (let i = 0; i < 3; i++) {
-        await cluster.propose("mn-0", [
+        // The leader rotates with the height (scheduledLeader); propose from the
+        // node every replica reports as leader of the next height. Proposing
+        // every time from mn-0 was refused with NOT_LEADER from the second tx on.
+        const leaders = cluster.statusLeaders();
+        assert.equal(new Set(leaders).size, 1, `leader views differ: ${leaders}`);
+        const outcome = await cluster.propose(leaders[0]!, [
           { id: `st-${i}`, from: "s0", to: "r0", amount: "1" },
         ]);
+        assert.equal(outcome.event, "proposed", `tx ${i}: ${JSON.stringify(outcome)}`);
         const changed = await cluster.waitRootChange(last, 120_000);
         assert.equal(changed, true, `tx ${i} no root change; roots=${cluster.statusRoots()}`);
         const roots = cluster.statusRoots();

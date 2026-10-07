@@ -25,11 +25,12 @@ function waitEvent(
   node: ProcNode,
   predicate: (e: Record<string, unknown>) => boolean,
   timeoutMs = 8000,
+  fromIndex = 0,
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const t0 = Date.now();
     const timer = setInterval(() => {
-      for (const e of node.events) {
+      for (const e of node.events.slice(fromIndex)) {
         const rec = e as Record<string, unknown>;
         if (predicate(rec)) {
           clearInterval(timer);
@@ -195,11 +196,21 @@ export class ProcessCluster {
       price?: string;
       auth?: unknown;
     }>,
-  ): Promise<void> {
+  ): Promise<Record<string, unknown>> {
     const node = this.nodes.find((n) => n.id === nodeId);
     if (!node) throw new Error("unknown node");
+    // v0.5.3: only an event emitted after this command counts (not the outcome of an earlier proposal).
+    const from = node.events.length;
     send(node.child, { cmd: "propose", txs });
-    await waitEvent(node, (e) => e.event === "proposed" || e.event === "error");
+    return waitEvent(node, (e) => e.event === "proposed" || e.event === "error", 8000, from);
+  }
+
+  /** Leader of the next height as each node reports it in its latest status. */
+  statusLeaders(): string[] {
+    return this.nodes.map((n) => {
+      const st = [...n.events].reverse().find((e) => (e as { event?: string }).event === "status") as { leader?: string } | undefined;
+      return st?.leader ?? "";
+    });
   }
 
   /** UEP-36.4/36.5 — multi-batch DigestAggregate proposal across process mesh */

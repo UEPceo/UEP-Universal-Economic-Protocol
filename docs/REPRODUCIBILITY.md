@@ -16,7 +16,7 @@ npm ci
 npm run test:all
 ```
 
-`npm run test:all` runs `npm run test:core` (`npm run lint:determinism`, `npm run check:snapshot-compat`, `npm run check:donation`, `npm test` with the protocol, Marketplace, IoT/M2M, settlement, oracle and category suites, `npm run test:poisoned-clock`, the smoke test, the quickstart, the 20k simulation and `test:rust`), then `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 8–15 minutes more, including the first Rust build. CI runs `test:core` on Node.js 22.x and 24.x with Rust 1.85.1 and the labs in a separate job; both are blocking. A non-blocking job runs the 2 known-issue lab files.
+`npm run test:all` runs `npm run test:core` (`npm run lint:determinism`, `npm run check:snapshot-compat`, `npm run check:donation`, `npm test` with the protocol, Marketplace, IoT/M2M, settlement, oracle and category suites, `npm run test:poisoned-clock`, the smoke test, the quickstart, the 20k simulation and `test:rust`), then `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 8–15 minutes more, including the first Rust build. CI runs `test:core` on Node.js 22.x and 24.x with Rust 1.85.1 and the labs in a separate job; both are blocking. A non-blocking job runs the known-issue lab files (none in v0.5.3).
 
 Expected results for `0.5.3` (branch `v0.5.3-fixes`, Node.js 22 and 24). Last re-checked with `npm run test:all` on Node.js 22.23 and 24.21 with Rust 1.85.1 on 2026-10-07:
 
@@ -37,7 +37,7 @@ Expected results for `0.5.3` (branch `v0.5.3-fixes`, Node.js 22 and 24). Last re
 | `npm run test:rust` | 127 pass: uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99, uep-23-state-transition 6, uep-24-atomic 6 |
 | `npm run build:uep-zk` | `uep-core/target/release/uep-zk` built from source |
 | `npm run test:lab` | 110 files, 528 tests pass, 0 failures; 2 files with known issues skipped |
-| `npm run test:lab:known` | the 2 known-issue files (`uep37.5-stress`, `uep38-p4-view-mesh`); failures expected (non-blocking CI job) |
+| `npm run test:lab:known` | the known-issue files; the list is empty in v0.5.3, so it runs no files (non-blocking CI job) |
 
 `src/testnet/key-derived-accounts.test.ts` uses fixed account vectors (no random account ids; the only random values are ephemeral snapshot and faucet keys, which do not change any outcome), so repeated runs give the same result; it was run 400 times on Node.js 22 with 0 failures:
 

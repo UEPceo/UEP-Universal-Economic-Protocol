@@ -25,6 +25,10 @@ describe("UEP-38.19 P4 proposal delivery after view-change", () => {
       await c.waitHeight(1, 90000);
       const roots = await c.waitApplied(undefined, 20000);
       assert.equal(new Set(roots).size, 1, roots.join(","));
+      // v0.5.3: the proposal carries its view, so no replica rejects the new leader's proposal.
+      for (const n of c.nodes) {
+        assert.ok(!n.events.some((e) => e.event === "reject" && e.reason === "NOT_LEADER" && e.leader === undefined), n.id);
+      }
     } finally {
       c.stop();
     }

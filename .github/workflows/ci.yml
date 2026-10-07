@@ -119,6 +119,7 @@ jobs:
 
   # Non-blocking: lab files listed in scripts/lab-known-issues.json (known lab
   # issues and timing-sensitive multi-process tests). Failures here do not fail CI.
+  # v0.5.3: the list is empty; the job runs no files and stays for future entries.
   lab-known-issues:
     name: Labs with known issues (non-blocking)
     runs-on: ubuntu-latest

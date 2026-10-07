@@ -45,7 +45,8 @@ import {
   type ViewChangeTarget,
 } from "./uep37-view-change-qc.ts";
 
-type P4ProposalExtra = ProposalPayload & { amount: string; zkSpend: string };
+/** v0.5.3: `view` is the view the leader proposes in (absent = view 0, earlier proposals). */
+type P4ProposalExtra = ProposalPayload & { amount: string; zkSpend: string; view?: number };
 type P4Vote = { nodeId: string; digest: string; signature: string };
 function p4VoteBody(digest: string, height: number, epoch = 1, view = 0): string {
   return `UEP-38.21-P4-VOTE|${LAB_PROFILE.networkId}|${epoch}|${view}|${height}|${digest}`;
@@ -192,7 +193,12 @@ export class P4ProcessRuntime {
     }
   }
 
-  private inspect(env: ConsensusEnvelope): boolean {
+  /**
+   * `fresh`: a proposal (not a certified commit). v0.5.3: a fresh proposal must
+   * be made in the view this replica has adopted, so a leader of another view
+   * cannot claim it; a commit carries a vote quorum and keeps its own view.
+   */
+  private inspect(env: ConsensusEnvelope, fresh = false): boolean {
     const pk = this.pubkeys.get(env.sender);
     if (!pk || !verifyConsensusMsg(env, pk)) {
       this.lastError = "BAD_ENVELOPE_SIG";
@@ -200,6 +206,10 @@ export class P4ProcessRuntime {
     }
     try {
       const view = Number((JSON.parse(env.payload) as { view?: number }).view ?? 0);
+      if (fresh && view !== this.view) {
+        this.lastError = "VIEW_MISMATCH";
+        return false;
+      }
       const lead = scheduledLeader(env.height, [...this.pubkeys.keys()], view);
       if (env.sender !== lead) {
         this.lastError = "NOT_LEADER";
@@ -245,7 +255,7 @@ export class P4ProcessRuntime {
     this.envByDigest.set(env.payloadDigest, env);
     const early = this.earlyVotes.get(env.payloadDigest) ?? [];
     this.earlyVotes.delete(env.payloadDigest);
-    if (!this.inspect(env)) {
+    if (!this.inspect(env, true)) {
       this.emit({ event: "reject", reason: this.lastError });
       return;
     }
@@ -531,6 +541,7 @@ export class P4ProcessRuntime {
     if (!proved.ok) throw new Error(proved.reason ?? "BATCH_PROVE_FAIL");
     const payload = {
       batchId: `p4n-${height}`,
+      view: this.view,
       txDigest: proved.finalRoot,
       stateRoot: proved.finalRoot,
       epoch: 1,
@@ -568,7 +579,7 @@ export class P4ProcessRuntime {
       return;
     }
     const prev = JSON.parse(last.env.payload) as P4ProposalExtra;
-    const payload: P4ProposalExtra = { ...prev, height, batchId: `replay-${height}` };
+    const payload: P4ProposalExtra = { ...prev, height, batchId: `replay-${height}`, view: this.view };
     const env = sealConsensusMsg(this.identity, "PROPOSAL", 1, height, payload);
     this.onProposal(env);
     this.mesh.broadcast("P4_PROPOSAL", Buffer.from(JSON.stringify(env), "utf8"));
@@ -587,6 +598,7 @@ export class P4ProcessRuntime {
     if (!art.ok) throw new Error("PROVE_FAIL");
     const payload: P4ProposalExtra = {
       batchId: `p4p-${height}`,
+      view: this.view,
       txDigest: art.newRootProof,
       stateRoot: art.newRootProof,
       epoch: 1,
