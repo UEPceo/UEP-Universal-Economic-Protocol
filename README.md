@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.3-public-iot-m2m` (branch `v0.5.3-fixes`, not released) · version on `main`: `0.5.2-public-iot-m2m` (not released) · latest GitHub Release: **v0.5.0**
+> **Version:** `0.5.3` (branch `v0.5.3-fixes`, not released) · version on `main`: `0.5.2-public-iot-m2m` (not released) · latest GitHub Release: **v0.5.0**
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -63,7 +63,7 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 
 | Item | Status |
 |---|---|
-| Version | `0.5.3-public-iot-m2m` on branch `v0.5.3-fixes` (not released): asset registry wired into the ledger, settlement receipts anchored in ledger state, multi-input transactions (UEP-C04), oracle hardening and price gate, category fixes, Marketplace snapshot with receipts — on top of `0.5.2` (settlement engine, category modules, oracle policy layer, on `main`, not released), `0.5.1` and `0.5.0` ([`CHANGELOG.md`](./CHANGELOG.md)). **Latest GitHub Release: `v0.5.0`** |
+| Version | `0.5.3` on branch `v0.5.3-fixes` (not released): asset registry wired into the ledger, settlement receipts anchored in ledger state, multi-input transactions (UEP-C04), oracle hardening and price gate, category fixes, Marketplace snapshot with receipts — on top of `0.5.2` (settlement engine, category modules, oracle policy layer, on `main`, not released), `0.5.1` and `0.5.0` ([`CHANGELOG.md`](./CHANGELOG.md)). **Latest GitHub Release: `v0.5.0`** |
 | Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) (single source of truth; earlier README and CHANGELOG counts disagreed) |
 | Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts and the list of lab files with known issues in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) and [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |

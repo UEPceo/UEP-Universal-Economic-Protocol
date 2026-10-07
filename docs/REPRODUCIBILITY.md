@@ -18,7 +18,7 @@ npm run test:all
 
 `npm run test:all` runs `npm run test:core` (`npm run lint:determinism`, `npm run check:snapshot-compat`, `npm run check:donation`, `npm test` with the protocol, Marketplace, IoT/M2M, settlement, oracle and category suites, `npm run test:poisoned-clock`, the smoke test, the quickstart, the 20k simulation and `test:rust`), then `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 8–15 minutes more, including the first Rust build. CI runs `test:core` on Node.js 22.x and 24.x with Rust 1.85.1 and the labs in a separate job; both are blocking. A non-blocking job runs the 2 known-issue lab files.
 
-Expected results for `0.5.3-public-iot-m2m` (branch `v0.5.3-fixes`, Node.js 22 and 24). Last re-checked with `npm run test:all` on Node.js 22.23 and 24.21 with Rust 1.85.1 on 2026-10-07:
+Expected results for `0.5.3` (branch `v0.5.3-fixes`, Node.js 22 and 24). Last re-checked with `npm run test:all` on Node.js 22.23 and 24.21 with Rust 1.85.1 on 2026-10-07:
 
 | Command | Expected |
 |---|---|

@@ -32,7 +32,7 @@ body:
     attributes:
       label: Version or commit
       description: Release tag or commit SHA (`git rev-parse --short HEAD`).
-      placeholder: v0.4.6-public-iot-m2m or 5eb1afb
+      placeholder: v0.5.3 or 5eb1afb
     validations:
       required: true
   - type: input

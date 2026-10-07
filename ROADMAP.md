@@ -18,7 +18,7 @@ For the layer-by-layer architecture and the current status of each layer, see [`
 
 | Item | Status |
 |---|---|
-| Current version | `0.5.3-public-iot-m2m` on branch `v0.5.3-fixes` (not released): asset registry wired into the ledger, settlement anchors, multi-input transactions, oracle gate, category fixes; on top of `0.5.2-public-iot-m2m` on `main` (not released: settlement engine, category modules hashlock swap/relay/dispute/drip, oracle policy layer) and `0.5.1`. Latest GitHub Release: `v0.5.0` |
+| Current version | `0.5.3` on branch `v0.5.3-fixes` (not released): asset registry wired into the ledger, settlement anchors, multi-input transactions, oracle gate, category fixes; on top of `0.5.2-public-iot-m2m` on `main` (not released: settlement engine, category modules hashlock swap/relay/dispute/drip, oracle policy layer) and `0.5.1`. Latest GitHub Release: `v0.5.0` |
 | Tests | testnet: protocol 144/144, Marketplace + IoT/M2M + HTTP + attack-battery 176/176, settlement 5/5, oracle 7/7, category 4/4; poisoned clock 298; research labs: Rust 115, labs 463 in 98 files (`npm run test:all` runs everything) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process, not a throughput claim) |
 | CI | GitHub Actions: `npm run test:all` on Node.js 22.x and 24.x (blocking); 14 lab files with known issues in a separate non-blocking job |

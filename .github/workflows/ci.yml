@@ -67,6 +67,8 @@ jobs:
       # Offline bech32 check of the public BTC donation address (donations only).
       - name: Donation address check
         run: npm run check:donation
+      - name: Version is numeric semver
+        run: npm run check:version
 
       - name: Core suites (npm run test:core)
         run: npm run test:core
