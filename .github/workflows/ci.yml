@@ -63,6 +63,10 @@ jobs:
       - name: Snapshot compatibility check
         run: npm run check:snapshot-compat
 
+      # Offline bech32 check of the public BTC donation address (donations only).
+      - name: Donation address check
+        run: npm run check:donation
+
       - name: Full suite (npm run test:all)
         run: npm run test:all
 
