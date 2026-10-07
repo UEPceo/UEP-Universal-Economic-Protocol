@@ -1,7 +1,8 @@
 /**
  * v0.5.3 crypto alignment: the ZK witness contract on the transaction path.
  * The ledger binds public inputs 4..11 of a zk-spend to the transaction before
- * calling the configured verifier; roots stay unbound (depth gap, documented);
+ * calling the configured verifier; roots stay unbound by default (opt-in root
+ * binding: zk-root-binding.test.ts);
  * development verifier keys are refused in production.
  */
 import test from "node:test";

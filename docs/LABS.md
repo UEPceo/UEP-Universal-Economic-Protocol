@@ -129,16 +129,31 @@ skipped with a note in the test.
    commitment) to the transaction; the sender signature is still required because
    the circuit does not prove the key-derived id.
 7. **Crypto alignment, what remains (v0.5.3, precise list):**
-   - roots (public inputs 0..3) are not bound to the ledger: core SMT depth 254
-     (full key) vs circuit depth 32 (low bits, `circuitSlotIndex`);
-   - account ids: circuit proves H_ACCOUNT(secret, salt), core uses Ed25519
-     key-derived ids (needs BabyJubJub EdDSA-Poseidon in the circuit);
+   - roots (public inputs 0..3): bound under the opt-in
+     `zkRootBinding: "circuit-projection"` (the ledger trees projected to depth
+     32; leaves, slots and roots match the Rust circuit code, see
+     `src/lab/zk-root-projection.test.ts`). What remains: the projection is
+     undefined once two keys share the low 32 bits (`ZK_SLOT_COLLISION`; by the
+     birthday bound this becomes likely around 2^16 leaves), so a circuit with a
+     deeper tree (new constraints and keys) is needed before this can be the
+     default; balances are bound with blinding 0 (the ledger state is
+     transparent); the default stays "off" for compatibility;
+   - nullifiers: the ledger's spend nullifier is the signed-spend nullifier of
+     (sender, nonce); the circuit proves H_NULLIFIER(secret, H_LEAF(old leaf,
+     blinding)). A real circuit proof therefore cannot match public input 10 of
+     a transaction built by `prepareSpend()`; a zk-spend builder that uses the
+     circuit nullifier is not written yet;
+   - account ids: one adapter (`zkAccountIds()`) for both derivations; the
+     circuit proves H_ACCOUNT(secret, salt), the core uses Ed25519 key-derived
+     ids and binds input 4 to them (needs BabyJubJub EdDSA-Poseidon or an
+     equivalent key binding in the circuit);
    - the circuit proves one nullifier: multi-input transactions (ADR 0004) cannot
      use zk-spend;
    - the ledger verifier hook is synchronous; the Groth16 verifier is the lab
      `uep-zk` binary (asynchronous), so no production verifier is wired;
-   - snapshot restore does not re-verify zk-spend proofs (it re-checks signatures,
-     nullifier sets and commitments);
+   - snapshot restore re-verifies zk-spend transactions (bound inputs 4..11 and
+     the verifier passed in `RestoreOptions.zkSpendVerifier`); roots are not
+     re-checked on restore, because the intermediate trees are not stored;
    - Groth16 keys are development keys from a public seed; a verifier with
      `keyMode: "development"` is refused under NODE_ENV=production (ledger) and the
      lab pins refuse them too (`src/lab/zk-vk-pins.ts`). No ceremony has been run.

@@ -16,7 +16,7 @@
 
 import { Fr } from "./field.ts";
 import { hAccount, hLeaf, hNullifier } from "./hash.ts";
-import { accountIdsFromSecrets } from "./spend-key.ts";
+import { zkAccountIdMatches } from "./zk-tx-adapter.ts";
 import {
   ACCOUNT_DEPTH,
   EMPTY_LEAF,
@@ -185,13 +185,12 @@ export function validateZkSpendInstance(
     // v0.4.5: senderId = key-derived account id of the spend key of (secret, salt).
     // A future circuit has to prove this binding (or the signature) in-circuit.
     // v0.5.1: the v3 id, or the v2 id of the same key for existing accounts.
-    if (opts.accountIdDerivation === "circuit-h-account") {
-      if (!hAccount(w.senderSecret, w.senderSalt).eq(pub.senderId)) errors.push("senderId != H_ACCOUNT(secret, salt) (circuit derivation)");
-    } else {
-      const expectIds = accountIdsFromSecrets(w.senderSecret, w.senderSalt);
-      if (!expectIds.v3.eq(pub.senderId) && !expectIds.v2.eq(pub.senderId)) {
-        errors.push("senderId != accountIdFromSpendKey(spendKey(secret, salt))");
-      }
+    // v0.5.3: one derivation adapter (zkAccountIds) for both forms.
+    const derivation = opts.accountIdDerivation ?? "core-key-derived";
+    if (!zkAccountIdMatches(pub.senderId, w.senderSecret, w.senderSalt, derivation)) {
+      errors.push(derivation === "circuit-h-account"
+        ? "senderId != H_ACCOUNT(secret, salt) (circuit derivation)"
+        : "senderId != accountIdFromSpendKey(spendKey(secret, salt))");
     }
 
     // sender leaves use noteBlinding only

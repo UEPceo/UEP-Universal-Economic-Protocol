@@ -17,7 +17,7 @@ import { hAccount, hLeaf } from "../core/hash.ts";
 import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
 import { deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, type Note } from "../core/note.ts";
-import { assertVerifierAllowed, parseZkSpendPayload, zkBindingMismatches, type ZkSpendVerifier } from "../core/zk-tx-adapter.ts";
+import { assertVerifierAllowed, CircuitTreeProjection, circuitBalanceLeaf, ledgerBalanceKey, ledgerBalanceLeaf, parseZkSpendPayload, zkBindingMismatches, zkLedgerTransition, zkRootMismatches, type ZkLedgerTransition, type ZkRootBindingMode, type ZkSpendVerifier } from "../core/zk-tx-adapter.ts";
 import { canonicalSerializedTx, computeTxCommitment, deserializeTx, MAX_TX_INPUTS, MULTI_INPUT_TX_VERSION, multiInputShapeError, serializeTx, txCommitmentOf, txIdFromCommitment, txNonces, txNullifiers, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
 import { u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
@@ -250,6 +250,15 @@ export type RestoreOptions = {
   allowHeightRegression?: boolean;
   /** v0.5.3 TEST-ONLY: accept a snapshot written by a testOnlyUnboundedHeightAdvance ledger (mode "test-unbounded"). */
   testOnlyUnboundedHeightAdvance?: boolean;
+  /**
+   * v0.5.3: verifier for the zk-spend transactions in the snapshot. Restore
+   * re-checks their bound public inputs (4..11) and re-runs the verifier; a
+   * snapshot with zk-spends and no verifier is refused (ZK_VERIFIER). The
+   * restored ledger keeps the verifier.
+   */
+  zkSpendVerifier?: ZkSpendVerifier;
+  /** v0.5.3: root binding mode of the restored ledger (see the constructor option). */
+  zkRootBinding?: ZkRootBindingMode;
 };
 
 export type UepLedgerSnapshotPayload = ReturnType<UepLedger["snapshotPayload"]>;
@@ -407,6 +416,7 @@ function planPayment(available: Note[], amount: bigint, minFee: bigint): { plan:
 export class UepLedger {
   /** v0.5.3: zk-spend verifier (see src/core/zk-tx-adapter.ts). */
   private zkSpendVerifier: ZkSpendVerifier | undefined;
+  private zkRootBinding: ZkRootBindingMode = "off";
   /** v0.5.2: re-entrancy guard of submit() / submitBatch(). */
   private spendInProgress = false;
   /** Optional security policy gate (TESTNET). */
@@ -524,6 +534,13 @@ export class UepLedger {
      * zk-spend is refused.
      */
     zkSpendVerifier?: ZkSpendVerifier;
+    /**
+     * v0.5.3: "circuit-projection" binds the root public inputs (0..3) of a
+     * zk-spend to the ledger trees projected to circuit depth 32 (old roots
+     * before, new roots after the spend; see zkLedgerTransition). Default "off"
+     * (roots unbound, earlier behaviour).
+     */
+    zkRootBinding?: ZkRootBindingMode;
     /** v0.5.1 TEST-ONLY: advanceHeight(n) accepts n > MAX_BLOCKS_PER_TICK (tests and offline simulations). */
     testOnlyUnboundedHeightAdvance?: boolean;
   }) {
@@ -539,6 +556,10 @@ export class UepLedger {
     if (opts.zkSpendVerifier) {
       assertVerifierAllowed(opts.zkSpendVerifier);
       this.zkSpendVerifier = opts.zkSpendVerifier;
+    }
+    if (opts.zkRootBinding !== undefined) {
+      if (opts.zkRootBinding !== "off" && opts.zkRootBinding !== "circuit-projection") throw new Error("ZK_ROOT_BINDING_INVALID");
+      this.zkRootBinding = opts.zkRootBinding;
     }
     this.unboundedHeightAdvance = testOnlyOption("testOnlyUnboundedHeightAdvance", opts.testOnlyUnboundedHeightAdvance);
     this.installSigningKeys(
@@ -852,11 +873,54 @@ export class UepLedger {
   }
 
   private leafFor(account: Fr, asset: Fr, balance: bigint): Fr {
-    return hLeaf(account, hLeaf(asset, u64ToFr(balance)));
+    return ledgerBalanceLeaf(account, asset, balance);
   }
 
   private leafKey(account: Fr, asset: Fr): Fr {
-    return hAccount(account, asset);
+    return ledgerBalanceKey(account, asset);
+  }
+
+  /**
+   * v0.5.3: the ledger state and nullifier trees projected to circuit depth
+   * (fresh copies). Throws ZK_SLOT_COLLISION if two keys share a slot.
+   */
+  zkCircuitProjection(): { state: CircuitTreeProjection; nullifiers: CircuitTreeProjection } {
+    return { state: CircuitTreeProjection.of(this.state, circuitBalanceLeaf), nullifiers: CircuitTreeProjection.of(this.nullifiers.tree) };
+  }
+
+  /**
+   * v0.5.3: circuit-depth transition (roots and paths) a zk-spend of `tx` must
+   * prove against the current ledger, or an error code.
+   */
+  zkTransitionFor(tx: UepTransaction): { ok: ZkLedgerTransition } | { error: string } {
+    const minFee = this.feeFloorOf(tx.assetId);
+    const tr = transition({ sender: this.balanceOf(tx.senderId, tx.assetId), recipient: this.balanceOf(tx.recipientId, tx.assetId), treasury: this.balanceOf(TREASURY_ID, tx.assetId) }, tx.amount, minFee);
+    if ("err" in tr) return { error: "INSUFFICIENT" };
+    try {
+      const { state, nullifiers } = this.zkCircuitProjection();
+      const t = zkLedgerTransition(state, nullifiers, [
+        { account: tx.senderId, newBalance: tr.ok.new.sender },
+        { account: tx.recipientId, newBalance: tr.ok.new.recipient },
+        { account: TREASURY_ID, newBalance: tr.ok.new.treasury },
+      ], tx.assetId, tx.nullifier);
+      return { ok: t };
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
+  }
+
+  /** v0.5.3: zk-spend checks shared by submit, pending and restore (binding, verifier). */
+  private zkProofError(tx: UepTransaction, verifier: ZkSpendVerifier | undefined): string | undefined {
+    if (!verifier) return "zk-spend proofs need a configured verifier on this ledger.";
+    if (tx.inputNullifiers) return "The spend circuit proves one nullifier; multi-input zk-spends are not supported.";
+    const payload = parseZkSpendPayload(tx.spendProof);
+    if (!payload) return "Malformed zk-spend payload.";
+    const mismatch = zkBindingMismatches(tx, TREASURY_ID, payload);
+    if (mismatch.length > 0) return `zk-spend public inputs ${mismatch.join(",")} do not match the transaction.`;
+    let ok = false;
+    try { ok = verifier.verify(payload) === true; } catch { ok = false; }
+    if (!ok) return "zk-spend proof does not verify.";
+    return undefined;
   }
 
   private setBalance(account: Fr, asset: Fr, balance: bigint) {
@@ -1546,15 +1610,18 @@ export class UepLedger {
       if (nullifierError) return { error: nullifierError };
     } else if (tx.spendProof?.kind === "zk-spend") {
       // v0.5.3: witness contract on the tx path. Bound public inputs first, then the verifier.
-      if (!this.zkSpendVerifier) return { error: { code: "PROOF", message: "zk-spend proofs need a configured verifier on this ledger." } };
-      if (tx.inputNullifiers) return { error: { code: "PROOF", message: "The spend circuit proves one nullifier; multi-input zk-spends are not supported." } };
-      const payload = parseZkSpendPayload(tx.spendProof);
-      if (!payload) return { error: { code: "PROOF", message: "Malformed zk-spend payload." } };
-      const mismatch = zkBindingMismatches(tx, TREASURY_ID, payload);
-      if (mismatch.length > 0) return { error: { code: "PROOF", message: `zk-spend public inputs ${mismatch.join(",")} do not match the transaction.` } };
-      let ok = false;
-      try { ok = this.zkSpendVerifier.verify(payload) === true; } catch { ok = false; }
-      if (!ok) return { error: { code: "PROOF", message: "zk-spend proof does not verify." } };
+      if (this.zkRootBinding === "circuit-projection") {
+        // Roots are checked before the verifier: a proof must attest the projected ledger trees.
+        if (opts.overlay && opts.overlay.size > 0) return { error: { code: "PROOF", message: "A root-bound zk-spend must be the first transaction of a batch." } };
+        const payload = parseZkSpendPayload(tx.spendProof);
+        if (!payload) return { error: { code: "PROOF", message: "Malformed zk-spend payload." } };
+        const t = this.zkTransitionFor(tx);
+        if ("error" in t) return { error: { code: t.error === "INSUFFICIENT" ? "INSUFFICIENT" : "PROOF", message: `zk-spend root binding: ${t.error}` } };
+        const rm = zkRootMismatches(payload, t.ok.roots);
+        if (rm.length > 0) return { error: { code: "PROOF", message: `zk-spend public inputs ${rm.join(",")} do not match the projected ledger roots.` } };
+      }
+      const zkError = this.zkProofError(tx, this.zkSpendVerifier);
+      if (zkError) return { error: { code: "PROOF", message: zkError } };
     } else if (secrets) {
       if (!verifyOwnership(secrets.secret, secrets.salt, tx.senderId)) {
         return { error: { code: "WRONG_OWNER", message: "Spender is not the note owner." } };
@@ -1710,6 +1777,11 @@ export class UepLedger {
     // notes owned by that key's account (same rules as submit()).
     const senderError = this.checkSenderAuth(tx) ?? (tx.spendProof?.kind === "sender-signature" ? this.checkSignedNullifier(tx) : undefined);
     if (senderError) return { error: senderError };
+    // v0.5.3: a queued zk-spend passes the same binding and verifier as submit() (roots are checked at commit).
+    if (tx.spendProof?.kind === "zk-spend") {
+      const zkError = this.zkProofError(tx, this.zkSpendVerifier);
+      if (zkError) return { error: { code: "PROOF", message: zkError } };
+    }
     const resolved = this.canonicalInputs(tx);
     if ("error" in resolved) return resolved;
     const ownerError = this.checkInputOwnerKeys(tx, resolved.inputs);
@@ -1934,6 +2006,8 @@ export class UepLedger {
         maxPendingTransactions: data.maxPendingTransactions,
         ...((data as { ticks?: { mode?: unknown } }).ticks?.mode === "test-unbounded" && opts.testOnlyUnboundedHeightAdvance === true ? { testOnlyUnboundedHeightAdvance: true } : {}),
         assetRegistry: trust.assetRegistry,
+        ...(opts.zkSpendVerifier ? { zkSpendVerifier: opts.zkSpendVerifier } : {}),
+        ...(opts.zkRootBinding ? { zkRootBinding: opts.zkRootBinding } : {}),
       });
     } catch (e) {
       fail("PENDING", (e as Error).message);
@@ -2097,6 +2171,12 @@ export class UepLedger {
       if (multiInputShapeError(tx)) fail("TX_INPUTS");
       for (const nf of txNullifiers(tx)) if (!rebuiltNullifiers.insertOnce(nf)) fail("NULLIFIER_SET");
       if (tx.spendProof?.kind === "sender-signature" && txNullifiers(tx).some((nf, i) => !signedSpendNullifier(tx.senderId, txNonces(tx)[i]!).eq(nf))) fail("TX_NULLIFIER");
+      // v0.5.3: zk-spend proofs are re-verified (bound inputs 4..11 and the verifier), not trusted from the snapshot.
+      if (tx.spendProof?.kind === "zk-spend") {
+        if (!opts.zkSpendVerifier) fail("ZK_VERIFIER", "the snapshot contains zk-spend transactions; restore needs opts.zkSpendVerifier");
+        const zkError = l.zkProofError(tx, opts.zkSpendVerifier);
+        if (zkError) fail("TX_ZK_PROOF", zkError);
+      }
       if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount, l.feeFloorOf(tx.assetId))) fail("TX_VALUE");
       if (!l.assetRecordByFr(tx.assetId)) fail("TX_ASSET");
       if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) fail("TX_NOTES");
