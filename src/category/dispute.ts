@@ -2,7 +2,11 @@
  * uep.service.dispute.v1 — k-of-n arbiter quorum over category HOLDs (v0.5.2).
  * Does not move order escrow itself: swap/relay apply the verdict via DisputeCap.
  * Bond: max(50, 1% of escrow); forfeit 80% respondent / 20% RISK_RESERVE when
- * frivolous on a full loss. Timeout default refunds the buyer (releaseBps 0).
+ * frivolous on a full loss. Timeout default refunds the buyer (releaseBps 0),
+ * unless the category overrides it (v0.5.3, V52-01: relay after KEY_RELEASED
+ * resumes the order instead of refunding the buyer). v0.5.3: per-asset bond
+ * minimum (minBondByAsset) and, on timeout, timeoutBondToRespondentBps of the
+ * claimant's bond compensates the respondent for the freeze (V52-03).
  * Heights (ADR 0002), amounts bigint (ADR 0001).
  */
 import { canonicalJson } from "../core/canonical-json.ts";
@@ -21,6 +25,10 @@ export interface DisputeConfig {
   forfeitRespondentBps: number;
   maxEvidencePerParty: number;
   maxEvidenceBytes: number;
+  /** v0.5.3: per-asset bond floor (asset ids as resolved by the port); falls back to minBond. */
+  minBondByAsset: Readonly<Record<string, bigint>>;
+  /** v0.5.3 (V52-03): share of the claimant's bond paid to the respondent when the case times out. */
+  timeoutBondToRespondentBps: number;
 }
 
 /** evidence 720 (~1 h), resolution 120_960 (~7 d). */
@@ -33,6 +41,8 @@ export const DEFAULT_DISPUTE_CONFIG: DisputeConfig = {
   forfeitRespondentBps: 8000,
   maxEvidencePerParty: 8,
   maxEvidenceBytes: 64 * 1024,
+  minBondByAsset: {},
+  timeoutBondToRespondentBps: 2000,
 };
 
 export interface OpenDisputeBody {
@@ -86,6 +96,10 @@ export interface DisputeCase {
   releaseBps?: number;
   frivolous?: boolean;
   bondForfeited?: boolean;
+  /** v0.5.3: part of the bond paid to the respondent on timeout. */
+  timeoutCompensation?: bigint;
+  /** v0.5.3: the timeout resumed the order under its own rules instead of applying a split. */
+  resumed?: boolean;
   evidence: EvidenceItem[];
 }
 
@@ -126,6 +140,17 @@ export class DisputeCategory {
       throw new Error("DISPUTE_QUORUM");
     }
     if (this.cfg.defaultReleaseBps !== 0 && this.cfg.defaultReleaseBps !== 5000) throw new Error("DISPUTE_DEFAULT");
+    const t = this.cfg.timeoutBondToRespondentBps;
+    if (!Number.isSafeInteger(t) || t < 0 || t > 10_000) throw new Error("DISPUTE_TIMEOUT_BOND_BPS");
+    if (typeof this.cfg.minBond !== "bigint" || this.cfg.minBond < 1n) throw new Error("DISPUTE_MIN_BOND");
+    for (const [asset, min] of Object.entries(this.cfg.minBondByAsset)) {
+      if (typeof min !== "bigint" || min < 1n) throw new Error(`DISPUTE_MIN_BOND:${asset}`);
+    }
+  }
+
+  /** Bond floor for an asset (v0.5.3 per-asset minimum, else minBond). */
+  minBondFor(asset: string): bigint {
+    return Object.prototype.hasOwnProperty.call(this.cfg.minBondByAsset, asset) ? this.cfg.minBondByAsset[asset]! : this.cfg.minBond;
   }
 
   attach(cat: Disputable, cap: import("./disputable.ts").DisputeCap): void {
@@ -163,7 +188,8 @@ export class DisputeCategory {
     const escrowSum = view.escrows.filter((e) => e.asset === body.bondAsset).reduce((s, e) => s + e.amount, 0n);
     if (escrowSum === 0n) throw new Error("DISPUTE_BOND_ASSET");
     const proportional = (escrowSum * BigInt(this.cfg.bondBps) + 9_999n) / 10_000n;
-    const required = proportional > this.cfg.minBond ? proportional : this.cfg.minBond;
+    const floor = this.minBondFor(body.bondAsset);
+    const required = proportional > floor ? proportional : floor;
     if (body.bondAmount < required) throw new Error("DISPUTE_BOND_TOO_LOW");
 
     this.port.openHold(`${disputeId}:bond`, claimant, body.bondAsset, body.bondAmount);
@@ -281,7 +307,33 @@ export class DisputeCategory {
     const c = this.requireCase(disputeId);
     if (c.state !== "OPEN") throw new Error("DISPUTE_CLOSED");
     if (height <= c.resolutionDeadline) throw new Error("DISPUTE_NOT_TIMED_OUT");
-    this.finish(c, this.attachedFor(c), this.cfg.defaultReleaseBps, false);
+    const att = this.attachedFor(c);
+    const outcome = att.cat.timeoutOutcome?.(c.orderId);
+    const compensation = mulDivFloor(c.bondAmount, this.cfg.timeoutBondToRespondentBps, 10_000);
+    const holdId = `${c.disputeId}:bond`;
+    if (compensation > 0n) {
+      this.port.releaseHold(
+        holdId,
+        [
+          { to: c.respondentId, amount: compensation },
+          { to: c.claimantId, amount: c.bondAmount - compensation },
+        ].filter((p) => p.amount > 0n),
+      );
+    } else {
+      this.port.refundHold(holdId);
+    }
+    c.timeoutCompensation = compensation;
+    c.frivolous = false;
+    c.bondForfeited = false;
+    if (outcome === "resume") {
+      att.cat.unfreeze(att.cap, c.orderId, c.disputeId);
+      c.resumed = true;
+    } else {
+      const bps = outcome ?? this.cfg.defaultReleaseBps;
+      if (!Number.isSafeInteger(bps) || bps < 0 || bps > 10_000) throw new Error("DISPUTE_TIMEOUT_OUTCOME");
+      att.cat.apply(att.cap, c.orderId, c.disputeId, bps);
+      c.releaseBps = bps;
+    }
     c.state = "TIMED_OUT";
     return structuredClone(c);
   }

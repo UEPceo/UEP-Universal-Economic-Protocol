@@ -14,27 +14,53 @@ This is a 0.1% protocol fee. The minimum fee is deliberately kept as a compatibi
 
 ## Marketplace fee
 
-The Marketplace applies a business-layer fee on successful settlement only:
+The Marketplace applies a business-layer fee of 3.0 % (`MARKETPLACE_FEE_BPS = 300`,
+`MIN_MARKETPLACE_FEE = 1`, `src/marketplace/economy.ts`) on the **part of an
+escrow that is actually released to a provider**. The fee is computed once, by the
+settlement engine, on the provider amount; whatever returns to the payer carries
+no fee.
 
-| Rule | Value |
-|---|---:|
-| Marketplace fee | 3.0% of successfully settled service value |
-| Minimum fee | 1 unit |
-| Trigger | `SETTLED` only |
-| Cancelled/expired order | No Marketplace fee |
+| Event | Marketplace fee |
+|---|---|
+| Marketplace order `SETTLED` | 3.0 % of the settled value (min 1 unit) |
+| Marketplace dispute resolved as SPLIT | 3.0 % of the part released to the provider only |
+| Category swap settled (`swap.settle`) | 3.0 % of the `fromAsset` leg paid to the market maker |
+| Category relay settled / finalized / dispute verdict | 3.0 % of the price part paid to the provider (custody tranche included) |
+| Category dispute verdict with releaseBps between 0 and 10 000 | 3.0 % of the released part only |
+| Cancelled / expired / refunded order or leg | No fee |
+| Bonds (relay provider bond, dispute bond) | Never charged a fee; slashed or forfeited shares move as transfers (see below) |
+
+Bond transfers are not fees: a proven relay fraud pays 80 % of the provider bond to
+the buyer and 20 % to `RISK_RESERVE`; a frivolous dispute pays 80 % of the bond to the
+respondent and 20 % to `RISK_RESERVE`; since v0.5.3 a wrong key or no key pays 20 %
+of the provider bond to the buyer, and a dispute that times out pays 20 % of the
+claimant's bond to the respondent (`faultBondSlashBps`, `timeoutBondToRespondentBps`).
 
 ## Treasury allocation
 
-The treasury allocation described in the public reference is a simulation model, not a legal or commercial claim.
+Each collected Marketplace fee is split into four buckets (`DEFAULT_TREASURY_ALLOCATION_BPS`
+in `src/marketplace/economy.ts`). The names below are the code names.
 
-| Bucket | Allocation |
-|---|---:|
-| Operations | 40% |
-| Risk reserve | 25% |
-| Development | 20% |
-| Operational buffer | 15% |
+| Bucket (code name) | Allocation | Use in the reference code |
+|---|---:|---|
+| `OPERATIONS` | 40 % | operating costs (accounting only) |
+| `RISK_RESERVE` | 25 % | reserve; also receives the treasury share of slashed / forfeited bonds |
+| `PRODUCT_DEVELOPMENT` | 20 % | development (accounting only) |
+| `DISTRIBUTABLE_PROFIT` | 15 % | funds the drip subsidy budget for nodes (an administrator-signed allowance, `allocateDripBudget`) |
 
-These allocations are for testnet modelling and system design discussion only. They do not constitute a dividend, investor right, token allocation, profit-sharing scheme, or any form of legal promise.
+Earlier versions of this document called the 15 % bucket an "operational buffer";
+the code has always named it `DISTRIBUTABLE_PROFIT`, and in the reference code it is
+spent only on drip subsidies paid to nodes for verified swap / relay work. The name is
+a code identifier: it is **not** a dividend, investor right, token allocation,
+profit-sharing scheme or any form of legal promise, and no holder of any asset has a
+claim on it. These allocations are for testnet modelling and system design discussion
+only.
+
+## What the model does not include
+
+- No native token and no common currency: fees are charged in the asset of the payment.
+- No external payment rail: balances are testnet ledger entries.
+- FX reference rates (ECB, BIS) are display-only and never move value (see `docs/ORACLE.md`).
 
 ## Important limit
 

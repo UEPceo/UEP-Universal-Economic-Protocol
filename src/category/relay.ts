@@ -4,6 +4,10 @@
  * the committed key is published, custodyBps (default 2000 = 20 %) of the price
  * is paid to the provider unless fraud is proven; disputes apply releaseBps to
  * the remaining delivery tranche only.
+ * v0.5.3: V52-01 — a dispute that times out after KEY_RELEASED resumes the
+ * order (fraud window restored for the frozen time, then finalize) instead of
+ * refunding the buyer; V52-02 — KEY_RELEASE_FAULT and expiry without a key pay
+ * faultBondSlashBps of the provider bond to the buyer.
  */
 import { canonicalJson } from "../core/canonical-json.ts";
 import type { ActorAuth } from "../marketplace/identity.ts";
@@ -41,6 +45,8 @@ export interface RelayConfig {
   slashBuyerBps: number;
   /** Share of price locked as custody once the key is published (default 2000 = 20 %). */
   custodyBps: number;
+  /** v0.5.3 (V52-02): share of the provider bond paid to the buyer on a wrong key or no key. */
+  faultBondSlashBps: number;
 }
 
 export const DEFAULT_RELAY_CONFIG: RelayConfig = {
@@ -52,6 +58,7 @@ export const DEFAULT_RELAY_CONFIG: RelayConfig = {
   maxInvalidFraudAttempts: 3,
   slashBuyerBps: 8000,
   custodyBps: 2000,
+  faultBondSlashBps: 2000,
 };
 
 export interface RelayOfferBody {
@@ -102,6 +109,8 @@ export interface RelayOrder {
   settledAt?: number;
   invalidFraudAttempts: Record<string, number>;
   frozenBy?: string;
+  /** v0.5.3: height at which the current freeze started (fraud window is extended on unfreeze). */
+  frozenAt?: number;
 }
 
 export interface ProviderCounters {
@@ -260,6 +269,9 @@ export class RelayCategory implements Disputable {
     if (!Number.isSafeInteger(this.cfg.custodyBps) || this.cfg.custodyBps < 0 || this.cfg.custodyBps > 10_000) {
       throw new Error("RELAY_CUSTODY_BPS");
     }
+    if (!Number.isSafeInteger(this.cfg.faultBondSlashBps) || this.cfg.faultBondSlashBps < 0 || this.cfg.faultBondSlashBps > 10_000) {
+      throw new Error("RELAY_FAULT_SLASH_BPS");
+    }
     this.writeIndex = index.issueWriter("relay");
   }
 
@@ -337,7 +349,7 @@ export class RelayCategory implements Disputable {
     assertHex32(k, "key");
     if (keyCommit(o.orderId, Buffer.from(k, "hex")) !== o.commit.kCommit) {
       this.port.refundHold(`${o.orderId}:price`);
-      this.port.refundHold(`${o.orderId}:bond`);
+      this.slashForFault(o);
       o.state = "KEY_RELEASE_FAULT";
       this.counter(o.offer.providerId).expired += 1;
       return "KEY_RELEASE_FAULT";
@@ -380,7 +392,7 @@ export class RelayCategory implements Disputable {
     if (o.frozenBy) throw new Error("RELAY_FROZEN");
     if (height <= o.offer.keyDeadline) throw new Error("RELAY_NOT_EXPIRED");
     this.port.refundHold(`${o.orderId}:price`);
-    this.port.refundHold(`${o.orderId}:bond`);
+    this.slashForFault(o);
     o.state = "EXPIRED_REFUNDED";
     this.counter(o.offer.providerId).expired += 1;
     return structuredClone(o);
@@ -464,13 +476,29 @@ export class RelayCategory implements Disputable {
     if (o.state !== "FUNDED" && o.state !== "KEY_RELEASED") throw new Error("RELAY_ORDER_STATE");
     if (o.frozenBy) throw new Error("RELAY_FROZEN");
     o.frozenBy = caseId;
+    o.frozenAt = this.port.height();
   }
 
   unfreeze(cap: DisputeCap, orderId: string, caseId: string): void {
     this.caps.check(cap);
     const o = this.mustGet(orderId);
     if (o.frozenBy !== caseId) throw new Error("RELAY_FREEZE_OWNER");
+    // The fraud window did not run while frozen: give the parties the frozen time back.
+    if (o.state === "KEY_RELEASED" && o.fraudWindowEndsAt !== undefined && o.frozenAt !== undefined) {
+      o.fraudWindowEndsAt += Math.max(0, this.port.height() - o.frozenAt);
+    }
     o.frozenBy = undefined;
+    o.frozenAt = undefined;
+  }
+
+  /**
+   * V52-01: once a key matching kCommit is published, an unresolved dispute
+   * must not turn into a buyer refund. The order resumes: the buyer keeps the
+   * objective fraud-proof path, otherwise finalize pays the provider.
+   */
+  timeoutOutcome(orderId: string): "resume" | undefined {
+    const o = this.orders.get(orderId);
+    return o && o.state === "KEY_RELEASED" ? "resume" : undefined;
   }
 
   apply(cap: DisputeCap, orderId: string, caseId: string, releaseBps: number): void {
@@ -483,6 +511,7 @@ export class RelayCategory implements Disputable {
     this.port.refundHold(`${o.orderId}:bond`);
     o.state = "DISPUTE_RESOLVED";
     o.frozenBy = undefined;
+    o.frozenAt = undefined;
     o.settledAt = height;
   }
 
@@ -499,6 +528,23 @@ export class RelayCategory implements Disputable {
       this.counters.set(providerId, c);
     }
     return c;
+  }
+
+  /** V52-02: a wrong key or no key costs the provider faultBondSlashBps of the bond, paid to the buyer. */
+  private slashForFault(o: RelayOrder): void {
+    const bond = o.commit.bond;
+    const toBuyer = mulDivFloor(bond, this.cfg.faultBondSlashBps, 10_000);
+    if (toBuyer === 0n) {
+      this.port.refundHold(`${o.orderId}:bond`);
+      return;
+    }
+    this.port.releaseHold(
+      `${o.orderId}:bond`,
+      [
+        { to: o.offer.buyerId, amount: toBuyer },
+        { to: o.offer.providerId, amount: bond - toBuyer },
+      ].filter((p) => p.amount > 0n),
+    );
   }
 
   private settleHappy(o: RelayOrder, height: number): void {

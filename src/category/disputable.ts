@@ -26,6 +26,13 @@ export interface Disputable {
   freeze(cap: DisputeCap, orderId: string, caseId: string): void;
   unfreeze(cap: DisputeCap, orderId: string, caseId: string): void;
   apply(cap: DisputeCap, orderId: string, caseId: string, releaseBps: number): void;
+  /**
+   * v0.5.3 (V52-01): category-specific outcome when a dispute times out with
+   * no verdict. "resume" = unfreeze the order and let its own objective rules
+   * (e.g. relay fraud window, then finalize) decide; a number = releaseBps to
+   * apply; undefined = the dispute engine's defaultReleaseBps.
+   */
+  timeoutOutcome?(orderId: string): "resume" | number | undefined;
 }
 
 export function newDisputeCapRegistry(): { issue(): DisputeCap; check(cap: DisputeCap): void } {
