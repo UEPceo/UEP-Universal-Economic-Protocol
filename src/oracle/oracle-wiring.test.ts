@@ -1,20 +1,22 @@
 /**
  * v0.5.3: the oracle is wired into the Marketplace (listing price at publish
  * and reserve), the IoT/M2M service (tariff band and buyer budget) and the
- * hashlock swap category (rate check at open). Fail closed when the feed is
- * missing, stale or deviating.
+ * hashlock swap category (rate check at open), each only when the signed
+ * terms opt in. Out of band: refused. Oracle unavailable: the signed
+ * onOracleUnavailable decides (default: follow the signed price).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
 import { act, createTestAuthority, enrollIdentity, publishAs, reserveAs } from "../marketplace/testkit.ts";
+import { listingTerms } from "../marketplace/identity.ts";
 import { IoTM2MService, IOT_M2M_CATEGORY } from "../service/iot-m2m.ts";
 import { registerMachineAs, registerProviderAs, requestAs } from "../service/iot-testkit.ts";
 import { SettlementIndex } from "../category/settlement-index.ts";
 import { SwapCategory, swapHashlock, swapIntentId, type SwapIntentBody } from "../category/swap.ts";
 import { OracleAggregator } from "./index.ts";
 import { OracleRegistry } from "./registry.ts";
-import { OraclePolicyGate } from "./policy-gate.ts";
+import { aggregatedQuoteHash, OraclePolicyGate } from "./policy-gate.ts";
 import { createOracleTestKey, makeQuote, registerOracleTestKey, signQuote, resetOracleSequence } from "./testkit.ts";
 
 const EUR = "uep-test/teur";
@@ -42,40 +44,55 @@ function world(priceE6 = 2_000_000n) {
 
 const listing = (unitPrice: bigint, category = "COMPUTE") => ({ providerId: "p1", title: `energy ${unitPrice} ${category}`, description: "d", category, asset: EUR, unitPrice, capacity: 100n, oracleReference: { baseAssetId: ENERGY, baseUnitsPerQuantity: 10n, maxDeviationPpm: 50_000n } });
 
-test("marketplace: oracle-bound listing price is checked at publication and at every reservation", () => {
+test("marketplace: oracle-bound listing price is checked at publication and at every reservation; the quote hash is stored", () => {
   const w = world();
   // Reference: 10 tENERGY per quantity × 2 = 20 tEUR.
   const ok = publishAs(w.m, listing(20n) as never);
   assert.deepEqual(ok.oracleReference, { baseAssetId: ENERGY, baseUnitsPerQuantity: 10n, maxDeviationPpm: 50_000n });
+  assert.equal(ok.publishOracleCheck?.outcome, "IN_BAND");
   assert.throws(() => publishAs(w.m, listing(30n) as never), /ORACLE_POLICY_REJECTED/);
   enrollIdentity(w.m, "buyer", { asset: EUR, amount: 10_000n });
-  reserveAs(w.m, { listingId: ok.listingId, buyerId: "buyer", quantity: 1n });
-  // Feed goes stale: no further reservations (fail closed).
+  const o = reserveAs(w.m, { listingId: ok.listingId, buyerId: "buyer", quantity: 1n });
+  assert.equal(o.oracleCheck?.outcome, "IN_BAND");
+  assert.equal(o.oracleCheck?.quoteHash, aggregatedQuoteHash(w.gate.quote(ENERGY, EUR, w.height())));
+  // Feed goes stale: by default the signed price is followed and the outcome recorded.
   w.advance(20);
-  assert.throws(() => reserveAs(w.m, { listingId: ok.listingId, buyerId: "buyer", quantity: 1n }), /ORACLE_STALE/);
-  // Fresh feed that moved 50%: the listing price is out of band.
+  const followed = reserveAs(w.m, { listingId: ok.listingId, buyerId: "buyer", quantity: 1n });
+  assert.deepEqual({ ...followed.oracleCheck }, { outcome: "ORACLE_UNAVAILABLE_SIGNED_PRICE", height: w.height(), reason: "ORACLE_STALE" });
+  // Fresh feed that moved 50%: the listing price is out of band (always refused).
   w.publish(ENERGY, EUR, 3_000_000n);
   assert.throws(() => reserveAs(w.m, { listingId: ok.listingId, buyerId: "buyer", quantity: 1n }), /ORACLE_POLICY_REJECTED/);
-  // Without a gate the Marketplace refuses oracle-bound listings.
+  // Without a gate: the default follows the signed price; BLOCK_NEW refuses.
   const admin = createTestAuthority("admin2");
   const bare = new DigitalServicesMarketplace({ adminIdentity: admin.identityId, adminPublicKey: admin.publicKeyHex, height: () => 1 });
-  assert.throws(() => publishAs(bare, listing(20n) as never), /ORACLE_NOT_CONFIGURED/);
+  assert.equal(publishAs(bare, listing(20n) as never).publishOracleCheck?.reason, "ORACLE_NOT_CONFIGURED");
+  const blocking = { ...listing(21n), oracleReference: { baseAssetId: ENERGY, baseUnitsPerQuantity: 10n, maxDeviationPpm: 50_000n, onOracleUnavailable: "BLOCK_NEW" } };
+  assert.throws(() => publishAs(bare, blocking as never), /ORACLE_NOT_CONFIGURED/);
+  // onOracleUnavailable is a signed term: changing it after signing breaks the provider signature.
+  enrollIdentity(w.m, "p1");
+  const signed = act(w.m, "p1", "publish", "", listingTerms(listing(22n) as never));
+  assert.throws(() => w.m.publishListing({ ...listing(22n), oracleReference: { ...listing(22n).oracleReference, onOracleUnavailable: "BLOCK_NEW" } } as never, signed), /SIGNATURE|NOT_AUTHORIZED/);
+  assert.throws(() => publishAs(w.m, { ...listing(23n), oracleReference: { ...listing(23n).oracleReference, onOracleUnavailable: "MAYBE" } } as never), /ORACLE_UNAVAILABLE_POLICY_INVALID/);
 });
 
-test("IoT: tariff must be oracle-bound when required; band and buyer budget are enforced", () => {
+test("IoT: oracle binding is per listing; band and buyer budget are enforced; the service flag is a no-op shim", () => {
   const w = world();
-  assert.throws(() => new IoTM2MService(new DigitalServicesMarketplace({ height: () => 1 }), { requireOracleTariff: true }), /ORACLE_NOT_CONFIGURED/);
+  // Deprecated shim: accepted, no gate needed, does not force listings onto the oracle.
+  assert.equal(new IoTM2MService(new DigitalServicesMarketplace({ height: () => 1 }), { requireOracleTariff: true }).requireOracleTariff, true);
   const iot = new IoTM2MService(w.m, { requireOracleTariff: true });
   registerProviderAs(iot, { providerId: "p1", displayName: "P" });
   registerMachineAs(iot, { machineId: "m1", providerId: "p1", serviceType: "energy", model: "M", endpointRef: "sim://m1" });
   const bound = publishAs(w.m, listing(20n, IOT_M2M_CATEGORY) as never);
   const unbound = publishAs(w.m, { providerId: "p1", title: "plain iot", description: "d", category: IOT_M2M_CATEGORY, asset: EUR, unitPrice: 20n, capacity: 100n });
-  assert.throws(() => requestAs(iot, { buyerId: "b1", listingId: unbound.listingId, machineId: "m1", quantity: 1n }), /IOT_ORACLE_TARIFF_REQUIRED/);
+  assert.ok(requestAs(iot, { buyerId: "b1", listingId: unbound.listingId, machineId: "m1", quantity: 1n }).requestId);
   assert.ok(requestAs(iot, { buyerId: "b1", listingId: bound.listingId, machineId: "m1", quantity: 2n }).requestId);
   // Buyer budget below the oracle cost of the delivered units (2 × 10 tENERGY × 2 = 40).
   assert.throws(() => iot.requestService({ buyerId: "b1", listingId: bound.listingId, machineId: "m1", quantity: 2n, idempotencyKey: "k-budget", authorization: "x", maxCost: 39n }), /ORACLE_POLICY_REJECTED/);
+  const blocking = publishAs(w.m, { ...listing(20n, IOT_M2M_CATEGORY), title: "blocking iot", oracleReference: { baseAssetId: ENERGY, baseUnitsPerQuantity: 10n, maxDeviationPpm: 50_000n, onOracleUnavailable: "BLOCK_NEW" } } as never);
+  // Stale feed: the listing's default follows the signed price.
   w.advance(20);
-  assert.throws(() => requestAs(iot, { buyerId: "b1", listingId: bound.listingId, machineId: "m1", quantity: 1n }), /ORACLE_STALE/);
+  assert.ok(requestAs(iot, { buyerId: "b2", listingId: bound.listingId, machineId: "m1", quantity: 1n }).requestId);
+  assert.throws(() => requestAs(iot, { buyerId: "b3", listingId: blocking.listingId, machineId: "m1", quantity: 1n }), /ORACLE_STALE/);
 });
 
 function openSwap(w: ReturnType<typeof world>, swap: SwapCategory, fromAmount: bigint, toAmount: bigint, nonce: number, oracleBand?: SwapIntentBody["oracleBand"], signedBand: SwapIntentBody["oracleBand"] | null | "same" = "same") {

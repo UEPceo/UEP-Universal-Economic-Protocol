@@ -5,11 +5,11 @@
 import {
   generateKeyPairSync,
   sign as cryptoSign,
-  verify as cryptoVerify,
   createPublicKey,
   createPrivateKey,
   type KeyObject,
 } from "node:crypto";
+import { verifyEd25519 } from "../core/ed25519.ts";
 
 export type NodeRole = "sequencer" | "replica" | "observer";
 
@@ -56,9 +56,8 @@ export function verifyBytes(
 ): boolean {
   try {
     const buf = typeof data === "string" ? Buffer.from(data, "utf8") : data;
-    const sig = Buffer.from(signatureHex, "hex");
-    const pk = publicKeyFromHex(publicKeyHex);
-    return cryptoVerify(null, buf, pk, sig);
+    // v0.5.3: strict verification (prime-order key, canonical R and S).
+    return verifyEd25519(buf, signatureHex.toLowerCase(), publicKeyFromHex(publicKeyHex));
   } catch {
     return false;
   }

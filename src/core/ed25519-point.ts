@@ -90,3 +90,70 @@ export function normalizeEd25519PublicKeyHex(key: unknown): string | undefined {
   if (!/^[0-9a-f]{64}$/.test(hex)) return undefined;
   return isPrimeOrderEd25519Point(Buffer.from(hex, "hex")) ? hex : undefined;
 }
+
+function invert(a: bigint): bigint {
+  return pow(a, P - 2n);
+}
+
+function encode([x, y, z]: Ext): string {
+  const zi = invert(z);
+  const ax = mod(x * zi);
+  let ay = mod(y * zi);
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) { out[i] = Number(ay & 0xffn); ay >>= 8n; }
+  if (ax & 1n) out[31]! |= 0x80;
+  return Buffer.from(out).toString("hex");
+}
+
+/**
+ * The 8 small-order (torsion) points, as encodings with the sign bit cleared
+ * (5 distinct values: points that differ only in the sign of x share one).
+ * Computed once at load: L·P for the first decodable y with a full torsion
+ * component generates the torsion subgroup.
+ */
+const SMALL_ORDER_MASKED: ReadonlySet<string> = (() => {
+  for (let y = 2n; y < 1000n; y++) {
+    const b = new Uint8Array(32);
+    let v = y;
+    for (let i = 0; i < 32; i++) { b[i] = Number(v & 0xffn); v >>= 8n; }
+    const p = decode(b);
+    if (!p) continue;
+    const t = mul(p, L);
+    if (isIdentity(mul(t, 4n))) continue; // need order exactly 8
+    const set = new Set<string>();
+    let acc: Ext = [0n, 1n, 1n, 0n];
+    for (let k = 0; k < 8; k++) {
+      const enc = Buffer.from(encode(acc), "hex");
+      enc[31]! &= 0x7f;
+      set.add(enc.toString("hex"));
+      acc = add(acc, t);
+    }
+    // identity (y=1), order 2 (y=-1), order 4 (y=0, both signs), order 8 (two y values, both signs).
+    if (set.size !== 5) throw new Error("ED25519_TORSION_INIT");
+    return set;
+  }
+  throw new Error("ED25519_TORSION_INIT");
+})();
+
+/**
+ * v0.5.3: cheap check of a signature's R encoding (independent of the crypto
+ * backend): canonical y (< p) and not one of the small-order points. A full
+ * decode is left to the backend's verification equation.
+ */
+export function isAcceptableEd25519R(raw: Uint8Array): boolean {
+  if (raw.length !== 32) return false;
+  const masked = Buffer.from(raw);
+  masked[31]! &= 0x7f;
+  let y = 0n;
+  for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(masked[i]!);
+  if (y >= P) return false;
+  return !SMALL_ORDER_MASKED.has(masked.toString("hex"));
+}
+
+/** v0.5.3: the signature scalar S (little-endian) is canonical: S < L. */
+export function isCanonicalEd25519S(raw: Uint8Array): boolean {
+  if (raw.length !== 32) return false;
+  let s = 0n;
+  for (let i = 31; i >= 0; i--) s = (s << 8n) | BigInt(raw[i]!);
+  return s < L;
+}

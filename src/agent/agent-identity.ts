@@ -5,7 +5,8 @@
  * Agents never hold unlimited wallet authority.
  */
 
-import { createHash, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, createPublicKey, createPrivateKey, type KeyObject } from "node:crypto";
+import { createHash, generateKeyPairSync, sign as cryptoSign, createPrivateKey, type KeyObject } from "node:crypto";
+import { verifyEd25519 } from "../core/ed25519.ts";
 
 export type AgentPermission =
   | "discover_services"
@@ -56,12 +57,8 @@ export function verifyAgent(
   signatureHex: string,
 ): boolean {
   try {
-    const pk = createPublicKey({
-      key: Buffer.from(publicKeyHex, "hex"),
-      type: "spki",
-      format: "der",
-    });
-    return cryptoVerify(null, Buffer.from(body, "utf8"), pk, Buffer.from(signatureHex, "hex"));
+    // v0.5.3: strict verification (prime-order key, canonical R and S).
+    return verifyEd25519(Buffer.from(body, "utf8"), signatureHex.toLowerCase(), publicKeyHex);
   } catch {
     return false;
   }

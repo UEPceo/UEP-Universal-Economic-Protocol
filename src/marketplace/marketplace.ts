@@ -36,7 +36,7 @@ import type { PayoutInstruction, SettlementLedgerPort, SettlementOutcome, Settle
 import { buildMarketplaceSnapshot, migrateMarketplaceSnapshot, verifyMarketplaceSnapshot, verifyMarketplaceSnapshotSignatures, type MarketplaceSnapshot, type MarketplaceSnapshotTrust } from "./marketplace-snapshot.ts";
 import { GENESIS_ANCHOR_HASH, signSettlementAnchorRequest, type SettlementAnchorAuthorization } from "../settlement/anchor.ts";
 import { CATEGORY_ACTIONS, type CategoryAction } from "./identity.ts";
-import { assertOracleReferenceTerms, type OraclePolicyGate, type OracleReferenceTerms } from "../oracle/policy-gate.ts";
+import { assertOracleReferenceTerms, runOracleCheck, type OracleCheckRecord, type OraclePolicyGate, type OracleReferenceTerms } from "../oracle/policy-gate.ts";
 import type { CategoryEscrowPort, CategoryHoldState, CategoryModuleName, CategoryPayout, SubsidyPort } from "./category-escrow.ts";
 import type { TreasuryDripCapability } from "./economy.ts";
 
@@ -147,13 +147,19 @@ export type ServiceListing = {
   windows: ContractWindows;
   /** v0.5.1: evidence terms (attester set and per-contract value cap), when the listing is bound to evidence. */
   evidencePolicy?: ListingEvidencePolicy;
-  /** v0.5.3: oracle reference (signed); the price is checked against the oracle at publication and at every reservation. */
+  /**
+   * v0.5.3: oracle reference (signed). The price is checked against the oracle
+   * at publication and at every reservation; when the oracle is unavailable the
+   * signed `onOracleUnavailable` applies (default FOLLOW_SIGNED_PRICE).
+   */
   oracleReference?: OracleReferenceTerms;
+  /** v0.5.3: outcome of the oracle check at publication. */
+  publishOracleCheck?: OracleCheckRecord;
 };
 
 /** Input of publishListing(). */
-export type ListingInput = Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint" | "domainProfile" | "delayHeights" | "windows" | "evidencePolicy" | "oracleReference"> & {
-  /** v0.5.3: bind the listing price to the oracle (signed; needs a Marketplace `oracleGate`). */
+export type ListingInput = Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint" | "domainProfile" | "delayHeights" | "windows" | "evidencePolicy" | "oracleReference" | "publishOracleCheck"> & {
+  /** v0.5.3: bind the listing price to an oracle band (signed; consulted through the Marketplace `oracleGate`). */
   oracleReference?: OracleReferenceTerms;
   listingId?: string;
   sellerBond?: bigint;
@@ -164,6 +170,12 @@ export type ListingInput = Omit<ServiceListing, "listingId" | "available" | "act
 };
 
 export type ServiceOrder = {
+  /**
+   * v0.5.3: outcome of the oracle check at reserve() for an oracle-bound
+   * listing: IN_BAND with the hash of the aggregated quote used, or
+   * ORACLE_UNAVAILABLE_SIGNED_PRICE (the signed price was followed).
+   */
+  oracleCheck?: OracleCheckRecord;
   orderId: string;
   listingId: string;
   buyerId: string;
@@ -911,12 +923,12 @@ export class DigitalServicesMarketplace {
     const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", signedTerms);
     if (actor !== input.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (input.unitPrice <= 0n || input.capacity <= 0n) throw new Error("INVALID_LISTING_ECONOMICS");
-    // v0.5.3: oracle-bound listing price, checked at publication (fail closed).
+    // v0.5.3: oracle-bound listing price, checked at publication. Out of band: refused. Oracle
+    // unavailable: the signed onOracleUnavailable decides (default: follow the signed price).
     const oracleReference = input.oracleReference !== undefined ? assertOracleReferenceTerms(input.oracleReference) : undefined;
-    if (oracleReference) {
-      if (!this.oracleGate) throw new Error("ORACLE_NOT_CONFIGURED");
-      this.oracleGate.assertServicePrice(oracleReference, input.asset, input.unitPrice, this.now());
-    }
+    const publishOracleCheck = oracleReference
+      ? runOracleCheck(this.oracleGate, oracleReference.onOracleUnavailable, this.now(), (g) => g.assertServicePrice(oracleReference, input.asset, input.unitPrice, this.now()))
+      : undefined;
     const now = this.now();
     const recent = (this.listingAttempts.get(input.providerId) ?? []).filter((t) => now - t < this.baseWindows.listingWindow);
     if (recent.length >= this.maxListingsPerWindow) throw new Error("LISTING_RATE_LIMITED");
@@ -946,6 +958,7 @@ export class DigitalServicesMarketplace {
     const listing: ServiceListing = { ...terms, listingId, available: input.capacity, active: true, sellerBond: input.sellerBond ?? 0n, catalogFingerprint: fingerprint, domainProfile: profile, delayHeights: domainProfile(profile).delayHeights, windows: Object.freeze(this.contractWindowsFor(profile)) };
     if (evidencePolicy) listing.evidencePolicy = Object.freeze(evidencePolicy);
     if (oracleReference) listing.oracleReference = Object.freeze(oracleReference);
+    if (publishOracleCheck) listing.publishOracleCheck = Object.freeze(publishOracleCheck);
     // v0.5.1: the signed terms, the domain profile and the windows cannot change after publication,
     // also not through an in-process reference; only `available` and `active` stay writable.
     for (const key of Object.keys(listing) as Array<keyof ServiceListing>) {
@@ -1036,11 +1049,11 @@ export class DigitalServicesMarketplace {
     // reservations cannot fill it.
     const evidenceValue = grossAmount + gasFee;
     if (listing.evidencePolicy) this.#evidence.checkLock(listing.evidencePolicy, listing.asset, evidenceValue, listing.providerId);
-    // v0.5.3: an oracle-bound listing is re-checked at the reservation height (stale or deviating feed: no reservation).
-    if (listing.oracleReference) {
-      if (!this.oracleGate) throw new Error("ORACLE_NOT_CONFIGURED");
-      this.oracleGate.assertServicePrice(listing.oracleReference, listing.asset, listing.unitPrice, this.now());
-    }
+    // v0.5.3: an oracle-bound listing is re-checked at the reservation height. Out of band: no
+    // reservation. Oracle unavailable: the signed onOracleUnavailable decides; the outcome and the
+    // quote hash are stored on the order. Funds already in flight never depend on the oracle.
+    const ref = listing.oracleReference;
+    const oracleCheck = ref ? runOracleCheck(this.oracleGate, ref.onOracleUnavailable, this.now(), (g) => g.assertServicePrice(ref, listing.asset, listing.unitPrice, this.now())) : undefined;
     listing.available -= input.quantity;
     this.accounts.add(listing.asset, input.buyerId, -deposit);
     this.locked.add(listing.asset, input.buyerId, deposit);
@@ -1068,6 +1081,7 @@ export class DigitalServicesMarketplace {
       domainProfile: listing.domainProfile,
       windows: Object.freeze({ ...listing.windows }),
       version: 1,
+      ...(oracleCheck ? { oracleCheck: Object.freeze(oracleCheck) } : {}),
     };
     // v0.5.1: the contract windows of an order are fixed at reserve() (not writable, frozen).
     Object.defineProperty(order, "windows", { enumerable: true, writable: false, configurable: false });

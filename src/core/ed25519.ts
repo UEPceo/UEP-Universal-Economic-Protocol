@@ -8,6 +8,7 @@
  * Status: IMPLEMENTED / TESTED (testnet signing; no HSM / key custody).
  */
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from "node:crypto";
+import { isAcceptableEd25519R, isCanonicalEd25519S, isPrimeOrderEd25519Point } from "./ed25519-point.ts";
 
 export type PublicKeyLike = KeyObject | string;
 export type PrivateKeyLike = KeyObject | string;
@@ -54,10 +55,40 @@ export function signEd25519(message: string | Uint8Array, privateKey: PrivateKey
   return cryptoSign(null, typeof message === "string" ? Buffer.from(message) : message, toPrivateKey(privateKey)).toString("hex");
 }
 
+/** v0.5.3: bounded cache of public-key point checks (keys repeat; the check costs about 1 ms). */
+const POINT_CHECK_CACHE = new Map<string, boolean>();
+const POINT_CHECK_CACHE_MAX = 8192;
+
+/** v0.5.3: true iff the raw 32-byte key is a canonical prime-order point (cached). */
+export function isStrictEd25519PublicKey(publicKey: PublicKeyLike): boolean {
+  const cacheKey = typeof publicKey === "string" ? publicKey : undefined;
+  if (cacheKey !== undefined) {
+    const hit = POINT_CHECK_CACHE.get(cacheKey);
+    if (hit !== undefined) return hit;
+  }
+  let ok: boolean;
+  try { ok = isPrimeOrderEd25519Point(Buffer.from(publicKeyHexOf(publicKey).slice(-64), "hex")); } catch { ok = false; }
+  if (cacheKey !== undefined) {
+    if (POINT_CHECK_CACHE.size >= POINT_CHECK_CACHE_MAX) POINT_CHECK_CACHE.clear();
+    POINT_CHECK_CACHE.set(cacheKey, ok);
+  }
+  return ok;
+}
+
+/**
+ * Verify an Ed25519 signature. v0.5.3: strict and independent of the Node /
+ * OpenSSL version: the public key must be a canonical prime-order point
+ * (small-order, identity and off-curve keys are refused), R must be a
+ * canonical non-small-order encoding and S must be < L, before the backend
+ * verification runs. Node 22 and Node 24 therefore give the same answer.
+ */
 export function verifyEd25519(message: string | Uint8Array, signatureHex: string, publicKey: PublicKeyLike): boolean {
   if (typeof signatureHex !== "string" || !/^[0-9a-f]{128}$/.test(signatureHex)) return false;
   try {
-    return cryptoVerify(null, typeof message === "string" ? Buffer.from(message) : message, toPublicKey(publicKey), Buffer.from(signatureHex, "hex"));
+    const sig = Buffer.from(signatureHex, "hex");
+    if (!isAcceptableEd25519R(sig.subarray(0, 32)) || !isCanonicalEd25519S(sig.subarray(32, 64))) return false;
+    if (!isStrictEd25519PublicKey(publicKey)) return false;
+    return cryptoVerify(null, typeof message === "string" ? Buffer.from(message) : message, toPublicKey(publicKey), sig);
   } catch {
     return false;
   }

@@ -18,7 +18,10 @@ import {
   verifyMerklePath,
 } from "./rfc9162-merkle.ts";
 import { poseidon2 } from "./poseidon.ts";
-import { signEd25519, verifyEd25519 } from "./ed25519.ts";
+import { generateEd25519KeyPair, signEd25519, verifyEd25519 } from "./ed25519.ts";
+import { isAcceptableEd25519R, isCanonicalEd25519S, isPrimeOrderEd25519Point } from "./ed25519-point.ts";
+import { accountIdFromSpendKey, senderAuthFailure } from "./spend-key.ts";
+import { encodeStringToFr } from "./encoding.ts";
 import { chacha20 } from "../category/relay-crypto.ts";
 
 const hex = (s: string) => Buffer.from(s, "hex");
@@ -117,4 +120,47 @@ test("ChaCha20 (RFC 8439 section 2.4.2) through relay-crypto", () => {
     "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d",
   );
   assert.deepEqual(chacha20(key, 1, nonce, ct), pt);
+});
+
+// v0.5.3: small-order and non-canonical Ed25519 encodings (libsodium's blocklist; public curve constants, not keys).
+const SMALL_ORDER = [
+  "0000000000000000000000000000000000000000000000000000000000000000", // y = 0 (order 4)
+  "0100000000000000000000000000000000000000000000000000000000000000", // identity
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05", // order 8
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", // order 8
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // y = p - 1 (order 2)
+  "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // y = p (non-canonical 0)
+  "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // y = p + 1 (non-canonical 1)
+];
+
+test("Ed25519 strict verification: small-order keys and R, and non-canonical S, are refused on every Node version", () => {
+  const zeroS = "00".repeat(32);
+  for (const enc of SMALL_ORDER) {
+    assert.equal(isAcceptableEd25519R(hex(enc)), false, enc);
+    assert.equal(isPrimeOrderEd25519Point(hex(enc)), false, enc);
+    // Key = small-order point, R = identity, S = 0: Node 22 accepted this for any message.
+    assert.equal(verifyEd25519("any message", SMALL_ORDER[1]! + zeroS, enc), false, enc);
+    assert.equal(verifyEd25519("another", enc + zeroS, SMALL_ORDER[1]!), false, enc);
+  }
+  // A normal key still verifies; a small-order R or a non-canonical S (S + L) breaks it.
+  const k = generateEd25519KeyPair();
+  const sig = signEd25519("hello", k.privateKey);
+  assert.equal(verifyEd25519("hello", sig, k.publicKeyHex), true);
+  for (const enc of SMALL_ORDER) assert.equal(verifyEd25519("hello", enc + sig.slice(64), k.publicKeyHex), false);
+  const L = 2n ** 252n + 27742317777372353535851937790883648493n;
+  const sBytes = Buffer.from(sig.slice(64), "hex");
+  let sVal = 0n;
+  for (let i = 31; i >= 0; i--) sVal = (sVal << 8n) | BigInt(sBytes[i]!);
+  const big = sVal + L;
+  const out = Buffer.alloc(32);
+  let v = big;
+  for (let i = 0; i < 32; i++) { out[i] = Number(v & 0xffn); v >>= 8n; }
+  assert.equal(isCanonicalEd25519S(out), false);
+  assert.equal(verifyEd25519("hello", sig.slice(0, 64) + out.toString("hex"), k.publicKeyHex), false);
+});
+
+test("Ed25519 strict verification: a sender key that is a small-order point never authorizes a transaction", () => {
+  const ident = SMALL_ORDER[1]!;
+  const tx = { networkId: "uep-testnet-1", domainId: "EARTH", txId: encodeStringToFr("tx-1"), senderId: accountIdFromSpendKey(ident), transactionCommitment: encodeStringToFr("c-1"), senderAuth: { publicKey: ident, signature: ident + "00".repeat(32) } };
+  assert.equal(senderAuthFailure(tx), "SIGNATURE");
 });

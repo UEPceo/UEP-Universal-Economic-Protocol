@@ -6,6 +6,7 @@ import { DEFAULT_ORACLE_POLICY, PPM_SCALE } from "./types.ts";
 import type { OraclePolicy, OracleQuote, OracleReject, SignedOracleQuote } from "./types.ts";
 import { OracleRegistry } from "./registry.ts";
 import { OracleVerifier } from "./verifier.ts";
+import { publicKeyHexOf } from "../core/ed25519.ts";
 
 export * from "./types.ts";
 export * from "./canonical.ts";
@@ -94,29 +95,49 @@ export class OracleAggregator {
       };
     }
 
-    const freshAll = list.filter((q) => height - q.observedAtHeight <= maxStaleness);
+    // v0.5.3: only quotes of sources that are registered ACTIVE now, signed with their current key,
+    // count (a revoked or suspended source, or a rotated-out key, stops counting immediately).
+    const current = list.filter((q) => this.countsNow(q));
+    const freshAll = current.filter((q) => height - q.observedAtHeight <= maxStaleness);
     if (freshAll.length === 0) {
       return {
         ok: false,
-        code: "STALE",
-        message: `All oracle quotes for '${baseAssetId}/${quoteAssetId}' are stale (older than ${maxStaleness} heights).`,
+        code: current.length === 0 ? "NO_SOURCES" : "STALE",
+        message: current.length === 0
+          ? `No quote of an active source with its current key for '${baseAssetId}/${quoteAssetId}'.`
+          : `All oracle quotes for '${baseAssetId}/${quoteAssetId}' are stale (older than ${maxStaleness} heights).`,
       };
     }
 
     // v0.5.3 (V-1): independent sources are counted by key, not by source id.
-    const fresh = this.dedupeByKey(freshAll);
-    if (fresh.length < minSources) {
+    const deduped = this.dedupeByKey(freshAll);
+    if (deduped.length < minSources) {
       return {
         ok: false,
         code: "NO_SOURCES",
-        message: `Insufficient independent sources: requires ≥ ${minSources}, but only ${fresh.length} fresh source(s) available.`,
+        message: `Insufficient independent sources: requires ≥ ${minSources}, but only ${deduped.length} fresh source(s) available.`,
       };
     }
 
-    const sorted = [...fresh].sort((a, b) => (a.priceE6 < b.priceE6 ? -1 : a.priceE6 > b.priceE6 ? 1 : 0));
+    // v0.5.3: an outlier is dropped on its own instead of rejecting the whole feed. Sources farther
+    // than the pair band from the weighted median of all fresh sources are left out; the feed is
+    // usable while at least minSources remain and those agree within the band. With two sources
+    // that disagree beyond the band no outlier can be told apart: DEVIATION (oracle unavailable).
+    const all = [...deduped].sort((a, b) => (a.priceE6 < b.priceE6 ? -1 : a.priceE6 > b.priceE6 ? 1 : 0));
+    const center = this.policy.useWeightedMedian ? this.computeWeightedMedian(all) : all[Math.floor(all.length / 2)]!.priceE6;
+    if (center <= 0n) return { ok: false, code: "DEVIATION", message: "Oracle median price is not positive." };
+    const within = (p: bigint) => ((p > center ? p - center : center - p) * PPM_SCALE) / center <= maxDevPpm;
+    const sorted = all.filter((q) => within(q.priceE6));
+    const fresh = sorted;
+    if (sorted.length < minSources) {
+      return {
+        ok: false,
+        code: "DEVIATION",
+        message: `Only ${sorted.length} source(s) within ${maxDevPpm} PPM of the median; requires ≥ ${minSources}.`,
+      };
+    }
     const minPrice = sorted[0]!.priceE6;
     const maxPrice = sorted[sorted.length - 1]!.priceE6;
-
     if (minPrice > 0n) {
       const devPpm = ((maxPrice - minPrice) * PPM_SCALE) / minPrice;
       if (devPpm > maxDevPpm) {
@@ -161,6 +182,18 @@ export class OracleAggregator {
     };
   }
 
+  /** v0.5.3: the quote's source is registered ACTIVE and the quote is signed with its current key (when signed). */
+  private countsNow(q: OracleQuote | SignedOracleQuote): boolean {
+    const reg = this.registry.getSource(q.source);
+    if (!reg) return !this.policy.requireSignatures;
+    if (reg.status !== "ACTIVE") return false;
+    const signer = (q as SignedOracleQuote).signerPublicKeyHex;
+    if (signer !== undefined) {
+      try { return publicKeyHexOf(signer) === reg.publicKeyHex; } catch { return false; }
+    }
+    return !this.policy.requireSignatures;
+  }
+
   /** One quote per signing key (registered key, else the quote's signer key, else the source id); the latest observation wins. */
   private dedupeByKey(quotes: (OracleQuote | SignedOracleQuote)[]): (OracleQuote | SignedOracleQuote)[] {
     const byKey = new Map<string, OracleQuote | SignedOracleQuote>();
@@ -197,10 +230,13 @@ export class OracleAggregator {
     });
     const weights = this.effectiveWeights(raw);
     const totalWeight = weights.reduce((a, b) => a + b, 0n);
-    // Lower weighted median: first price where the accumulated weight reaches half (2*acc >= total).
+    // Weighted median: first price where the accumulated weight reaches half. v0.5.3: at an exact
+    // half split (e.g. two sources of equal effective weight) the result is the floor of the mean of
+    // the two middle prices, so neither the lower nor the higher quote wins by position.
     let accumulated = 0n;
     for (const [i, q] of sortedQuotes.entries()) {
       accumulated += weights[i]!;
+      if (2n * accumulated === totalWeight && i + 1 < sortedQuotes.length) return (q.priceE6 + sortedQuotes[i + 1]!.priceE6) / 2n;
       if (2n * accumulated >= totalWeight) return q.priceE6;
     }
     return sortedQuotes[Math.floor(sortedQuotes.length / 2)]!.priceE6;

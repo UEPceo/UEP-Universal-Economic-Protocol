@@ -30,7 +30,7 @@
  * profile (EARTH 0, MOON 1, MARS 602 heights). No clock is read here.
  */
 import { testOnlyOption } from "../core/test-only.ts";
-import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, type KeyObject } from "node:crypto";
 import { encodeCanonicalCbor } from "./iot-m2m-codec.ts";
 import { contentHash } from "./content-hash.ts";
 import { tupleKey } from "../core/composite-key.ts";
@@ -38,6 +38,8 @@ import type { CategoryServiceAccess, DigitalServicesMarketplace, ServiceOrder } 
 import type { ActorAuth } from "../marketplace/identity.ts";
 import type { TransitionClock } from "../core/height.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
+import { runOracleCheck } from "../oracle/policy-gate.ts";
+import { verifyEd25519 } from "../core/ed25519.ts";
 
 /** Default telemetry age window, in heights (60 = 5 min at 5 s blocks). */
 export const DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS = 60;
@@ -130,9 +132,11 @@ export type IoTSettlement = ReturnType<DigitalServicesMarketplace["settle"]> & {
 
 export type IoTM2MConfig = {
   /**
-   * v0.5.3: IoT tariffs must be oracle-bound. Every IoT request needs a listing
-   * with `oracleReference` and passes the oracle tariff check (band and buyer
-   * budget) through the Marketplace `oracleGate` (fail closed).
+   * DEPRECATED v0.5.3-pre compatibility shim, no effect. Oracle binding is
+   * per listing: an IoT listing opts in with a signed `oracleReference`
+   * (band, optional `onOracleUnavailable`), and only such listings are
+   * tariff-checked. A service-wide flag no longer forces every listing onto
+   * the oracle.
    */
   requireOracleTariff?: boolean;
   /**
@@ -205,8 +209,8 @@ export function signIoTTelemetry(telemetry: IoTTelemetry, privateKey: KeyObject)
 function verifyIoTTelemetrySignature(telemetry: IoTTelemetry, publicKeyHex: string): boolean {
   if (!telemetry.signature) return false;
   try {
-    const publicKey = createPublicKey({ key: Buffer.from(publicKeyHex, "hex"), type: "spki", format: "der" });
-    return cryptoVerify(null, encodeCanonicalCbor(unsignedTelemetry(telemetry)), publicKey, Buffer.from(telemetry.signature, "hex"));
+    // v0.5.3: strict verification (prime-order key, canonical R and S), same answer on every Node version.
+    return verifyEd25519(encodeCanonicalCbor(unsignedTelemetry(telemetry)), telemetry.signature.toLowerCase(), publicKeyHex);
   } catch {
     return false;
   }
@@ -257,13 +261,12 @@ export class IoTM2MService {
   private readonly orders: CategoryServiceAccess;
 
   readonly marketplace: DigitalServicesMarketplace;
-  /** v0.5.3: every IoT request must be oracle-bound (see IoTM2MConfig.requireOracleTariff). */
+  /** Deprecated shim (see IoTM2MConfig.requireOracleTariff); kept readable, no effect. */
   readonly requireOracleTariff: boolean;
 
   constructor(marketplace: DigitalServicesMarketplace, config: IoTM2MConfig = {}) {
     this.marketplace = marketplace;
     this.requireOracleTariff = config.requireOracleTariff === true;
-    if (this.requireOracleTariff && !marketplace.oracleGate) throw new Error("ORACLE_NOT_CONFIGURED");
     const clock: TransitionClock = marketplace.transitionClock;
     // v0.5.1 compatibility: with a height-based Marketplace a legacy `now` is ignored (deprecated); time is the Marketplace height.
     if (config.now !== undefined && config.testOnlyNowMs !== undefined) throw new Error("CLOCK_CONFIG_CONFLICT: `now` is the deprecated alias of `testOnlyNowMs`; pass one");
@@ -353,13 +356,17 @@ export class IoTM2MService {
     if (input.quantity <= 0n) throw new Error("IOT_INVALID_QUANTITY");
     if (!input.idempotencyKey) throw new Error("IOT_IDEMPOTENCY_KEY_REQUIRED");
 
-    // v0.5.3: oracle tariff (band + optional buyer budget), before any state is touched.
-    if (listing.oracleReference || this.requireOracleTariff) {
-      if (!listing.oracleReference) throw new Error("IOT_ORACLE_TARIFF_REQUIRED");
-      const gate = this.marketplace.oracleGate;
-      if (!gate) throw new Error("ORACLE_NOT_CONFIGURED");
+    // v0.5.3: oracle tariff (band + optional buyer budget) for listings that opt in with a signed
+    // oracleReference, before any state is touched. Oracle unavailable: the listing's signed
+    // onOracleUnavailable decides (default: follow the signed price).
+    const ref = listing.oracleReference;
+    if (ref) {
       if (input.maxCost !== undefined && (typeof input.maxCost !== "bigint" || input.maxCost < 0n)) throw new Error("IOT_MAX_COST_INVALID");
-      gate.assertIotTariff(listing.oracleReference, listing.asset, listing.unitPrice, input.quantity, this.marketplace.transitionClock.tick(), input.maxCost);
+      const height = this.marketplace.transitionClock.tick();
+      runOracleCheck(this.marketplace.oracleGate, ref.onOracleUnavailable, height, (g) => {
+        g.assertIotTariff(ref, listing.asset, listing.unitPrice, input.quantity, height, input.maxCost);
+        return g.quote(ref.baseAssetId, listing.asset, height);
+      });
     }
     const reservation = { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, signature: input.authorization };
     // Fail closed before touching any state: registered buyer + valid signature.

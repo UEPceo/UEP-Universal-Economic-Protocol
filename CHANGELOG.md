@@ -24,6 +24,8 @@ Package version `0.5.3-public-iot-m2m`. Fixes and wiring on top of 0.5.2. **Not 
 
 - One signing key counts as one source; re-registering a source with another key is refused (explicit `rotateSourceKey`); quote payload v2 carries the `networkId` with a locally derived domain separator (V52-04); capped weighted median; signed `SettlementAuthorization` v2; legacy v0.1 quotes only through an explicit shim.
 - **`OraclePolicyGate`** wired into Marketplace listings and reservations, IoT tariffs and hashlock swaps.
+- **No-dependency rule:** listings (and IoT listings) opt in per listing with signed `oracleReference`; the signed `onOracleUnavailable` (`FOLLOW_SIGNED_PRICE` by default, or `BLOCK_NEW`) decides what new operations do when the oracle is unavailable, and an out-of-band quote still refuses them. Orders, listings and swaps store the check outcome with the hash of the aggregated quote used. Refunds, timeouts, disputes, settlement and transfers never consult the oracle (`oracle-liveness.test.ts`). IoT `requireOracleTariff` is a deprecated no-op shim.
+- **Aggregation:** an outlier source is dropped on its own instead of rejecting the feed; only `ACTIVE` sources signed with their current key count (revocation and key rotation take effect immediately); at an exact half split of weight the price is the floor of the mean of the two middle quotes.
 - **Swaps: explicit opt-in.** The swap rate check runs only when the buyer signs an `oracleBand` in the intent; a registry pair policy or pause no longer binds a swap, and `setPairPaused` no longer creates a pair policy. The outcome (with the aggregated quote hash) is stored on the swap. `requireOracle` / `maxSkewPpm` constructor options are deprecated shims.
 - Data-source policy in [`docs/ORACLE.md`](./docs/ORACLE.md): FX reference rates are display-only; future physical-trigger adapters need at least 2 origins and k-of-n signed evidence; NWS and IMF are not used; optional LEI checked offline (`isValidLei()`, ISO 17442); a leap-seconds file is deferred and would only ever be used in an exporter.
 
@@ -38,6 +40,7 @@ Package version `0.5.3-public-iot-m2m`. Fixes and wiring on top of 0.5.2. **Not 
 
 ### Cryptography, labs and tooling
 
+- **Strict Ed25519 everywhere:** `verifyEd25519` refuses small-order, identity and non-canonical public keys, small-order or non-canonical R and S ≥ L before calling the backend, so Node 22 and Node 24 give the same answer. Sender authorization, oracle quotes, Marketplace actions, IoT telemetry and agent signatures all go through it. Vectors in `src/core/crypto-vectors.test.ts`.
 - Published test vectors: RFC 9162 (roots, inclusion, consistency, exhaustive up to 40 leaves), RFC 8032 Ed25519, FIPS 180-4 SHA-256, RFC 5869 HKDF, RFC 8439 ChaCha20, circomlib Poseidon. New RFC 9162 consistency proofs in `src/core/rfc9162-merkle.ts`.
 - Witness contract: core account-id derivation by default, circuit derivation in an explicit mode; the two skipped witness-contract tests are enabled.
 - Rust lab crates `uep-23-state-transition` and `uep-24-atomic` compile on the pinned arkworks 0.3 API and run in `npm run test:rust`.

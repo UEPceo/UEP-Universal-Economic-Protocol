@@ -18,19 +18,54 @@ in-process; policy helpers are pure evaluation.
 ## Wiring (v0.5.3)
 
 The oracle is consulted on three real paths through `OraclePolicyGate`
-(`src/oracle/policy-gate.ts`, tests `src/oracle/oracle-wiring.test.ts`). The
-gate requires a signature-checking aggregator and fails closed.
+(`src/oracle/policy-gate.ts`, tests `src/oracle/oracle-wiring.test.ts` and
+`src/oracle/oracle-liveness.test.ts`). The gate requires a signature-checking
+aggregator.
+
+**No-dependency rule.** The oracle is never required for value already in
+flight: funding, delivery, settlement, cancellation, refunds, disputes and
+their timeouts, reservation expiry, IoT holds and settlement, swap settle and
+expire, and ledger transfers never consult it (`oracle-liveness.test.ts` runs
+all of them with the oracle healthy, stale, down, paused and with one
+outlier). The oracle can only gate *new* operations, and only when the
+operation's own signed terms opt in:
+
+- an available quote outside the signed band rejects the new operation
+  (`ORACLE_POLICY_REJECTED`);
+- when the oracle is unavailable (no gate, stale, unknown or paused pair, no
+  sources, or fewer than `minSources` agreeing sources), the signed
+  `onOracleUnavailable` decides: `FOLLOW_SIGNED_PRICE` (default) continues at
+  the signed price, `BLOCK_NEW` refuses new operations only;
+- the outcome is stored with the order / swap (`oracleCheck`: `IN_BAND` with
+  the hash of the aggregated quote used, or `ORACLE_UNAVAILABLE_SIGNED_PRICE`
+  with the reason), so the decision can be replayed.
+
+**Prices between assets are for bands and policies only.** An oracle price is
+always a price between two concrete assets. It is used to check a signed
+price against a band or to evaluate a policy, never as a unit of account: no
+balance, fee, receipt or settlement is denominated in or converted through a
+reference asset. UEP has no native token and no common currency.
+
+**Aggregation.** Only quotes of sources that are registered `ACTIVE` now and
+signed with their current key count. One signing key counts once. A source
+farther than the pair band from the weighted median is dropped on its own;
+the feed answers while at least `minSources` sources remain and agree within
+the band. With two sources that disagree beyond the band no outlier can be
+identified and the feed is unavailable (`DEVIATION`). At an exact half split
+of weight (for example two sources) the price is the floor of the mean of the
+two middle quotes.
 
 - **Marketplace.** `new DigitalServicesMarketplace({ oracleGate })`. A listing
   may carry signed `oracleReference = { baseAssetId, baseUnitsPerQuantity,
-  maxDeviationPpm }`; its `unitPrice` must stay within the band of the oracle
-  price of `baseUnitsPerQuantity` base units in the listing asset, at
-  publication and again at every `reserve()`. A stale, missing or moved feed
-  blocks new reservations (`ORACLE_STALE`, `ORACLE_POLICY_REJECTED`, …).
-- **IoT/M2M.** `new IoTM2MService(marketplace, { requireOracleTariff: true })`
-  requires every IoT listing to be oracle-bound and checks the tariff band
-  plus the buyer's optional `maxCost` budget (`evaluateIotTariff`) before any
-  state is touched. Oracle-bound IoT listings are checked even without the flag.
+  maxDeviationPpm, onOracleUnavailable? }`; its `unitPrice` must stay within
+  the band of the oracle price of `baseUnitsPerQuantity` base units in the
+  listing asset, at publication (`listing.publishOracleCheck`) and at every
+  `reserve()` (`order.oracleCheck`).
+- **IoT/M2M.** Oracle binding is per listing: an IoT listing with
+  `oracleReference` is tariff-checked (band plus the buyer's optional
+  `maxCost` budget, `evaluateIotTariff`) before any state is touched. The
+  service option `requireOracleTariff` is a deprecated compatibility shim
+  with no effect.
 - **Hashlock swap** (`uep.service.swap.v1`, the Marketplace category; not the
   AMM lab pool). `new SwapCategory(port, index, networkId, { priceGate })`.
   The rate check is an explicit per-swap opt-in: the buyer signs
@@ -42,8 +77,8 @@ gate requires a signature-checking aggregator and fails closed.
   constructor options `maxSkewPpm` and `requireOracle` are deprecated shims
   with no effect on which swaps are checked.
 
-The oracle never moves funds and is not on the ledger spend path; it decides
-whether a Marketplace, IoT or swap operation may proceed.
+The oracle never moves funds and is not on the ledger spend path; it can only
+decide whether a new, opted-in Marketplace, IoT or swap operation proceeds.
 
 ## v0.5.3 hardening (EXP-063, V-1 … V-5; review item V52-04)
 

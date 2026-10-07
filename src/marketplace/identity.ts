@@ -122,12 +122,15 @@ export function signAction(a: ActionAuthorization, privateKey: PrivateKeyLike): 
  * contract terms and are signed too; EARTH listings without an evidence
  * policy keep the previous terms (and signatures).
  */
-export function listingTerms(input: { title: string; description: string; category: string; asset: string; unitPrice: bigint; capacity: bigint; sellerBond?: bigint; domainProfile?: string; evidencePolicy?: { attesterSetId: string; maxValuePerContract: bigint }; oracleReference?: { baseAssetId: string; baseUnitsPerQuantity: bigint; maxDeviationPpm: bigint } }): Record<string, unknown> {
+export function listingTerms(input: { title: string; description: string; category: string; asset: string; unitPrice: bigint; capacity: bigint; sellerBond?: bigint; domainProfile?: string; evidencePolicy?: { attesterSetId: string; maxValuePerContract: bigint }; oracleReference?: { baseAssetId: string; baseUnitsPerQuantity: bigint; maxDeviationPpm: bigint; onOracleUnavailable?: string } }): Record<string, unknown> {
   const terms: Record<string, unknown> = { title: input.title, description: input.description, category: input.category, asset: input.asset, unitPrice: input.unitPrice, capacity: input.capacity, sellerBond: input.sellerBond ?? 0n };
   if (input.domainProfile !== undefined && input.domainProfile !== "EARTH") terms.domainProfile = input.domainProfile;
   if (input.evidencePolicy !== undefined) terms.evidencePolicy = { attesterSetId: input.evidencePolicy.attesterSetId, maxValuePerContract: input.evidencePolicy.maxValuePerContract };
   // v0.5.3: oracle reference terms are signed with the listing (only when present, so older signatures stay valid).
-  if (input.oracleReference !== undefined) terms.oracleReference = { baseAssetId: input.oracleReference.baseAssetId, baseUnitsPerQuantity: input.oracleReference.baseUnitsPerQuantity, maxDeviationPpm: input.oracleReference.maxDeviationPpm };
+  if (input.oracleReference !== undefined) {
+    const o = input.oracleReference;
+    terms.oracleReference = { baseAssetId: o.baseAssetId, baseUnitsPerQuantity: o.baseUnitsPerQuantity, maxDeviationPpm: o.maxDeviationPpm, ...(o.onOracleUnavailable !== undefined ? { onOracleUnavailable: o.onOracleUnavailable } : {}) };
+  }
   return terms;
 }
 
