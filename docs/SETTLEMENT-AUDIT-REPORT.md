@@ -1,7 +1,4 @@
-# Settlement engine notes (adapted from incoming settlement package)
+# Moved
 
-Status: historical. Unsupported claims from the incoming package
-("production-ready", ">10,000 tx/sec", "zero supply-chain risk", "Mathematical
-value conservation" as a formal proof) are **not** claims of this repository.
-The integrated engine is a testnet reference payout executor with explicit
-conservation checks in code; see `docs/SETTLEMENT.md`.
+This file was renamed in v0.5.3 to [`docs/history/SETTLEMENT-INTEGRATION-NOTES.md`](./history/SETTLEMENT-INTEGRATION-NOTES.md).
+It contains internal integration notes for the settlement engine; it is not an audit report.

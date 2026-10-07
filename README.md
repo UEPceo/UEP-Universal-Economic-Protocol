@@ -2,9 +2,11 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.2-public-iot-m2m` (on `main`)
+> **Version:** `0.5.3-public-iot-m2m` (branch `v0.5.3-fixes`, not released) · version on `main`: `0.5.2-public-iot-m2m` (not released) · latest GitHub Release: **v0.5.0**
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
+
+> **What the CI badge covers:** the blocking jobs only — the core suites (`npm run test:core`: lint, snapshot compatibility, donation-address check, protocol, Marketplace, settlement, oracle, category, smoke, quickstart, 20k simulation, Rust) on Node.js 22.x and 24.x, and every lab file **not** listed in [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) (`npm run test:lab`). The labs with known issues run in a separate non-blocking job and do not change the badge. A green badge is a test result, not a security claim.
 
 UEP (Universal Economic Protocol) is a research and engineering project exploring a neutral economic protocol for exchanging **services, resources and multiple asset types** without requiring a single universal UEP currency.
 
@@ -38,20 +40,39 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | **Planned** | A roadmap milestone with deliverables and exit criteria ([`ROADMAP.md`](./ROADMAP.md)); not yet in code. |
 | **Research / future vision** | A direction of inquiry, such as delay-tolerant or interplanetary settlement. No settled design, nothing operational. |
 
-### Current status (v0.5.2)
+### Modules at a glance
+
+| Module | Path | Status | Since | Tests |
+|---|---|---|---|---|
+| [Core primitives](docs/MODULES.md#1-core-primitives-srccore) | `src/core` | Implemented (testnet) | 0.3.0 | `test:protocol` |
+| [Testnet ledger + snapshots](docs/MODULES.md#2-testnet-reference-ledger-srctestnet) | `src/testnet` | Implemented (testnet) | 0.3.0 | `test:protocol` |
+| [Identity / wallet](docs/MODULES.md#3-identity--wallet-srcidentity) | `src/identity` | Implemented (testnet) | 0.3.0 | `test:protocol` |
+| [Marketplace (+ treasury, paymaster)](docs/MODULES.md#6-marketplace-srcmarketplace) | `src/marketplace` | Implemented (testnet) | 0.3.0 | `test:marketplace` |
+| [Settlement engine + ledger anchors](docs/MODULES.md#8-settlement-engine-and-ledger-anchors-srcsettlement) | `src/settlement` | Implemented (testnet) | 0.5.2 | `test:settlement` |
+| [Hashlock swap / relay / dispute / drip](docs/MODULES.md#9-category-modules-srccategory) | `src/category` | Implemented (testnet) | 0.5.2 | `test:category` |
+| [Oracle policy layer + gate](docs/MODULES.md#10-oracle-policy-layer-srcoracle) | `src/oracle` | Implemented (testnet) | 0.5.2 | `test:oracle` |
+| [IoT / M2M](docs/MODULES.md#11-iot--m2m-service-srcserviceiot-m2mts) | `src/service/iot-m2m*` | Implemented (testnet) | 0.4.0 | `test:marketplace` |
+| [Service/API lab](docs/MODULES.md#12-serviceapi-lab-srcserviceuep-ts-storage-adapters-groth16-spend-queuets) | `src/service/uep-*` | Experimental (lab) | 0.5.0 | `test:lab` |
+| [Consensus / node / economic labs, AMM lab pool](docs/MODULES.md#14-consensus-and-node-labs-srclabuep34---uep38--node-ts-execution-enginets-uep-net-adapt) | `src/lab` | Experimental (lab) | 0.5.0 | `test:lab` |
+| [Agents](docs/MODULES.md#15-agents-srcagent) | `src/agent` | Experimental (lab) | 0.5.0 | `test:lab` |
+| [Rust / ZK](docs/MODULES.md#16-rust--zk-core-uep-core) | `uep-core` | Experimental (lab) | 0.5.0 | `test:rust` |
+
+"Hashlock swap" (`src/category/swap.ts`) is a bilateral settlement between two parties; the "AMM lab pool" (`src/lab/liquidity.ts`) is a research simulation that never moves testnet value. Full module map: [`docs/MODULES.md`](docs/MODULES.md).
+
+### Current status (v0.5.3, not released)
 
 | Item | Status |
 |---|---|
-| Version | `0.5.2-public-iot-m2m`: settlement engine, category modules (swap/relay/dispute/drip) and oracle policy layer on top of `0.5.1-public-iot-m2m`: deterministic height-based transitions (monotonic height producer, domain delay windows for Moon and Mars), evidence value caps, a compatibility policy with snapshot migrations, v3 account ids, object-route Host / Origin checks, lab domain binding, 130-bit self-certifying namespaces and development-only ZK keys, on top of v0.5.0: API authorization hardening, signed spends, paymaster caps, compressed Merkle tree, circuit v4 with pinned verifying keys, namespaced asset ids and the asset registry manifest, on top of the research-labs integration and Poseidon protocol hash ([`CHANGELOG.md`](./CHANGELOG.md)). Latest GitHub Release: `v0.5.2` |
-| Tests (testnet) | protocol **144/144**, Marketplace + IoT/M2M + HTTP + attack-battery **176/176**, settlement **5/5**, oracle **7/7**, category **4/4**; poisoned clock covers the same plus settlement/category/oracle |
-| Tests (research labs) | Rust **115** (uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99); labs **463** tests in 98 files; 14 lab files with known issues run in a non-blocking job |
+| Version | `0.5.3-public-iot-m2m` on branch `v0.5.3-fixes` (not released): asset registry wired into the ledger, settlement receipts anchored in ledger state, multi-input transactions (UEP-C04), oracle hardening and price gate, category fixes, Marketplace snapshot with receipts — on top of `0.5.2` (settlement engine, category modules, oracle policy layer, on `main`, not released), `0.5.1` and `0.5.0` ([`CHANGELOG.md`](./CHANGELOG.md)). **Latest GitHub Release: `v0.5.0`** |
+| Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) (single source of truth; earlier README and CHANGELOG counts disagreed) |
+| Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts and the list of lab files with known issues in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) and [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
-| Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 7, format 6 migrated ([compatibility policy](docs/COMPATIBILITY.md)) |
+| Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 8 (formats 6 and 7 migrated) ([compatibility policy](docs/COMPATIBILITY.md)) |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
-| CI | Blocking: `npm run test:all` (core, Rust, labs without known issues) on Node.js 22.x and 24.x. Non-blocking: the lab files with known issues |
+| CI | Blocking: `npm run test:core` on Node.js 22.x and 24.x, and `npm run test:lab` (labs not listed in `scripts/lab-known-issues.json`). Non-blocking: the lab files with known issues |
 | Network | Local, single-node, in-process **testnet only** |
-| External review | Independent adversarial assessments of each release up to v0.4.6; open items in [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) |
+| External review | External assessments of each release up to **v0.4.6** (the last externally assessed version). v0.4.7 – v0.5.3 changes come from internal reviews and are **not** externally assessed: [`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md), [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md) |
 
 Architecture by layer: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). Phases and next milestones: [`ROADMAP.md`](./ROADMAP.md).
 
@@ -128,12 +149,12 @@ The public Marketplace layer implements:
 - unfunded reservation caps per listing and optimistic `order.version` / `ORDER_STATE_CONFLICT` (v0.5.2);
 - synthetic 20,000-operation load testing.
 
-### Category modules and oracle (v0.5.2)
+### Category modules and oracle (v0.5.2, hardened in v0.5.3)
 
 **Implemented (testnet)** alongside the Marketplace:
 
-- **Categories** (`src/category`): swap, relay, dispute and drip over Marketplace escrow/subsidy ports (no private ledgers). Relay uses a 20 % custody / 80 % delivery split after key publication.
-- **Oracle** (`src/oracle`): Poseidon BN254 policy evaluation only (SLA, tariff, dispute evidence, AMM skew checks). Never on the spend or consensus path; never holds balances.
+- **Categories** (`src/category`): hashlock swap, relay, dispute and drip over Marketplace escrow/subsidy ports (no private ledgers). Relay uses a 20 % custody / 80 % delivery split after key publication. v0.5.3 fixes: a relay dispute timeout after the key resumes the order (no 80 % buyer refund), a wrong or missing key costs the provider part of the bond, per-asset dispute bond minimum.
+- **Oracle** (`src/oracle`): signed, network-bound quotes and policy evaluation (SLA, tariff, dispute evidence). Since v0.5.3 `OraclePolicyGate` checks Marketplace listing prices, IoT tariffs and hashlock-swap rates against a reference band and fails closed. Never on the spend or consensus path; never holds balances. (There is no AMM in the testnet layer; the AMM lab pool is a lab simulation.)
 - Details: [`docs/SETTLEMENT.md`](./docs/SETTLEMENT.md), [`docs/CATEGORY-MODULES.md`](./docs/CATEGORY-MODULES.md), [`docs/ORACLE.md`](./docs/ORACLE.md).
 
 The Marketplace is intentionally a separate business layer in this release. **The repository does not claim that Marketplace settlement is already an end-to-end production transaction through the UEP consensus/ZK stack.**
@@ -213,7 +234,7 @@ The SHA-256-based backend introduced in v0.3.2 was a reference hardening backend
 
 ## 5. Security hardening in v0.4.1 – v0.5.2
 
-These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the independent adversarial assessments of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening. v0.5.0 adds the API authorization hardening, signed spends, paymaster caps and the fixes from the reviews of v0.4.7. v0.5.1 adds height-based transitions and evidence caps. v0.5.2 adds the settlement engine, category modules, the policy-only oracle and the attack-battery hardenings listed above; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
+These public testnet releases harden the ledger, the IoT/M2M service layer and Marketplace reservations after the independent adversarial assessments of v0.4.0 – v0.4.6. v0.4.7 adds per-asset hardening. v0.5.0 adds the API authorization hardening, signed spends, paymaster caps and the fixes from the internal reviews of v0.4.7 (not externally assessed). v0.5.1 adds height-based transitions and evidence caps. v0.5.2 adds the settlement engine, category modules, the policy-only oracle and the attack-battery hardenings listed above; see [`CHANGELOG.md`](./CHANGELOG.md). Per-finding status and remaining limitations: [`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](./PUBLIC-SECURITY-REMEDIATION-v0.4.6.md) (previous: [`v0.4.5`](./PUBLIC-SECURITY-REMEDIATION-v0.4.5.md), [`v0.4.4`](./PUBLIC-SECURITY-REMEDIATION-v0.4.4.md), [`v0.4.3`](./PUBLIC-SECURITY-REMEDIATION-v0.4.3.md), [`v0.4.2`](./PUBLIC-SECURITY-REMEDIATION-v0.4.2.md), [`v0.4.1`](./PUBLIC-SECURITY-REMEDIATION-v0.4.1.md)). Changed signatures are listed in [`docs/API.md`](./docs/API.md).
 
 ### Ledger
 
@@ -340,18 +361,20 @@ npm ci
 npm run test:all
 ```
 
-`npm run test:all` runs, in order and stopping at the first failure:
+`npm run test:all` runs `npm run test:core`, then `npm run build:uep-zk`, then `npm run test:lab`, stopping at the first failure:
 
-1. `npm run lint:determinism` and `npm run check:snapshot-compat`: no clock or external call in transitions (ADR 0002); no snapshot format change without a migration step and golden fixtures ([`docs/COMPATIBILITY.md`](./docs/COMPATIBILITY.md));
-2. `npm test`: protocol/testnet (140, including the golden snapshot fixtures), Marketplace + IoT/M2M + HTTP authorization + compatibility shims + height producer (173, including the IoT and 3 scale tests); then `npm run test:poisoned-clock` (275 tests with the clock, timers, network and randomness poisoned inside transitions);
+1. `npm run lint:determinism`, `npm run check:snapshot-compat` and `npm run check:donation`: no clock or external call in transitions (ADR 0002); no snapshot format change without a migration step and golden fixtures ([`docs/COMPATIBILITY.md`](./docs/COMPATIBILITY.md)); the donation address in the docs is a valid bech32 address (offline check);
+2. `npm test`: protocol/testnet (including the golden snapshot fixtures and the cryptographic test vectors), Marketplace + IoT/M2M + HTTP authorization + compatibility shims + height producer, settlement, oracle and category suites; then `npm run test:poisoned-clock` (the same transitions with the clock, timers, network and randomness poisoned);
 3. `npm run smoke:testnet`: prints `SMOKE OK`;
 4. `npm run quickstart`: the first-transaction example;
 5. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`;
 6. `npm run test:rust`: Rust tests of the research crates in `uep-core/` (Poseidon, prototype, UEP-26 spend circuit);
 7. `npm run build:uep-zk`: builds the research Groth16 prover `uep-zk` from source into `uep-core/target/`;
-8. `npm run test:lab`: the research labs in `src/lab/`, `src/agent/` and the service/API lab in `src/service/` (see [`docs/LABS.md`](./docs/LABS.md)).
+8. `npm run test:lab`: the research labs in `src/lab/`, `src/agent/` and the service/API lab in `src/service/`, except the files listed in `scripts/lab-known-issues.json` (see [`docs/LABS.md`](./docs/LABS.md)); `npm run test:lab:known` runs those as well.
 
-Steps 1–5 need no network access and take a few minutes, depending on the machine (the protocol suite alone takes about a minute, because Poseidon runs in TypeScript). Steps 6–8 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs the same command on Node.js 22.x and 24.x as a blocking job, and runs the lab files with known issues (`scripts/lab-known-issues.json`) in a separate non-blocking job, so the badge reflects the core. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
+Per-suite counts for this version: [CHANGELOG 0.5.3](./CHANGELOG.md).
+
+Steps 1–5 need no network access and take a few minutes, depending on the machine (the protocol suite alone takes about a minute, because Poseidon runs in TypeScript). Steps 6–8 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs steps 1–6 (`npm run test:core`) on Node.js 22.x and 24.x and steps 7–8 in a separate `labs` job; both are blocking. The lab files with known issues (`scripts/lab-known-issues.json`) run in a separate non-blocking job and do not change the badge. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
 
 ### Minimal reproducible verification
 
@@ -455,7 +478,8 @@ Repository layout:
 ├── tsconfig.json
 ├── .gitignore
 ├── .gitattributes
-├── .github/workflows/ci.yml  # CI: npm run test:all (Node 22.x / 24.x) + non-blocking known-issue labs
+├── .github/workflows/ci.yml  # CI: test:core (Node 22.x / 24.x) + blocking labs job + non-blocking known-issue labs
+├── .github/ISSUE_TEMPLATE/   # bug report and good-first-issue templates
 ├── .github/ISSUE_TEMPLATE/   # bug report / feature request forms; security goes to SECURITY.md
 ├── .github/pull_request_template.md
 │
@@ -515,7 +539,7 @@ Repository layout:
 │   ├── uep-21-poseidon/      # Poseidon BN254 + R1CS gadget (Rust)
 │   ├── uep-25-prototype/     # UEP-25 reference state machine (Rust)
 │   ├── uep-26-spend-circuit/ # UEP-26 Groth16 spend circuit and uep-zk CLI (Rust, development keys)
-│   ├── uep-23-state-transition/, uep-24-atomic/   # historical scaffolds, not built or tested
+│   ├── uep-23-state-transition/, uep-24-atomic/   # UEP-22/23 transition and UEP-24 atomic model (ported in v0.5.3, tested by test:rust)
 │   ├── uep-32-e2e-evidence/  # lab evidence notes
 │   ├── vectors/              # Poseidon and SMT golden vectors
 │   ├── benchmarks/           # recorded lab benchmark outputs
@@ -523,8 +547,11 @@ Repository layout:
 │   └── UEP-*.md              # lab design notes by milestone
 │
 └── docs/
-    ├── API.md            # changed public signatures (v0.4.3 – v0.5.2)
-    ├── adr/              # architecture decision records (0001: asset model)
+    ├── API.md            # changed public signatures (v0.4.3 – v0.5.3)
+    ├── adr/              # architecture decision records (0001 asset model … 0004 multi-input transactions)
+    ├── MODULES.md        # module map: status, since, tests, docs per module
+    ├── SECURITY-COVERAGE.md, REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md   # what was externally assessed (up to v0.4.6) and what was not
+    ├── history/          # integration notes (formerly AUDIT-FIXES.md / SETTLEMENT-AUDIT-REPORT.md; not audits)
     ├── ARCHITECTURE.md   # layers A–N, status table, diagrams
     ├── THREAT-MODEL.md
     ├── REPRODUCIBILITY.md

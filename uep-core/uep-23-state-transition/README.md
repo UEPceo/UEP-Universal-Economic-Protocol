@@ -96,5 +96,6 @@ This is an architecture/circuit integration milestone, not a claim of a
 production-audited protocol. `cargo test` has not been run in this environment
 because Rust tooling is unavailable here.
 
-> **Repository note:** this crate is a historical scaffold. It does not compile
-> against the pinned arkworks API and is not part of `npm run test:rust`.
+> **Repository note (v0.5.3):** this crate was ported to the pinned arkworks 0.3 API
+> and is built and tested by `npm run test:rust` (lab code, development only; no
+> performance or security claim).

@@ -4,7 +4,7 @@ This repository contains two kinds of code:
 
 | | Where | Status |
 |---|---|---|
-| **Public reference testnet** | `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/service/iot-m2m*`, `src/network` | Hardened testnet code (see `CHANGELOG.md`). This is the source of truth for protocol rules. |
+| **Public reference testnet** | `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/settlement`, `src/category`, `src/oracle`, `src/service/iot-m2m*`, `src/network` | Hardened testnet code (see `CHANGELOG.md`). This is the source of truth for protocol rules. |
 | **Research labs** | `src/lab`, `src/agent`, the service/API lab in `src/service`, `uep-core/` (Rust) | Experimental. Local, in-process or local multi-process only. **Not** a network, **not** production, no security claim. |
 
 These components were internal lab experiments during the project's early stage.
@@ -14,8 +14,9 @@ protocol primitive (fees, hashes, SMT, notes, addresses), it imports the public
 hardened implementation from `src/core`.
 
 No native token is introduced. The protocol fee stays at 0.1% and the
-Marketplace fee at 3%. The liquidity-pool lab (`src/lab/liquidity.ts`) has its own
-swap fee inside its simulation (see "Liquidity-pool lab fee" below). Nothing in
+Marketplace fee at 3%. The AMM lab pool (`src/lab/liquidity.ts`; not the testnet hashlock swap in
+`src/category/swap.ts`) has its own
+pool fee inside its simulation (see "Liquidity-pool lab fee" below). Nothing in
 the testnet charges it. All keys used by the labs are generated locally at run time
 or are trivial fixed test vectors (for example `secret = 1`, `salt = 2`); none has
 any value. The Groth16 keys produced by `uep-zk` are development keys: there is no
@@ -39,11 +40,12 @@ or `UEP_ZK_KEY_MODE=production` is set. See `SECURITY.md`.
 | ZK bridge | `src/lab/zk-*.ts`, `poseidon-*.ts`, `uep-zk-runner.ts` | Calling the Rust `uep-zk` helper: prove, verify, Poseidon leaves |
 | Agents | `src/agent/` | Agent identity, owner-signed capabilities, signed action requests, nonce windows |
 | Service/API layer | `src/service/uep-*.ts`, `storage-provider.ts`, `memory-storage.ts`, `s3-adapter.ts`, `ipfs-adapter.ts`, `observability.ts`, `groth16-spend-queue.ts` | A versioned service API over HTTP, storage abstraction with content hashes, observability |
-| Rust / ZK | `uep-core/uep-21-poseidon`, `uep-25-prototype`, `uep-26-spend-circuit` | Poseidon BN254 (t=3, α=5) + R1CS, the UEP-25 reference state machine, the UEP-26 spend circuit and `uep-zk` CLI |
+| Rust / ZK | `uep-core/uep-21-poseidon`, `uep-23-state-transition`, `uep-24-atomic`, `uep-25-prototype`, `uep-26-spend-circuit` | Poseidon BN254 (t=3, α=5) + R1CS, the UEP-25 reference state machine, the UEP-26 spend circuit and `uep-zk` CLI |
 | Design notes | `uep-core/*.md`, `uep-core/docs/` | Lab design notes by milestone, indexed in [`uep-core/README.md`](../uep-core/README.md). Historical notes say so in their first line; status words in the notes are lab status, not production claims. |
 
-`uep-core/uep-23-state-transition` and `uep-core/uep-24-atomic` are historical
-scaffolds kept for reference; they do not compile and are not tested.
+`uep-core/uep-23-state-transition` (one-leaf transition) and `uep-core/uep-24-atomic`
+(sender/recipient/treasury model; the SMT is an interface) were ported to the pinned
+arkworks 0.3 API in v0.5.3 and are built and tested by `npm run test:rust`. They remain lab code.
 
 ## How to run
 

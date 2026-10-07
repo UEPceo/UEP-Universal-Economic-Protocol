@@ -14,8 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Blocking: testnet core, Marketplace, IoT/M2M, smoke, quickstart, 20k simulation,
-  # Rust crates and the lab suites without known issues. The badge reflects this job.
+  # Blocking: testnet core, Marketplace, settlement, oracle, categories, IoT/M2M,
+  # smoke, quickstart, 20k simulation and Rust crates (npm run test:core).
+  # The badge reflects this job and the blocking `labs` job below.
   test:
     name: Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
@@ -67,8 +68,51 @@ jobs:
       - name: Donation address check
         run: npm run check:donation
 
-      - name: Full suite (npm run test:all)
-        run: npm run test:all
+      - name: Core suites (npm run test:core)
+        run: npm run test:core
+
+  # Blocking (v0.5.3): every lab file EXCEPT those listed in
+  # scripts/lab-known-issues.json, including the labs fixed in v0.5.3
+  # (uep35.7.1-consensus, uep36.8-multileader-partition). A failure here fails CI.
+  labs:
+    name: Labs (blocking, known issues excluded)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Set up Rust 1.85.1 (uep-core lab crates)
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup default 1.85.1
+          cargo --version
+
+      - name: Cache cargo registry and uep-core/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            uep-core/target
+          key: cargo-${{ runner.os }}-1.85.1-${{ hashFiles('uep-core/**/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build uep-zk
+        run: npm run build:uep-zk
+
+      - name: Lab suites (npm run test:lab)
+        run: npm run test:lab
 
   # Non-blocking: lab files listed in scripts/lab-known-issues.json (known lab
   # issues and timing-sensitive multi-process tests). Failures here do not fail CI.

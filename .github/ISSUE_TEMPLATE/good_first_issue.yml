@@ -1,0 +1,71 @@
+name: Good first issue (maintainers and contributors)
+description: Describe a small, self-contained task that a new contributor can pick up.
+title: "[Good first issue]: "
+labels: ["good first issue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to describe a small task for a new contributor: one module, a clear done condition, no protocol-rule change.
+        Changes to the project rules (no native token, no common currency, 0.1 % protocol fee, 3 % Marketplace fee, no runtime dependencies, height-based time) are not good first issues; see CONTRIBUTING.md.
+        **Security vulnerabilities must not be reported here**: follow SECURITY.md and write to uep.dev@proton.me. Never include private keys, tokens or personal data.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Module
+      description: See docs/MODULES.md.
+      options:
+        - Core primitives (src/core)
+        - Testnet ledger / snapshots (src/testnet)
+        - Marketplace (src/marketplace)
+        - Settlement engine / anchors (src/settlement)
+        - Category modules (src/category)
+        - Oracle policy layer (src/oracle)
+        - IoT/M2M (src/service/iot-m2m*)
+        - Research labs (src/lab, src/agent, uep-core)
+        - Docs / examples
+        - CI / tooling
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of task
+      options:
+        - Negative or regression test
+        - Published test vectors
+        - Make a known-issue lab deterministic
+        - Documentation fix
+        - Reproducibility report
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What should be done, and where (files, functions).
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The observable result, e.g. "the test fails on the old code and passes on the fix" or "the file is removed from scripts/lab-known-issues.json and `npm run test:lab` passes".
+    validations:
+      required: true
+  - type: textarea
+    id: pointers
+    attributes:
+      label: Pointers
+      description: Related docs (module README, ADR, CHANGELOG entry) and the test command to run.
+      placeholder: "npm run test:category"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The task does not change a project rule listed in CONTRIBUTING.md.
+          required: true
+        - label: The description contains no private keys, tokens, personal data or undisclosed vulnerability details.
+          required: true

@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible bug in the public testnet, Marketplace or IoT/M2M layer.
+description: Report a reproducible bug in the public testnet, Marketplace, settlement, category, oracle or IoT/M2M layer, or in a research lab.
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -16,7 +16,11 @@ body:
       options:
         - Ledger / testnet (src/testnet, src/core)
         - Marketplace (src/marketplace)
+        - Settlement engine / anchors (src/settlement)
+        - Category modules (src/category)
+        - Oracle policy layer (src/oracle)
         - IoT/M2M (src/service)
+        - Research labs (src/lab, src/agent, uep-core)
         - Identity / addresses (src/identity, src/core/address.ts)
         - Docs / examples
         - CI / tooling

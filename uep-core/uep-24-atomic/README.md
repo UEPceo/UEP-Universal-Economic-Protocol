@@ -72,5 +72,6 @@ cargo test --release
 Do not make performance claims until the circuit is compiled and benchmarked on
 a defined reference machine.
 
-> **Repository note:** this crate is a historical scaffold. It does not compile
-> against the pinned arkworks API and is not part of `npm run test:rust`.
+> **Repository note (v0.5.3):** this crate was ported to the pinned arkworks 0.3 API
+> and is built and tested by `npm run test:rust` (lab code, development only; no
+> performance or security claim).

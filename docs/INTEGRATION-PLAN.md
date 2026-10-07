@@ -40,7 +40,7 @@ TypeScript 5.7 / 7.0 dev dependency that the repository does not use.
 | `uep-oracle-layer/src/oracle/canonical.ts` | `src/oracle/canonical.ts` | Fake `poseidon2` removed; commitments use `src/core/poseidon.ts` (`poseidonDomainHash`). |
 | `uep-oracle-layer/src/oracle/mock.ts` | `src/oracle/testkit.ts` | Deterministic test keys only; `MockSettlementEngine` (a fake ledger) removed. |
 | incoming tests | co-located `*.test.ts` next to each module | Converted to bigint and heights; integration tests added (see 6). |
-| incoming docs | `docs/SETTLEMENT.md`, `docs/CATEGORY-MODULES.md`, `docs/ORACLE.md`, `docs/AUDIT-FIXES.md`, `docs/SETTLEMENT-AUDIT-REPORT.md` | English, accurate scope, residual limits listed. |
+| incoming docs | `docs/SETTLEMENT.md`, `docs/CATEGORY-MODULES.md`, `docs/ORACLE.md`, `docs/history/CATEGORY-INTEGRATION-NOTES.md`, `docs/history/SETTLEMENT-INTEGRATION-NOTES.md` | English, accurate scope, residual limits listed. |
 
 `incoming/` is deleted once its content lives in `src/` and `docs/`.
 

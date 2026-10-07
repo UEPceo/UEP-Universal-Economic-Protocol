@@ -558,6 +558,22 @@ export class MultiNodeCluster {
       stateRoot = "DEADBEEF" + stateRoot.slice(8);
     }
 
+    // v0.5.3 lab fix: the single-batch path must carry the economic tip
+    // commitment too (requireEconomicCommitment defaults to true, so every
+    // single-batch proposal was rejected by the voters and never finalized).
+    let economicCommitment: string | undefined;
+    {
+      const tipProbe = n.economic.clone();
+      const tipApply = tipProbe.applyTransfers(produced.txs);
+      if (tipApply.ok) {
+        tipProbe.commitLogicalHeight();
+        if (typeof (tipProbe as { economicTipCommitment?: () => string }).economicTipCommitment === "function") {
+          economicCommitment = (tipProbe as { economicTipCommitment: () => string }).economicTipCommitment();
+        }
+      }
+    }
+    if (this.requireEconomicCommitment && !economicCommitment) return null;
+
     this.globalSeq += 1;
     const propPayload: ProposalPayload = {
       batchId: produced.header.batchId,
@@ -566,6 +582,7 @@ export class MultiNodeCluster {
       epoch: this.epoch,
       height: this.globalSeq,
       previousStateRoot: prev,
+      ...(economicCommitment ? { economicCommitment } : {}),
     };
 
     // Equivocation: different roots to different peers
