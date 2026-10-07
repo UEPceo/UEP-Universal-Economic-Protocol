@@ -53,6 +53,8 @@ export class OracleAggregator {
    * Production paths must use publish() with requireSignatures.
    */
   publishSync(quote: OracleQuote): void {
+    // v0.5.3: an unverified quote never enters a feed of a signature-checking aggregator.
+    if (this.policy.requireSignatures) throw new Error("ORACLE_PUBLISH_SYNC_REFUSED: requireSignatures is on; use publish()");
     const k = this.key(quote.baseAssetId, quote.quoteAssetId);
     const list = this.feeds.get(k) ?? [];
     const next = list.filter((q) => q.source !== quote.source);
@@ -91,8 +93,8 @@ export class OracleAggregator {
       };
     }
 
-    const fresh = list.filter((q) => height - q.observedAtHeight <= maxStaleness);
-    if (fresh.length === 0) {
+    const freshAll = list.filter((q) => height - q.observedAtHeight <= maxStaleness);
+    if (freshAll.length === 0) {
       return {
         ok: false,
         code: "STALE",
@@ -100,6 +102,8 @@ export class OracleAggregator {
       };
     }
 
+    // v0.5.3 (V-1): independent sources are counted by key, not by source id.
+    const fresh = this.dedupeByKey(freshAll);
     if (fresh.length < minSources) {
       return {
         ok: false,
@@ -156,19 +160,48 @@ export class OracleAggregator {
     };
   }
 
-  private computeWeightedMedian(sortedQuotes: (OracleQuote | SignedOracleQuote)[]): bigint {
-    const items = sortedQuotes.map((q) => {
-      const reg = this.registry.getSource(q.source);
-      const weight = reg && reg.status === "ACTIVE" ? Math.max(1, reg.weight) : 1;
-      return { priceE6: q.priceE6, weight };
-    });
-    const totalWeight = items.reduce((acc, curr) => acc + curr.weight, 0);
-    const halfWeight = totalWeight / 2;
-    let accumulated = 0;
-    for (const item of items) {
-      accumulated += item.weight;
-      if (accumulated >= halfWeight) return item.priceE6;
+  /** One quote per signing key (registered key, else the quote's signer key, else the source id); the latest observation wins. */
+  private dedupeByKey(quotes: (OracleQuote | SignedOracleQuote)[]): (OracleQuote | SignedOracleQuote)[] {
+    const byKey = new Map<string, OracleQuote | SignedOracleQuote>();
+    for (const q of quotes) {
+      const k = this.registry.getSource(q.source)?.publicKeyHex ?? (q as SignedOracleQuote).signerPublicKeyHex ?? `source:${q.source}`;
+      const prev = byKey.get(k);
+      if (!prev || q.observedAtHeight > prev.observedAtHeight || (q.observedAtHeight === prev.observedAtHeight && q.sequence > prev.sequence)) byKey.set(k, q);
     }
-    return items[Math.floor(items.length / 2)]!.priceE6;
+    return [...byKey.values()];
+  }
+
+  /**
+   * Effective weights (v0.5.3, V-4): each source's administrative weight is
+   * capped so that it carries strictly less than `maxSourceWeightSharePpm` of
+   * the total (default one half), so no single key decides the median alone:
+   * cap_i = floor((others_i * share - 1) / (1 - share)), at least 1.
+   */
+  effectiveWeights(weights: readonly number[]): bigint[] {
+    const share = this.policy.maxSourceWeightSharePpm;
+    if (share <= 0n || share > PPM_SCALE) throw new Error("ORACLE_WEIGHT_SHARE_INVALID");
+    const w = weights.map((x) => BigInt(Math.max(1, Math.trunc(x))));
+    const total = w.reduce((a, b) => a + b, 0n);
+    if (share === PPM_SCALE || w.length < 2) return w;
+    return w.map((x) => {
+      const cap = ((total - x) * share - 1n) / (PPM_SCALE - share);
+      return x > cap ? (cap < 1n ? 1n : cap) : x;
+    });
+  }
+
+  private computeWeightedMedian(sortedQuotes: (OracleQuote | SignedOracleQuote)[]): bigint {
+    const raw = sortedQuotes.map((q) => {
+      const reg = this.registry.getSource(q.source);
+      return reg && reg.status === "ACTIVE" ? Math.max(1, reg.weight) : 1;
+    });
+    const weights = this.effectiveWeights(raw);
+    const totalWeight = weights.reduce((a, b) => a + b, 0n);
+    // Lower weighted median: first price where the accumulated weight reaches half (2*acc >= total).
+    let accumulated = 0n;
+    for (const [i, q] of sortedQuotes.entries()) {
+      accumulated += weights[i]!;
+      if (2n * accumulated >= totalWeight) return q.priceE6;
+    }
+    return sortedQuotes[Math.floor(sortedQuotes.length / 2)]!.priceE6;
   }
 }

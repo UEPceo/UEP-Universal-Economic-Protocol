@@ -9,7 +9,16 @@ import { poseidon2, poseidonDomainHash } from "../core/poseidon.ts";
 import { BN254_FR_MODULUS } from "../core/field.ts";
 import type { OracleContextType, OracleQuote, SignedOracleQuote } from "./types.ts";
 
+/** v0.1 domain separator (legacy payload without networkId; see canonicalQuotePayloadV1). */
 export const DOMAIN_SEPARATOR = "UEP_ORACLE_QUOTE_v0.1";
+/** v0.5.3 (V-3): quote payload v2 prefix; the full separator is `${QUOTE_DOMAIN_V2}|${networkId}`. */
+export const QUOTE_DOMAIN_V2 = "UEP_ORACLE_QUOTE_v0.2";
+
+/** Domain separator of quote payload v2 for a network, from LOCAL configuration (never from the quote). */
+export function quoteDomainSeparator(networkId: string): string {
+  if (typeof networkId !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(networkId)) throw new Error("ORACLE_NETWORK_ID_INVALID");
+  return `${QUOTE_DOMAIN_V2}|${networkId}`;
+}
 /** Poseidon domain tag for quote commitments (UEP-26 style domain composition). */
 export const ORACLE_POSEIDON_DOMAIN = 0x4f52; // "OR"
 
@@ -38,15 +47,40 @@ export function validateFormalContextId(type: OracleContextType, contextId: stri
 
 const MAX_UINT64 = 0xffff_ffff_ffff_ffffn;
 
-/** Deterministic binary payload for Ed25519 signing (height, not wall-clock). */
-export function canonicalQuotePayload(quote: OracleQuote | SignedOracleQuote): Uint8Array {
+/**
+ * v0.5.3 (V-3) quote payload v2 for Ed25519 signing: the domain separator
+ * `UEP_ORACLE_QUOTE_v0.2|<networkId>` and the networkId come from the
+ * caller's local configuration; any `domainSeparator` carried by the quote is
+ * ignored here (the verifier rejects a mismatching one).
+ */
+export function canonicalQuotePayload(quote: OracleQuote | SignedOracleQuote, ctx: { networkId: string }): Uint8Array {
+  if (!ctx || typeof ctx.networkId !== "string") throw new Error("ORACLE_NETWORK_REQUIRED: canonicalQuotePayload(quote, { networkId })");
+  const domain = quoteDomainSeparator(ctx.networkId);
+  const net = new TextEncoder().encode(ctx.networkId);
+  const body = encodeQuoteBody(quote, domain);
+  const out = new Uint8Array(body.length + 1 + net.length);
+  out.set(body, 0);
+  out[body.length] = net.length;
+  out.set(net, body.length + 1);
+  return out;
+}
+
+/**
+ * Legacy v0.1 payload (v0.5.2): fixed separator UEP_ORACLE_QUOTE_v0.1, no
+ * networkId. Kept to re-verify archived quotes when the verifier opts in
+ * (`acceptLegacyV1Quotes`); new quotes are signed over payload v2.
+ */
+export function canonicalQuotePayloadV1(quote: OracleQuote | SignedOracleQuote): Uint8Array {
+  return encodeQuoteBody(quote, DOMAIN_SEPARATOR);
+}
+
+function encodeQuoteBody(quote: OracleQuote | SignedOracleQuote, domain: string): Uint8Array {
   if (quote.priceE6 < 0n || quote.priceE6 > MAX_UINT64) throw new Error("MALFORMED_ENCODING: priceE6 exceeds uint64 bounds");
   if (quote.sequence < 0n || quote.sequence > MAX_UINT64) throw new Error("MALFORMED_ENCODING: sequence exceeds uint64 bounds");
   if (!Number.isSafeInteger(quote.observedAtHeight) || quote.observedAtHeight < 0) {
     throw new Error("MALFORMED_ENCODING: observedAtHeight is not a valid height");
   }
 
-  const domain = (quote as SignedOracleQuote).domainSeparator || DOMAIN_SEPARATOR;
   const enc = new TextEncoder();
   const domainBytes = enc.encode(domain);
   const baseBytes = enc.encode(quote.baseAssetId);

@@ -3,7 +3,7 @@
  * Test-only: never used by production paths. No fake ledger / MockSettlementEngine.
  */
 import { generateEd25519KeyPair, publicKeyHexOf, signEd25519, type PrivateKeyLike } from "../core/ed25519.ts";
-import { canonicalQuotePayload, DOMAIN_SEPARATOR } from "./canonical.ts";
+import { canonicalQuotePayload, canonicalQuotePayloadV1, DOMAIN_SEPARATOR, quoteDomainSeparator } from "./canonical.ts";
 import type { OracleQuote, SignedOracleQuote } from "./types.ts";
 import { OracleAggregator } from "./index.ts";
 import { OracleRegistry } from "./registry.ts";
@@ -57,15 +57,21 @@ export function makeQuote(input: {
   };
 }
 
-export function signQuote(quote: OracleQuote, privateKey: PrivateKeyLike, publicKeyHex: string): SignedOracleQuote {
-  const payload = canonicalQuotePayload(quote);
+/** Sign over quote payload v2 for `networkId` (default uep-testnet-1, the default policy network). */
+export function signQuote(quote: OracleQuote, privateKey: PrivateKeyLike, publicKeyHex: string, networkId = "uep-testnet-1"): SignedOracleQuote {
+  const payload = canonicalQuotePayload(quote, { networkId });
   return {
     ...quote,
     stage: "ATTESTED",
     signature: signEd25519(payload, privateKey),
     signerPublicKeyHex: publicKeyHexOf(publicKeyHex),
-    domainSeparator: DOMAIN_SEPARATOR,
+    domainSeparator: quoteDomainSeparator(networkId),
   };
+}
+
+/** Legacy v0.5.2 signing (payload v1, no networkId), for compatibility tests. */
+export function signQuoteV1(quote: OracleQuote, privateKey: PrivateKeyLike, publicKeyHex: string): SignedOracleQuote {
+  return { ...quote, stage: "ATTESTED", signature: signEd25519(canonicalQuotePayloadV1(quote), privateKey), signerPublicKeyHex: publicKeyHexOf(publicKeyHex), domainSeparator: DOMAIN_SEPARATOR };
 }
 
 /** Build a two-source aggregator with fresh test keys registered at height 0. */

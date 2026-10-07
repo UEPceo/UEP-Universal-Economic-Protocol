@@ -19,22 +19,61 @@ export class OracleRegistry {
     return this.globalPaused;
   }
 
+  /**
+   * Register a new source. v0.5.3 (V-1, V-2): a public key belongs to at most
+   * one source id (ORACLE_SOURCE_KEY_IN_USE), and re-registering an existing
+   * source id never changes its key silently: the same key only updates
+   * metadata, a different key is refused (ORACLE_SOURCE_EXISTS; use
+   * rotateSourceKey()).
+   */
   registerSource(source: OracleSourceRegistration): void {
     if (!source.sourceId || source.sourceId.trim().length === 0) throw new Error("ORACLE_REGISTRY: Source ID cannot be empty");
-    // Normalize to the repository's canonical SPKI hex so equality checks are exact.
-    let publicKeyHex: string;
-    try {
-      publicKeyHex = publicKeyHexOf(source.publicKeyHex);
-    } catch {
-      throw new Error("ORACLE_REGISTRY: Invalid public key hex");
-    }
+    const publicKeyHex = this.normalizeKey(source.publicKeyHex);
+    const existing = this.sources.get(source.sourceId);
+    if (existing && existing.publicKeyHex !== publicKeyHex) throw new Error(`ORACLE_SOURCE_EXISTS: source '${source.sourceId}' is registered with another key; use rotateSourceKey()`);
+    const owner = this.sourceIdOfKey(publicKeyHex);
+    if (owner !== undefined && owner !== source.sourceId) throw new Error(`ORACLE_SOURCE_KEY_IN_USE: the key is already registered as source '${owner}'`);
+    if (typeof source.weight !== "number" || !Number.isFinite(source.weight)) throw new Error("ORACLE_SOURCE_WEIGHT_INVALID");
     this.sources.set(source.sourceId, {
       ...source,
       publicKeyHex,
-      weight: Math.max(1, Math.min(100, source.weight)),
+      weight: Math.max(1, Math.min(100, Math.trunc(source.weight))),
       status: source.status || "ACTIVE",
       registeredAtHeight: source.registeredAtHeight,
     });
+  }
+
+  /**
+   * v0.5.3 (V-2): explicit key rotation of an existing source. The new key
+   * must not belong to any source. Returns the previous key.
+   */
+  rotateSourceKey(sourceId: string, newPublicKeyHex: string, height: number): string {
+    const src = this.sources.get(sourceId);
+    if (!src) throw new Error("ORACLE_SOURCE_UNKNOWN");
+    if (!Number.isSafeInteger(height) || height < 0) throw new Error("ORACLE_ROTATION_HEIGHT_INVALID");
+    const key = this.normalizeKey(newPublicKeyHex);
+    if (key === src.publicKeyHex) throw new Error("ORACLE_ROTATION_SAME_KEY");
+    const owner = this.sourceIdOfKey(key);
+    if (owner !== undefined) throw new Error(`ORACLE_SOURCE_KEY_IN_USE: the key is already registered as source '${owner}'`);
+    const previous = src.publicKeyHex;
+    src.publicKeyHex = key;
+    src.keyRotatedAtHeight = height;
+    return previous;
+  }
+
+  /** Source id that owns `publicKeyHex` (canonical SPKI hex), if any. */
+  sourceIdOfKey(publicKeyHex: string): string | undefined {
+    for (const s of this.sources.values()) if (s.publicKeyHex === publicKeyHex) return s.sourceId;
+    return undefined;
+  }
+
+  private normalizeKey(hex: string): string {
+    // Normalize to the repository's canonical SPKI hex so equality checks are exact.
+    try {
+      return publicKeyHexOf(hex);
+    } catch {
+      throw new Error("ORACLE_REGISTRY: Invalid public key hex");
+    }
   }
 
   getSource(sourceId: string): OracleSourceRegistration | undefined {

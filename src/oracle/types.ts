@@ -30,7 +30,9 @@ export type OracleErrorCode =
   | "MALFORMED_ENCODING"
   | "CROSS_CONTEXT_REPLAY"
   | "INVALID_CONTEXT_FORMAT"
-  | "ALREADY_SETTLED";
+  | "ALREADY_SETTLED"
+  /** v0.5.3 (V-3): the quote names another network or domain than this verifier's local configuration. */
+  | "DOMAIN_MISMATCH";
 
 export interface OracleQuote {
   stage: EvidenceStage;
@@ -80,6 +82,23 @@ export interface OraclePairPolicy {
 }
 
 export interface OraclePolicy {
+  /**
+   * v0.5.3 (V-3): network this verifier serves. It is part of the signed
+   * payload and of the domain separator, both taken from this local
+   * configuration, never from the quote.
+   */
+  networkId: string;
+  /**
+   * v0.5.3 compatibility: also accept quotes signed over the v0.1 payload
+   * (no networkId). Default false; meant only to re-verify archived quotes.
+   */
+  acceptLegacyV1Quotes: boolean;
+  /**
+   * v0.5.3 (V-4): maximum share of the total weight one key may carry in the
+   * weighted median, in PPM (default 500_000 = half; a source's weight is cut
+   * to the sum of the others' weights times this share / (1 - share)).
+   */
+  maxSourceWeightSharePpm: bigint;
   defaultMaxStalenessHeights: number;
   maxFutureDriftHeights: number;
   defaultMaxDeviationPpm: bigint;
@@ -90,6 +109,9 @@ export interface OraclePolicy {
 
 /** Defaults: 12 heights (~60 s) staleness, 1 height future drift, 5 % deviation, 2 sources. */
 export const DEFAULT_ORACLE_POLICY: OraclePolicy = {
+  networkId: "uep-testnet-1",
+  acceptLegacyV1Quotes: false,
+  maxSourceWeightSharePpm: 500_000n,
   defaultMaxStalenessHeights: 12,
   maxFutureDriftHeights: 1,
   defaultMaxDeviationPpm: 50_000n,
@@ -107,6 +129,8 @@ export interface OracleSourceRegistration {
   reputationMetadata?: { uptimeScore: number; totalReports: number; lastAuditHeight?: number };
   registeredAtHeight: number;
   lastSeenHeight?: number;
+  /** v0.5.3: height of the last explicit key rotation (rotateSourceKey). */
+  keyRotatedAtHeight?: number;
 }
 
 export interface EconomicEvaluation {
@@ -121,6 +145,9 @@ export interface EconomicEvaluation {
  * consumes it must mark it used; the oracle itself never moves funds.
  */
 export interface SettlementAuthorization {
+  /** v0.5.3 (V-5): voucher format; "uep-settlement-authorization-v2" is signed. */
+  version?: "uep-settlement-authorization-v2";
+  networkId?: string;
   authorized: true;
   decisionId: string;
   contextId: string;
@@ -131,4 +158,9 @@ export interface SettlementAuthorization {
   issuedAtHeight: number;
   expiresAtHeight: number;
   nonce: string;
+  /** v0.5.3 (V-5): hash binding every field above (domain UEP-ORACLE-SETTLEMENT-AUTH-v2). */
+  authorizationHash?: string;
+  /** v0.5.3 (V-5): Ed25519 signature of `authorizationHash` by a policy authority key. */
+  signature?: string;
+  signerPublicKeyHex?: string;
 }

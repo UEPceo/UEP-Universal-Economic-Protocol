@@ -3,7 +3,7 @@
  * Heights for freshness (ADR 0002). Strict public-key equality against the registry.
  */
 import type { OraclePolicy, OracleQuote, SignedOracleQuote } from "./types.ts";
-import { canonicalQuotePayload, assertCanonicalAssetPair } from "./canonical.ts";
+import { canonicalQuotePayload, canonicalQuotePayloadV1, assertCanonicalAssetPair, quoteDomainSeparator, DOMAIN_SEPARATOR } from "./canonical.ts";
 import { OracleRegistry } from "./registry.ts";
 import { publicKeyHexOf, verifyEd25519 } from "../core/ed25519.ts";
 
@@ -115,14 +115,29 @@ export class OracleVerifier {
         };
       }
 
+      // v0.5.3 (V-3): the domain separator and networkId come from local configuration.
+      let localDomain: string;
+      try {
+        localDomain = quoteDomainSeparator(policy.networkId);
+      } catch {
+        return { ok: false, code: "DOMAIN_MISMATCH", message: "Verifier has no valid local networkId." };
+      }
+      const claimed = signedQuote.domainSeparator;
+      const legacyClaim = claimed === undefined || claimed === DOMAIN_SEPARATOR;
+      if (claimed !== undefined && claimed !== localDomain && !(policy.acceptLegacyV1Quotes && claimed === DOMAIN_SEPARATOR)) {
+        return { ok: false, code: "DOMAIN_MISMATCH", message: `Quote domain '${claimed}' is not this network's '${localDomain}'.` };
+      }
+
       let payload: Uint8Array;
       try {
-        payload = canonicalQuotePayload(signedQuote);
+        payload = canonicalQuotePayload(signedQuote, { networkId: policy.networkId });
       } catch (err: unknown) {
         return { ok: false, code: "MALFORMED_ENCODING", message: err instanceof Error ? err.message : String(err) };
       }
 
-      if (!verifyEd25519(payload, signedQuote.signature, signerHex)) {
+      const v2ok = verifyEd25519(payload, signedQuote.signature, signerHex);
+      const v1ok = !v2ok && policy.acceptLegacyV1Quotes && legacyClaim && verifyEd25519(canonicalQuotePayloadV1(signedQuote), signedQuote.signature, signerHex);
+      if (!v2ok && !v1ok) {
         return { ok: false, code: "INVALID_SIGNATURE", message: `Cryptographic signature verification failed for source '${quote.source}'.` };
       }
     }

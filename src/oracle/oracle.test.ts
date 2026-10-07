@@ -16,6 +16,8 @@ import {
 } from "./risk-policy.ts";
 import { freshAggregator, makeQuote, signQuote, resetOracleSequence } from "./testkit.ts";
 
+import { generateEd25519KeyPair } from "../core/ed25519.ts";
+const AUTHORITY = generateEd25519KeyPair();
 const BASE = "uep-test/tenergy";
 const QUOTE = "uep-test/teur";
 
@@ -145,8 +147,9 @@ test("risk policy: SVC SLA, IoT tariff, AMM skew, single-use auth", () => {
     assetId: QUOTE,
     expiresAtHeight: 60,
     nonce: "n1",
-  });
-  const ledger = new AuthorizationLedger();
+    networkId: "uep-testnet-1",
+  }, AUTHORITY.privateKey);
+  const ledger = new AuthorizationLedger({ trustedAuthorityKeys: [AUTHORITY.publicKeyHex], networkId: "uep-testnet-1" });
   ledger.consume(auth, 55);
   assert.throws(() => ledger.consume(auth, 55), /ALREADY_SETTLED/);
 });
