@@ -1,6 +1,66 @@
 # Changelog
 
-## 0.5.2 — 2026-10-05
+## 0.5.3-public-iot-m2m — branch `v0.5.3-fixes` (not released)
+
+Package version `0.5.3-public-iot-m2m`. Fixes and wiring on top of 0.5.2. **Not externally assessed**: the last externally assessed version with a published remediation document is v0.4.6 ([`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md)); the changes since then, with their tests and status, are listed in [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md). No native token, no common currency, no runtime dependencies; protocol fee 0.1 %, Marketplace fee 3 %; time is block height.
+
+### Ledger and assets
+
+- **Asset registry wired into the ledger** (ADR 0001): the ledger can be built from a signed registry manifest: only listed assets are minted and spent, decimals and network must match, a deprecated asset cannot be minted (earlier mints stay valid), the fee floor comes from the registry, and the registry binding is checked on restore. Snapshot **format 8** binds the registry hash; migration 7 → 8; golden fixtures `v7-v0.5.2-7173d37` and `v8-v0.5.3`.
+- **Multi-input transactions (UEP-C04, ADR 0004):** up to 8 inputs (`MAX_TX_INPUTS`) of one sender and one asset in one transaction, one protocol fee, change consolidated into one note. `inputNonces` / `inputNullifiers` are optional fields: single-input transactions, their ids and their serialization are unchanged, so no snapshot migration is needed. `prepareMultiInputSpend()`, `buildSpend(Note[])`; reconciliation and conflict marking use every nullifier. The development MAC path and zk-spend refuse multi-input. Self-transfers are still refused; consolidation happens through the change note.
+- **zk-spend on the transaction path (partial):** an optional `zkSpendVerifier` is accepted only when it is not a development-key verifier in a production environment; the ledger binds public inputs 4..11 (ids, asset, amount, fee, nullifier, commitment) to the transaction before verifying. Roots are not bound yet (depth 254 vs 32), the sender signature is still required, restore does not re-verify proofs (`docs/LABS.md` point 7).
+
+### Settlement and Marketplace
+
+- **Atomic settlement commit:** port moves are journaled; on failure they are undone and the treasury fee allocation is reverted; a failed undo halts the engine.
+- **Signed credits by default** (`requireSignedCredits`); unsigned credits only through test-only options, refused in production.
+- **Marketplace snapshot** (format 2) with persisted settlement receipts; migration 1 → 2 and a golden fixture.
+- **Settlement receipts v2** bind the `networkId` in the receipt hash; v1 receipts verify through a versioned alias. Anchors refuse receipts from another network.
+- **Ledger anchors (settlement bridge):** settlement batches are verified, hash-chained and stored in ledger state (snapshot format 8) and re-checked on restore ([`docs/SETTLEMENT-BRIDGE.md`](./docs/SETTLEMENT-BRIDGE.md)). A cumulative receipt log with RFC 9162 consistency proofs links the batches.
+
+### Oracle (commit `1c9f712` and follow-ups)
+
+- One signing key counts as one source; re-registering a source with another key is refused (explicit `rotateSourceKey`); quote payload v2 carries the `networkId` with a locally derived domain separator (V52-04); capped weighted median; signed `SettlementAuthorization` v2; legacy v0.1 quotes only through an explicit shim.
+- **`OraclePolicyGate`** wired into Marketplace listings and reservations, IoT tariffs and hashlock swaps; it fails closed.
+- Data-source policy in [`docs/ORACLE.md`](./docs/ORACLE.md): FX reference rates are display-only; future physical-trigger adapters need at least 2 origins and k-of-n signed evidence; NWS and IMF are not used; optional LEI checked offline (`isValidLei()`, ISO 17442); a leap-seconds file is deferred and would only ever be used in an exporter.
+
+### Category modules
+
+- **V52-01:** a relay dispute that times out after `KEY_RELEASED` resumes the order (the fraud window is extended by the frozen time) instead of refunding 80 % to the buyer; the buyer keeps the fraud-proof path. New optional `timeoutOutcome()` on disputable categories.
+- **V52-02:** a wrong key (`KEY_RELEASE_FAULT`) or no key by the deadline pays `faultBondSlashBps` (default 20 %) of the provider bond to the buyer.
+- **V52-03 (mitigation):** a dispute timeout pays `timeoutBondToRespondentBps` (default 20 %) of the claimant's bond to the respondent.
+- Per-asset dispute bond minimum (`minBondByAsset`); ported module tests (relay fraud and slashing, dispute quorum, frivolous disputes, hashlock-swap and drip negatives, deterministic fuzz) with a shared harness.
+- Naming: "hashlock swap" (`src/category/swap.ts`, bilateral) vs "AMM lab pool" (`src/lab/liquidity.ts`, research simulation).
+- Category commitments stay SHA-256 (reasons in [`docs/CATEGORY-MODULES.md`](./docs/CATEGORY-MODULES.md), together with the other residual limits).
+
+### Cryptography, labs and tooling
+
+- Published test vectors: RFC 9162 (roots, inclusion, consistency, exhaustive up to 40 leaves), RFC 8032 Ed25519, FIPS 180-4 SHA-256, RFC 5869 HKDF, RFC 8439 ChaCha20, circomlib Poseidon. New RFC 9162 consistency proofs in `src/core/rfc9162-merkle.ts`.
+- Witness contract: core account-id derivation by default, circuit derivation in an explicit mode; the two skipped witness-contract tests are enabled.
+- Rust lab crates `uep-23-state-transition` and `uep-24-atomic` compile on the pinned arkworks 0.3 API and run in `npm run test:rust`.
+- Lab `uep35.7.1-consensus` fixed (single-batch proposals carry the economic commitment); it and `uep36.8-multileader-partition` leave the known-issue list.
+- V52-05: the donation address check decodes bech32 / bech32m offline (BIP-173 / BIP-350 vectors) and runs in CI (`npm run check:donation`). The address is a donation address only.
+- V52-06: `docs/ECONOMIC-MODEL.md` aligned with the fee buckets in `src/marketplace/economy.ts`.
+- CI: `npm run test:core` on Node.js 22.x and 24.x, plus a blocking `labs` job (`build:uep-zk` + `test:lab`); the labs with known issues stay non-blocking. The README states what the badge covers.
+
+### Documentation
+
+- `docs/SECURITY-COVERAGE.md` and this CHANGELOG reconciled (v0.4.6 is the last externally assessed threshold); new `docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`.
+- New `docs/MODULES.md` and a `README.md` in each module directory; README "Modules at a glance".
+- `docs/AUDIT-FIXES.md` and `docs/SETTLEMENT-AUDIT-REPORT.md` were integration notes, not audits: moved to `docs/history/` with honest titles; the old paths are redirect stubs.
+- CONTRIBUTING (project rules, good first contributions, reviewing) and a good-first-issue template.
+- `src/service` was not moved: its paths are public imports; a move would need re-export shims (see `docs/MODULES.md`).
+
+### Compatibility
+
+- Snapshot format 8 (formats 6 and 7 migrate). Marketplace snapshot format 2 (format 1 migrates). Receipt hash v2 (v1 verifies through the alias). Oracle quote payload v2 (v0.1 only with `acceptLegacyV1Quotes`).
+- **Behaviour change:** unsigned Marketplace credits need a test-only option; relay disputes that time out after the key resume the order; dispute timeouts move part of the claimant's bond to the respondent (`timeoutBondToRespondentBps: 0` restores 0.5.2).
+
+### Tests (0.5.3)
+
+TESTCOUNTS
+
+## 0.5.2-public-iot-m2m — 2026-10-05 (on `main`, not released)
 
 Package version `0.5.2-public-iot-m2m`. Version 0.5.2 integrates three module packages into the testnet reference: a **settlement engine** (single payout executor behind the Marketplace), **category modules** (swap, relay, dispute, drip) over Marketplace HOLDs, and an **oracle layer** for policy evaluation only. Attack-battery fixes from BATTERY-2026-10-05 that are cheap and critical are included. No native token; fees unchanged. Status: IMPLEMENTED (testnet reference) — not a production, ZK-ready or throughput claim.
 
@@ -51,7 +111,7 @@ Package version `0.5.2-public-iot-m2m`. Version 0.5.2 integrates three module pa
 - No arbiter appeal / staking / rotation; oracle sources are configured keys (no on-network oracle consensus).
 
 
-## 0.5.1-public-iot-m2m — 2026-10-03
+## 0.5.1-public-iot-m2m — 2026-10-03 (not released separately; included in 0.5.2 on `main`)
 
 Version 0.5.1 combines deterministic, height-based transitions with domain delay windows and evidence value caps, a compatibility policy with chained snapshot migrations, and fixes from a non-public independent assessment of v0.5.0 (no public remediation report; v0.4.6 remains the last threshold with a published remediation document, see docs/SECURITY-COVERAGE.md). No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
 
@@ -119,7 +179,7 @@ See `docs/COMPATIBILITY.md` and `docs/adr/0003-compatibility-and-migrations.md`.
 - **Behaviour change (labs):** `new LabNode()` throws on an invalid domain or on a `defaultVkHex` that is not pinned for the node's domain; ZK envelopes whose proof was made for another domain are rejected.
 - **Asset registry, compatibility path for legacy `k-` names:** names created with v0.5.0 (`k-` + 13 characters) remain valid and readable: manifests that list them load unchanged, with the same manifest hash and the same asset field encodings (tested against a frozen v0.5.0 manifest). `legacySelfCertifiedNamespace()` reproduces the old derivation, `selfCertifiedNamespaceVersion()` tells the two apart. New manifests and version bumps cannot introduce a legacy name (`ASSET_REGISTRY_LEGACY_NAMESPACE` in the builder, an upgrade problem on load); `buildSignedAssetRegistry({ allowLegacySelfCertifiedNamespaces: true })` exists only to rebuild old fixtures. Code that assumed every asset id is at most 31 bytes should use `parseAssetId()` / `assetIdToFr()`.
 
-## 0.5.0-public-iot-m2m (unreleased) — research labs, Poseidon protocol hash, asset model and hardening
+## 0.5.0-public-iot-m2m — 2026-10-03 (GitHub Release `v0.5.0`, the latest published release) — research labs, Poseidon protocol hash, asset model and hardening
 
 Version 0.5.0 bundles the research-labs integration and the Poseidon protocol hash (first sections below, unchanged) with the v0.5.0 work: namespaced assets and an asset registry manifest, circuit v4 with (account, asset) state keys, API authorization hardening, remote-safe signed spends, paymaster reserve protection, a compressed sparse Merkle tree and fixes from two non-public independent assessments (no public remediation report; see docs/SECURITY-COVERAGE.md). No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
 

@@ -39,7 +39,7 @@ gate requires a signature-checking aggregator and fails closed.
 The oracle never moves funds and is not on the ledger spend path; it decides
 whether a Marketplace, IoT or swap operation may proceed.
 
-## v0.5.3 hardening (EXP-063, V-1 … V-5; auditor V52-04)
+## v0.5.3 hardening (EXP-063, V-1 … V-5; review item V52-04)
 
 Tests: `src/oracle/oracle-hardening.test.ts` (one negative test per issue).
 
@@ -57,5 +57,5 @@ Tests: `src/oracle/oracle-hardening.test.ts` (one negative test per issue).
 - **FX reference rates (ECB, BIS) are display-only.** They may be shown to users next to a price; they never enter a policy, a quote feed, a settlement or any state. UEP has no common currency or reference unit, and an oracle price is always a price between two concrete assets.
 - **Physical-trigger oracle adapters** (not built yet) must, when built: use at least **2 distinct origins** plus **k-of-n signed evidence**; store the URL and the HTTP status per evidence leaf; discard any non-200 response. Adapters run outside transitions (no network access inside a transition, ADR 0002).
 - **NWS and IMF are not used as sources.**
-- **LEI** is only an optional provider field, validated offline with the ISO 17442 checksum (ISO 7064 MOD 97-10); no cache, no network call.
+- **LEI** is only an optional, informational provider field. When present it is checked offline with `isValidLei()` (`src/oracle/lei.ts`: ISO 17442 format and ISO 7064 MOD 97-10 checksum); no cache, no registry lookup, no network call. A valid checksum does not prove the entity exists, and an LEI never enters a policy decision or state.
 - **Leap-seconds file:** deferred. Any future use is in an exporter only (display of wall-clock conversions), never in state; UEP time is the block height.

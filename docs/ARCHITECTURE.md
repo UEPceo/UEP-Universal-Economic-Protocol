@@ -4,6 +4,8 @@ This document describes the UEP architecture as fourteen layers (A–N), what of
 
 Everything described as implemented runs on the **local, single-node, in-process testnet**. Nothing here is a production network, and there is no native UEP token.
 
+Per-module status, version, tests and documentation (including settlement, categories and the oracle): [`MODULES.md`](./MODULES.md).
+
 ## 1. Global view
 
 UEP is not simply a blockchain, a cryptocurrency or a marketplace. The goal is an economic protocol where people, companies, applications, agents and machines can offer, discover, contract, execute, verify and settle economic services, with the economy and the infrastructure growing together.
@@ -375,14 +377,16 @@ The Marketplace Treasury is not a native UEP token treasury.
 This is the direction, not the current state. The current state is the table in section 2.
 
 
-## Settlement, categories and oracle (v0.5.2)
+## Settlement, categories and oracle (v0.5.2; hardened in v0.5.3)
 
 Added as **Implemented (testnet)** modules on top of the Marketplace:
 
 - `src/settlement` — single payout executor behind Marketplace and category HOLDs. Marketplace `payout()` and category `settleHold()` go through it; one fee path (Marketplace fee on the provider part only).
-- `src/category` — swap, relay, dispute, drip over once-issued Marketplace escrow/subsidy ports (no private ledgers). Relay pays 20 % custody / 80 % delivery after key publication.
-- `src/oracle` — policy-evaluation oracle (repository Poseidon BN254 commitments); never imported from core/testnet; never holds balances; not on the spend or consensus path.
+- `src/category` — hashlock swap (bilateral; not the AMM lab pool in `src/lab/liquidity.ts`), relay, dispute, drip over once-issued Marketplace escrow/subsidy ports (no private ledgers). Relay pays 20 % custody / 80 % delivery after key publication.
+- `src/oracle` — policy-evaluation oracle (repository Poseidon BN254 commitments, network-bound quotes since v0.5.3); `OraclePolicyGate` (v0.5.3) checks Marketplace listing prices, IoT tariffs and hashlock-swap rates and fails closed; never imported from core/testnet; never holds balances; not on the spend or consensus path.
+
+v0.5.3 additions: settlement receipts v2 bind the `networkId`; settlement batches are anchored in ledger state (snapshot format 8) with RFC 9162 consistency proofs across batches; the asset registry is wired into the ledger; multi-input transactions (ADR 0004); relay/dispute fixes V52-01 … V52-03. Self-assessed coverage: [`REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md).
 
 Attack-battery hardenings that land with these modules (still testnet only): process-local concurrent spend guard (`LEDGER_BUSY`) and `SpendSerializer`; `maxUnfundedReservationsPerListing`; optimistic `order.version` / `ORDER_STATE_CONFLICT`; paymaster sponsorship captured only on settle. Deferred: IoT hardware attestation (Evidence phase); HPKE for relay payloads.
 
-See `docs/SETTLEMENT.md`, `docs/CATEGORY-MODULES.md`, `docs/ORACLE.md`, `docs/THREAT-MODEL.md` and `docs/INTEGRATION-PLAN.md`.
+See `docs/MODULES.md`, `docs/SETTLEMENT.md`, `docs/SETTLEMENT-BRIDGE.md`, `docs/CATEGORY-MODULES.md`, `docs/ORACLE.md`, `docs/THREAT-MODEL.md` and `docs/INTEGRATION-PLAN.md`.
