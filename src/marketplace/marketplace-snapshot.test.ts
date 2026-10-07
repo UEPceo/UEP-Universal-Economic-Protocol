@@ -23,7 +23,7 @@ test("marketplace snapshot round-trips settlement receipts through JSON and rest
   assert.equal(snap.settlement.count, 1);
   const text = marketplaceSnapshotToJSON(snap);
   const fresh = mk();
-  assert.equal(fresh.restoreSnapshot(marketplaceSnapshotFromJSON(text) as never), 1);
+  assert.equal(fresh.restoreSnapshot(marketplaceSnapshotFromJSON(text) as never, { snapshotPublicKeys: m.snapshotPublicKeys() }), 1);
   assert.deepEqual(fresh.settlementReceipt(orderId), m.settlementReceipt(orderId));
   assert.equal(fresh.exportSnapshot().settlement.batchRoot, snap.settlement.batchRoot);
 });
@@ -35,7 +35,7 @@ test("marketplace snapshot restore refuses tampering, wrong binding and non-fres
   tampered.height += 1;
   assert.throws(() => mk().restoreSnapshot(tampered), /HASH_MISMATCH/);
   const other = new DigitalServicesMarketplace({ testOnlyNowMs: () => 1, marketplaceId: "other-mkt", adminIdentity: "admin-1", adminPublicKey: ADMIN.publicKeyHex, adminAuthorizer: (id) => id === "admin-1" });
-  assert.throws(() => other.restoreSnapshot(snap), /MARKETPLACE_MISMATCH/);
+  assert.throws(() => other.restoreSnapshot(snap, { snapshotPublicKeys: m.snapshotPublicKeys() }), /MARKETPLACE_MISMATCH/);
   assert.throws(() => m.restoreSnapshot(snap), /NOT_FRESH/);
   assert.throws(() => mk().restoreSnapshot({ ...snap, formatVersion: 99 }), /FORMAT_UNSUPPORTED/);
   assert.deepEqual(marketplaceMigrationRegistryProblems(), []);

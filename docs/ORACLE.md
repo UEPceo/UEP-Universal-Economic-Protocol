@@ -32,9 +32,15 @@ gate requires a signature-checking aggregator and fails closed.
   plus the buyer's optional `maxCost` budget (`evaluateIotTariff`) before any
   state is touched. Oracle-bound IoT listings are checked even without the flag.
 - **Hashlock swap** (`uep.service.swap.v1`, the Marketplace category; not the
-  AMM lab pool). `new SwapCategory(port, index, networkId, { priceGate,
-  maxSkewPpm, requireOracle })` checks the implied rate at `open()` for every
-  pair with an oracle pair policy (or every pair with `requireOracle`).
+  AMM lab pool). `new SwapCategory(port, index, networkId, { priceGate })`.
+  The rate check is an explicit per-swap opt-in: the buyer signs
+  `oracleBand = { maxSkewPpm, onOracleUnavailable? }` inside the intent (part
+  of the intent id). Only then is the implied rate checked at `open()`, and
+  the outcome is stored on the swap (`oracleCheck`, with the hash of the
+  aggregated quote used). A registry pair policy or a pair pause never makes
+  a swap oracle-bound; `setPairPaused` no longer creates a pair policy. The
+  constructor options `maxSkewPpm` and `requireOracle` are deprecated shims
+  with no effect on which swaps are checked.
 
 The oracle never moves funds and is not on the ledger spend path; it decides
 whether a Marketplace, IoT or swap operation may proceed.

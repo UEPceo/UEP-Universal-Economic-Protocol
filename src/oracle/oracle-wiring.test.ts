@@ -11,7 +11,7 @@ import { act, createTestAuthority, enrollIdentity, publishAs, reserveAs } from "
 import { IoTM2MService, IOT_M2M_CATEGORY } from "../service/iot-m2m.ts";
 import { registerMachineAs, registerProviderAs, requestAs } from "../service/iot-testkit.ts";
 import { SettlementIndex } from "../category/settlement-index.ts";
-import { SwapCategory, swapHashlock, swapIntentId } from "../category/swap.ts";
+import { SwapCategory, swapHashlock, swapIntentId, type SwapIntentBody } from "../category/swap.ts";
 import { OracleAggregator } from "./index.ts";
 import { OracleRegistry } from "./registry.ts";
 import { OraclePolicyGate } from "./policy-gate.ts";
@@ -78,23 +78,68 @@ test("IoT: tariff must be oracle-bound when required; band and buyer budget are 
   assert.throws(() => requestAs(iot, { buyerId: "b1", listingId: bound.listingId, machineId: "m1", quantity: 1n }), /ORACLE_STALE/);
 });
 
-function openSwap(w: ReturnType<typeof world>, swap: SwapCategory, fromAmount: bigint, toAmount: bigint, nonce: number) {
-  const intent = { version: 1 as const, category: "uep.service.swap.v1" as const, networkId: "uep-testnet", buyerId: "buyer", marketMakerId: "maker", fromAsset: EUR, fromAmount, toAsset: ENERGY, toAmount, hashlock: swapHashlock(`preimage-sixteen-${nonce}`, nonce, "uep-testnet"), deadline: w.height() + 100, orderNonce: nonce };
+function openSwap(w: ReturnType<typeof world>, swap: SwapCategory, fromAmount: bigint, toAmount: bigint, nonce: number, oracleBand?: SwapIntentBody["oracleBand"], signedBand: SwapIntentBody["oracleBand"] | null | "same" = "same") {
+  const intent: SwapIntentBody = { version: 1 as const, category: "uep.service.swap.v1" as const, networkId: "uep-testnet", buyerId: "buyer", marketMakerId: "maker", fromAsset: EUR, fromAmount, toAsset: ENERGY, toAmount, hashlock: swapHashlock(`preimage-sixteen-${nonce}`, nonce, "uep-testnet"), deadline: w.height() + 100, orderNonce: nonce, ...(oracleBand ? { oracleBand } : {}) };
   const intentId = swapIntentId(intent);
   const { version, category, networkId, buyerId, marketMakerId, hashlock, deadline, orderNonce } = intent;
-  return swap.open(act(w.m, "buyer", "swap-intent", intentId, { version, category, networkId, buyerId, marketMakerId, fromAsset: EUR, fromAmount, toAsset: ENERGY, toAmount, hashlock, deadline, orderNonce }), intent, act(w.m, "maker", "swap-accept", intentId, { intentId }), { intentId });
+  const band = signedBand === "same" ? oracleBand : signedBand ?? undefined;
+  return swap.open(act(w.m, "buyer", "swap-intent", intentId, { version, category, networkId, buyerId, marketMakerId, fromAsset: EUR, fromAmount, toAsset: ENERGY, toAmount, hashlock, deadline, orderNonce, ...(band ? { oracleBand: band } : {}) }), intent, act(w.m, "maker", "swap-accept", intentId, { intentId }), { intentId });
 }
 
-test("swap: governed pairs are rate-checked against the oracle at open (fail closed)", () => {
+test("swap: the oracle rate check is an explicit, signed per-swap opt-in (oracleBand)", () => {
   const w = world();
   enrollIdentity(w.m, "buyer", { asset: EUR, amount: 10_000n });
   enrollIdentity(w.m, "maker", { asset: ENERGY, amount: 10_000n });
-  const swap = new SwapCategory(w.m.issueCategoryEscrowPort("swap"), new SettlementIndex(), "uep-testnet", { priceGate: w.gate, maxSkewPpm: 30_000n });
-  assert.equal(openSwap(w, swap, 1_000n, 500n, 1).state, "DUAL_HOLD_LOCKED"); // fair: 1 tEUR = 0.5 tENERGY
-  assert.throws(() => openSwap(w, swap, 1_000n, 300n, 2), /ORACLE_POLICY_REJECTED/); // buyer short-changed by 40%
+  const swap = new SwapCategory(w.m.issueCategoryEscrowPort("swap"), new SettlementIndex(), "uep-testnet", { priceGate: w.gate });
+  const band = { maxSkewPpm: 30_000n };
+  const fair = openSwap(w, swap, 1_000n, 500n, 1, band); // fair: 1 tEUR = 0.5 tENERGY
+  assert.equal(fair.state, "DUAL_HOLD_LOCKED");
+  assert.equal(fair.oracleCheck?.outcome, "IN_BAND");
+  assert.match(fair.oracleCheck?.quoteHash ?? "", /^[0-9a-f]{64}$/);
+  assert.throws(() => openSwap(w, swap, 1_000n, 300n, 2, band), /ORACLE_POLICY_REJECTED/); // buyer short-changed by 40%
+  // A registry pair policy alone does not bind a swap: without oracleBand the oracle is not consulted.
+  assert.equal(w.gate.governs(EUR, ENERGY), true);
+  const plain = openSwap(w, swap, 1_000n, 300n, 3);
+  assert.equal(plain.state, "DUAL_HOLD_LOCKED");
+  assert.equal(plain.oracleCheck, undefined);
+  // The band is part of the signed intent: adding it after signing (or dropping it) breaks the buyer signature.
+  assert.throws(() => openSwap(w, swap, 1_000n, 500n, 4, band, null));
+  assert.throws(() => openSwap(w, swap, 1_000n, 500n, 5, undefined, band));
+  assert.throws(() => openSwap(w, swap, 1_000n, 500n, 6, { maxSkewPpm: -1n }), /SWAP_ORACLE_BAND_INVALID/);
+  assert.throws(() => openSwap(w, swap, 1_000n, 500n, 7, { maxSkewPpm: 1n, onOracleUnavailable: "PANIC" as never }), /ORACLE_UNAVAILABLE_POLICY_INVALID/);
+  // Feed stale: by default the signed price is followed (and recorded); BLOCK_NEW refuses the new swap only.
   w.advance(20);
-  assert.throws(() => openSwap(w, swap, 1_000n, 500n, 3), /ORACLE_STALE/);
+  const followed = openSwap(w, swap, 1_000n, 500n, 8, band);
+  assert.equal(followed.oracleCheck?.outcome, "ORACLE_UNAVAILABLE_SIGNED_PRICE");
+  assert.equal(followed.oracleCheck?.reason, "ORACLE_STALE");
+  assert.throws(() => openSwap(w, swap, 1_000n, 500n, 9, { maxSkewPpm: 30_000n, onOracleUnavailable: "BLOCK_NEW" }), /ORACLE_STALE/);
+  assert.equal(openSwap(w, swap, 1_000n, 500n, 10).state, "DUAL_HOLD_LOCKED");
+  // Deprecated shim: requireOracle no longer binds pairs, but still needs a gate.
   assert.throws(() => new SwapCategory(w.m.issueCategoryEscrowPort("swap"), new SettlementIndex(), "uep-testnet", { requireOracle: true }), /ORACLE_NOT_CONFIGURED|CATEGORY_PORT/);
+});
+
+test("swap: without a gate an opted-in swap follows the signed price by default", () => {
+  const w = world();
+  enrollIdentity(w.m, "buyer", { asset: EUR, amount: 10_000n });
+  enrollIdentity(w.m, "maker", { asset: ENERGY, amount: 10_000n });
+  const swap = new SwapCategory(w.m.issueCategoryEscrowPort("swap"), new SettlementIndex(), "uep-testnet");
+  assert.equal(openSwap(w, swap, 1_000n, 500n, 1, { maxSkewPpm: 30_000n }).oracleCheck?.reason, "ORACLE_NOT_CONFIGURED");
+  assert.throws(() => openSwap(w, swap, 1_000n, 500n, 2, { maxSkewPpm: 30_000n, onOracleUnavailable: "BLOCK_NEW" }), /ORACLE_NOT_CONFIGURED/);
+});
+
+test("pausing a pair never creates a pair policy", () => {
+  const registry = new OracleRegistry();
+  registry.setPairPaused(EUR, ENERGY, true);
+  assert.equal(registry.getPairPolicy(EUR, ENERGY), undefined);
+  assert.equal(registry.isPairPaused(EUR, ENERGY), true);
+  registry.setPairPaused(EUR, ENERGY, false);
+  assert.equal(registry.isPairPaused(EUR, ENERGY), false);
+  assert.equal(registry.getPairPolicy(EUR, ENERGY), undefined);
+  // With a policy, pause / resume keep its other fields.
+  registry.setPairPolicy({ baseAssetId: EUR, quoteAssetId: ENERGY, maxStalenessHeights: 12, maxDeviationPpm: 50_000n, minSources: 2 });
+  registry.setPairPaused(EUR, ENERGY, true);
+  assert.equal(registry.isPairPaused(EUR, ENERGY), true);
+  assert.equal(registry.getPairPolicy(EUR, ENERGY)?.minSources, 2);
 });
 
 test("the gate refuses an aggregator without signature checks", () => {

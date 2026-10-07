@@ -9,7 +9,7 @@ import { SparseMerkleTree } from "../core/smt.ts";
 import { markConflicts, reconcile, settlementRoot } from "../core/reconciliation.ts";
 import { assetEncodings, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr, resolveAssetIdAlias, MAX_REGISTRY_DECIMALS, type AssetRecord } from "../core/assets.ts";
 import type { AssetRegistry } from "../core/asset-registry.ts";
-import { anchorChainProblem, buildSettlementAnchor, GENESIS_ANCHOR_HASH, type SettlementAnchor } from "../settlement/anchor.ts";
+import { anchorChainProblem, buildSettlementAnchor, GENESIS_ANCHOR_HASH, settlementAnchorAuthorizationMessage, type SettlementAnchor, type SettlementAnchorAuthorization } from "../settlement/anchor.ts";
 import type { SettlementReceipt } from "../settlement/types.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 import { migrateSnapshotPayload, snapshotFormatSupport } from "./snapshot-migrations.ts";
@@ -63,7 +63,9 @@ export type SubmitError =
   /** v0.4.7: a multi-note payment batch is malformed (size, mixed sender / asset / recipient, shared inputs). */
   | { code: "BATCH_INVALID"; message: string }
   /** v0.5.2: a spend was submitted while another spend of this ledger was being checked or applied (re-entry). */
-  | { code: "LEDGER_BUSY"; message: string };
+  | { code: "LEDGER_BUSY"; message: string }
+  /** v0.5.3: this ledger was replaced by restore(..., { replaces }) and accepts no further state change. */
+  | { code: "LEDGER_RETIRED"; message: string };
 
 export type SubmitResult = { tx: UepTransaction } | { error: SubmitError };
 /** A spend that passed every check and can be applied without further validation. */
@@ -121,6 +123,8 @@ export const MAX_PENDING_TRANSACTIONS_LIMIT = 100_000;
 /** `prevSnapshotHash` of the first snapshot in a ledger's chain. */
 export const GENESIS_SNAPSHOT_HASH = "0".repeat(64);
 const SNAPSHOT_DOMAIN = "UEP-SNAPSHOT-v3";
+/** v0.5.3: a ledger replaced by restore(..., { replaces }) refuses every state change and snapshot signing. */
+const RETIRED_MESSAGE = "this ledger was replaced by a restore (restore(..., { replaces })); use the restored ledger";
 const MINT_DOMAIN = "UEP-FAUCET-MINT-v1";
 const CHAIN_DOMAIN = "UEP-HISTORY-CHAIN-v1";
 
@@ -461,6 +465,14 @@ export class UepLedger {
      * registry hash is committed in every snapshot.
      */
     assetRegistry?: AssetRegistry;
+    /**
+     * v0.5.3: Marketplace anchor keys per marketplace id. anchorSettlements()
+     * accepts a batch only with a signature of one of these keys over the
+     * request (settlementAnchorAuthorizationMessage). Operator configuration,
+     * not snapshot state: set it again on a restored ledger
+     * (setSettlementAnchorAuthority).
+     */
+    settlementAnchorAuthorities?: Record<string, PublicKeyLike[]>;
     /** v0.4.7 TEST-ONLY: build a ledger with requireProof = false. Never set outside tests. */
     testOnlyDisableProof?: boolean;
     /**
@@ -500,11 +512,27 @@ export class UepLedger {
       if (reg.networkId !== this.networkId) throw new Error("ASSET_REGISTRY_NETWORK_MISMATCH");
       this.assetRegistry = reg;
     }
+    for (const [mid, keys] of Object.entries(opts.settlementAnchorAuthorities ?? {})) this.setSettlementAnchorAuthority(mid, keys);
+  }
+
+  /** v0.5.3: anchor keys of one Marketplace (replaces the previous set; an empty list removes it). */
+  setSettlementAnchorAuthority(marketplaceId: string, publicKeys: readonly PublicKeyLike[]): void {
+    if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
+    if (typeof marketplaceId !== "string" || !marketplaceId || !Array.isArray(publicKeys)) throw new Error("SETTLEMENT_ANCHOR_AUTHORITY_INVALID");
+    const hexes = new Set<string>();
+    for (const k of publicKeys) {
+      let hex: string;
+      try { hex = publicKeyHexOf(k); } catch { throw new Error("SETTLEMENT_ANCHOR_AUTHORITY_INVALID: key"); }
+      hexes.add(hex);
+    }
+    if (hexes.size === 0) this.anchorAuthorities.delete(marketplaceId);
+    else this.anchorAuthorities.set(marketplaceId, hexes);
   }
 
   /** v0.5.3: anchored Marketplace settlement batches, hash-chained (see src/settlement/anchor.ts). */
   settlementAnchors: SettlementAnchor[] = [];
   private anchoredSettlements = new Map<string, Set<string>>();
+  private anchorAuthorities = new Map<string, Set<string>>();
 
   /**
    * v0.5.3 settlement bridge: verify `receipts` (hashes, per-receipt
@@ -512,9 +540,19 @@ export class UepLedger {
    * before) and append their batch commitment to the consensus state at the
    * current height. Returns the anchor. Re-anchoring a settlement id fails.
    */
-  anchorSettlements(input: { marketplaceId: string; treasuryId: string; receipts: readonly SettlementReceipt[] }): SettlementAnchor {
+  anchorSettlements(input: { marketplaceId: string; treasuryId: string; receipts: readonly SettlementReceipt[]; authorization?: SettlementAnchorAuthorization }): SettlementAnchor {
     if (this.retired) throw new Error("LEDGER_RETIRED");
     const prev = this.settlementAnchors[this.settlementAnchors.length - 1];
+    // v0.5.3: only the Marketplace's anchor key may anchor under its id (no anonymous or invented batches).
+    const keys = this.anchorAuthorities.get(input?.marketplaceId);
+    if (!keys) throw new Error("SETTLEMENT_ANCHOR_UNAUTHORIZED: no anchor key is configured for this marketplace");
+    const auth = input?.authorization;
+    let authHex: string | undefined;
+    try { authHex = auth ? publicKeyHexOf(auth.publicKeyHex) : undefined; } catch { authHex = undefined; }
+    const message = Array.isArray(input?.receipts) && input.receipts.every((r) => r && typeof r === "object")
+      ? settlementAnchorAuthorizationMessage({ networkId: this.networkId, marketplaceId: input.marketplaceId, treasuryId: input.treasuryId, index: this.settlementAnchors.length, prevAnchorHash: prev?.anchorHash ?? GENESIS_ANCHOR_HASH, receipts: input.receipts })
+      : undefined;
+    if (!auth || !authHex || !keys.has(authHex) || !message || !verifyEd25519(message, auth.signature, authHex)) throw new Error("SETTLEMENT_ANCHOR_UNAUTHORIZED: missing or invalid Marketplace anchor signature");
     const anchored = this.anchoredSettlements.get(input?.marketplaceId) ?? new Set<string>();
     const anchor = buildSettlementAnchor({
       index: this.settlementAnchors.length,
@@ -778,6 +816,7 @@ export class UepLedger {
   }
 
   faucet(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint): Note {
+    if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
     if (!this.allowFaucet) throw new Error("Faucet is TESTNET-only");
     assetIdStr = resolveAssetIdAlias(assetIdStr);
     let account: Fr;
@@ -829,6 +868,7 @@ export class UepLedger {
   setIssuerSigningKey(assetIdStr: string, key: PrivateKeyLike | null): void {
     assetIdStr = resolveAssetIdAlias(assetIdStr);
     if (!isCanonicalLedgerAssetId(assetIdStr) || !this.assetRecord(assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
+    if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
     if (key === null) { this.issuerSigners.delete(assetIdStr); return; }
     const k = toPrivateKey(key);
     if (this.snapshotAuthorityPublicKeys().includes(publicKeyHexOf(k))) throw new Error("ISSUER_KEY_NOT_DISTINCT");
@@ -1006,6 +1046,7 @@ export class UepLedger {
     amount: bigint,
     now: number,
   ): { recipient: Fr; assetId: Fr; minFee: bigint } | { error: SubmitError } {
+    if (this.retired) return { error: { code: "LEDGER_RETIRED", message: RETIRED_MESSAGE } };
     if (amount <= 0n) return { error: { code: "AMOUNT_MISMATCH", message: "Amount must be greater than zero." } };
     if (recipientOrAddress instanceof Fr && (recipientOrAddress.eq(TREASURY_ID) || recipientOrAddress.eq(secrets.accountId))) {
       return { error: { code: "INVALID_PARTICIPANTS", message: "Sender, recipient and treasury must be distinct accounts." } };
@@ -1206,6 +1247,7 @@ export class UepLedger {
    * transactional store; that is outside this reference implementation.
    */
   submit(tx: UepTransaction, secrets?: IdentitySecrets): SubmitResult {
+    if (this.retired) return { error: { code: "LEDGER_RETIRED", message: RETIRED_MESSAGE } };
     if (this.spendInProgress) return { error: { code: "LEDGER_BUSY", message: "Another spend is being processed by this ledger." } };
     this.spendInProgress = true;
     try {
@@ -1262,6 +1304,7 @@ export class UepLedger {
    * Batches are not queued offline.
    */
   submitBatch(txs: UepTransaction[], secrets?: IdentitySecrets): BatchResult {
+    if (this.retired) return { error: { code: "LEDGER_RETIRED", message: RETIRED_MESSAGE } };
     if (this.spendInProgress) return { error: { code: "LEDGER_BUSY", message: "Another spend is being processed by this ledger." } };
     this.spendInProgress = true;
     try {
@@ -1627,6 +1670,8 @@ export class UepLedger {
    * node holds and linked to the previous snapshot by `prevSnapshotHash`.
    */
   snapshot(): UepLedgerSnapshot {
+    // v0.5.3: a retired ledger must not sign a second, diverging history.
+    if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
     if (this.snapshotSigners.length === 0) throw new Error("SNAPSHOT_SIGNING_KEY_REQUIRED");
     const signed = signSnapshot(this.snapshotPayload(), this.snapshotSigners);
     this.snapshotSequence = signed.sequence;

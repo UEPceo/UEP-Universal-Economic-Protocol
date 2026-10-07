@@ -10,6 +10,7 @@ export class OracleRegistry {
   private sources = new Map<string, OracleSourceRegistration>();
   private pairPolicies = new Map<string, OraclePairPolicy>();
   private globalPaused = false;
+  private pausedPairs = new Set<string>();
 
   setGlobalPaused(paused: boolean): void {
     this.globalPaused = paused;
@@ -106,25 +107,24 @@ export class OracleRegistry {
     return p ? { ...p } : undefined;
   }
 
+  /**
+   * Pause or resume one pair. v0.5.3: the pause is kept apart from pair
+   * policies; pausing a pair that has no policy no longer creates one (a
+   * pause must not change staleness, deviation or minimum-source rules).
+   */
   setPairPaused(base: string, quote: string, paused: boolean): void {
-    const p = this.pairPolicies.get(this.pairKey(base, quote));
-    if (p) {
-      p.paused = paused;
-    } else {
-      this.setPairPolicy({
-        baseAssetId: base,
-        quoteAssetId: quote,
-        maxStalenessHeights: 12,
-        maxDeviationPpm: 50_000n,
-        minSources: 1,
-        paused,
-      });
-    }
+    assertCanonicalAssetPair(base, quote);
+    const key = this.pairKey(base, quote);
+    if (paused) this.pausedPairs.add(key);
+    else this.pausedPairs.delete(key);
+    const p = this.pairPolicies.get(key);
+    if (p) p.paused = paused;
   }
 
   isPairPaused(base: string, quote: string): boolean {
     if (this.globalPaused) return true;
-    return this.pairPolicies.get(this.pairKey(base, quote))?.paused ?? false;
+    const key = this.pairKey(base, quote);
+    return this.pausedPairs.has(key) || (this.pairPolicies.get(key)?.paused ?? false);
   }
 
   /** Record that a source was seen at `height` (after a successful publish). */

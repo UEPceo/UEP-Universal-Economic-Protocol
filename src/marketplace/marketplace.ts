@@ -19,7 +19,7 @@ import {
 } from "./economy.ts";
 import { MarketplacePaymaster, type GasQuote } from "./paymaster.ts";
 import type { KeyObject } from "node:crypto";
-import { publicKeyHexOf, toPublicKey, verifyEd25519, type PublicKeyLike } from "../core/ed25519.ts";
+import { generateEd25519KeyPair, publicKeyHexOf, toPublicKey, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
 import { decodeAccountAddress } from "../core/address.ts";
 import { spendKeyMatchesAccount } from "../core/spend-key.ts";
 import type { Fr } from "../core/field.ts";
@@ -33,7 +33,8 @@ import { EvidenceCaps, evidenceCapsView, type EvidenceCapsConfig, type EvidenceC
 import { looksLikeLegacyMs } from "../core/deprecation.ts";
 import { SettlementEngine } from "../settlement/engine.ts";
 import type { PayoutInstruction, SettlementLedgerPort, SettlementOutcome, SettlementReceipt } from "../settlement/types.ts";
-import { buildMarketplaceSnapshot, migrateMarketplaceSnapshot, verifyMarketplaceSnapshot, type MarketplaceSnapshot } from "./marketplace-snapshot.ts";
+import { buildMarketplaceSnapshot, migrateMarketplaceSnapshot, verifyMarketplaceSnapshot, verifyMarketplaceSnapshotSignatures, type MarketplaceSnapshot, type MarketplaceSnapshotTrust } from "./marketplace-snapshot.ts";
+import { GENESIS_ANCHOR_HASH, signSettlementAnchorRequest, type SettlementAnchorAuthorization } from "../settlement/anchor.ts";
 import { CATEGORY_ACTIONS, type CategoryAction } from "./identity.ts";
 import { assertOracleReferenceTerms, type OraclePolicyGate, type OracleReferenceTerms } from "../oracle/policy-gate.ts";
 import type { CategoryEscrowPort, CategoryHoldState, CategoryModuleName, CategoryPayout, SubsidyPort } from "./category-escrow.ts";
@@ -351,6 +352,18 @@ export type MarketplaceConfig = {
   /** v0.5.3: oracle policy gate for listings with `oracleReference` (fail closed). */
   oracleGate?: OraclePolicyGate;
   /**
+   * v0.5.3: Ed25519 key(s) that sign exportSnapshot(). Default: one ephemeral
+   * in-memory key per instance (snapshots then restore only into this
+   * instance's trust set or an explicit one). Never commit real keys.
+   */
+  snapshotSigningKeys?: PrivateKeyLike[];
+  /**
+   * v0.5.3: Ed25519 key that authorizes anchorSettlements() batches on the
+   * ledger (register its public key with ledger.setSettlementAnchorAuthority).
+   * Default: an ephemeral in-memory key (anchorPublicKeyHex()).
+   */
+  anchorSigningKey?: PrivateKeyLike;
+  /**
    * v0.4.7: when set (e.g. "uep-testnet-1"), every listing and credit asset must
    * be an asset id registered on that ledger network (src/core/assets.ts).
    * Default: unset (any well-formed asset id, as before).
@@ -472,6 +485,8 @@ export class DigitalServicesMarketplace {
   readonly transitionClock: TransitionClock;
   private readonly now: () => number;
   private sequence = 0;
+  #snapshotSigningKeys: PrivateKeyLike[];
+  #anchorSigningKey: PrivateKeyLike;
   private readonly listings = new Map<string, ServiceListing>();
   private readonly orders = new Map<string, ServiceOrder>();
   private readonly held = new NestedAmountMap();
@@ -601,6 +616,8 @@ export class DigitalServicesMarketplace {
     this.cancellationGraceMs = clock.toNominalMs(base.cancellationGrace);
     this.marketplaceId = config.marketplaceId ?? DEFAULT_MARKETPLACE_ID;
     this.oracleGate = config.oracleGate;
+    this.#snapshotSigningKeys = config.snapshotSigningKeys && config.snapshotSigningKeys.length > 0 ? [...config.snapshotSigningKeys] : [generateEd25519KeyPair().privateKey];
+    this.#anchorSigningKey = config.anchorSigningKey ?? generateEd25519KeyPair().privateKey;
     this.ledgerNetworkId = config.ledgerNetworkId ?? TESTNET.networkId;
     this.testOnlyAllowZeroReservationDeposit = testOnlyOption("testOnlyAllowZeroReservationDeposit", config.testOnlyAllowZeroReservationDeposit);
     if (this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit >= 0n && this.fixedReservationDeposit < MIN_RESERVATION_DEPOSIT && !(this.testOnlyAllowZeroReservationDeposit && this.fixedReservationDeposit === 0n)) {
@@ -762,7 +779,26 @@ export class DigitalServicesMarketplace {
    * batch root and totals, bound to this marketplace and treasury.
    */
   exportSnapshot(): MarketplaceSnapshot {
-    return buildMarketplaceSnapshot({ marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, networkId: this.ledgerNetworkId, height: this.now(), receipts: this.settlementEngine.receiptsList() });
+    return buildMarketplaceSnapshot({
+      marketplaceId: this.marketplaceId,
+      treasuryId: this.treasury.treasuryId,
+      networkId: this.ledgerNetworkId,
+      height: this.now(),
+      orderSequence: this.sequence,
+      receipts: this.settlementEngine.receiptsList(),
+      legacyV1SettlementIds: this.settlementEngine.legacyV1SettlementIds(),
+      signingKeys: this.#snapshotSigningKeys,
+    });
+  }
+
+  /** v0.5.3: public keys that sign this instance's snapshots (the default restore trust). */
+  snapshotPublicKeys(): string[] {
+    return this.#snapshotSigningKeys.map((k) => publicKeyHexOf(k as PublicKeyLike));
+  }
+
+  /** v0.5.3: public key to register on the ledger with setSettlementAnchorAuthority(marketplaceId, [key]). */
+  anchorPublicKeyHex(): string {
+    return publicKeyHexOf(this.#anchorSigningKey as PublicKeyLike);
   }
 
   /**
@@ -772,11 +808,16 @@ export class DigitalServicesMarketplace {
    * persisted settlement id is refused for re-execution
    * (SETTLEMENT_ALREADY_EXECUTED) and its receipt is readable again.
    */
-  restoreSnapshot(snapshot: MarketplaceSnapshot | Record<string, unknown>): number {
+  restoreSnapshot(snapshot: MarketplaceSnapshot | Record<string, unknown>, trust: MarketplaceSnapshotTrust = { snapshotPublicKeys: this.snapshotPublicKeys() }): number {
     if (this.settlementEngine.receiptsList().length > 0) throw new Error("MARKETPLACE_SNAPSHOT_RESTORE_NOT_FRESH");
+    // v0.5.3: format 3 snapshots must carry a trusted signature; unsigned format 1 / 2 only with the explicit shim.
+    // The hash is checked first (in migrate) so a signature always covers the content that is restored.
     const migrated = migrateMarketplaceSnapshot(snapshot as Record<string, unknown>);
+    verifyMarketplaceSnapshotSignatures(snapshot as Record<string, unknown>, trust);
     const receipts = verifyMarketplaceSnapshot(migrated, { marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, networkId: this.ledgerNetworkId });
-    this.settlementEngine.restoreReceipts(receipts);
+    this.settlementEngine.restoreReceipts(receipts, { legacyV1SettlementIds: migrated.settlement.legacyV1SettlementIds });
+    // v0.5.3: continue the order-id counter (never below what the snapshot recorded).
+    this.sequence = Math.max(this.sequence, migrated.orderSequence);
     return receipts.length;
   }
 
@@ -788,10 +829,25 @@ export class DigitalServicesMarketplace {
    * nothing new to anchor. Idempotent: receipts the sink already holds are
    * skipped, so a restarted process can call it again safely.
    */
-  anchorSettlements<A>(sink: { anchorSettlements(input: { marketplaceId: string; treasuryId: string; receipts: readonly SettlementReceipt[] }): A; settlementAnchorOf(marketplaceId: string, settlementId: string): unknown }): A | undefined {
-    const pending = this.settlementEngine.receiptsList().filter((r) => sink.settlementAnchorOf(this.marketplaceId, r.settlementId) === undefined);
+  anchorSettlements<A>(sink: {
+    anchorSettlements(input: { marketplaceId: string; treasuryId: string; receipts: readonly SettlementReceipt[]; authorization?: SettlementAnchorAuthorization }): A;
+    settlementAnchorOf(marketplaceId: string, settlementId: string): unknown;
+    readonly networkId: string;
+    readonly settlementAnchors: readonly { anchorHash: string }[];
+  }): A | undefined {
+    // v0.5.3: legacy v1 receipts (no network in their hash) stay readable but are never anchored.
+    const pending = this.settlementEngine.receiptsList().filter((r) => r.version !== "uep-settlement-receipt-v1" && sink.settlementAnchorOf(this.marketplaceId, r.settlementId) === undefined);
     if (pending.length === 0) return undefined;
-    return sink.anchorSettlements({ marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, receipts: pending });
+    if (sink.networkId !== this.ledgerNetworkId) throw new Error(`SETTLEMENT_ANCHOR_INVALID: network mismatch (ledger ${sink.networkId}, marketplace ${this.ledgerNetworkId})`);
+    const prev = sink.settlementAnchors[sink.settlementAnchors.length - 1];
+    const input = { marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, receipts: pending };
+    const authorization = signSettlementAnchorRequest(this.#anchorSigningKey, this.anchorPublicKeyHex(), {
+      ...input,
+      networkId: sink.networkId,
+      index: sink.settlementAnchors.length,
+      prevAnchorHash: prev?.anchorHash ?? GENESIS_ANCHOR_HASH,
+    });
+    return sink.anchorSettlements({ ...input, authorization });
   }
 
   /** v0.5.3: receipt of one executed settlement id (order id, or `swap:` / `relay:` / `dispute:` ids). */
@@ -962,8 +1018,13 @@ export class DigitalServicesMarketplace {
     const grossAmount = input.quantity * listing.unitPrice;
     if (input.gasQuote && !this.paymaster) throw new Error("PAYMASTER_NOT_CONFIGURED");
     if (input.gasQuote && input.gasQuote.asset !== listing.asset) throw new Error("GAS_ASSET_MISMATCH");
-    const orderId = input.orderId ?? makeId("ord", `${listing.listingId}|${input.buyerId}|${input.quantity}`, ++this.sequence);
-    if (this.orders.has(orderId)) throw new Error("ORDER_ID_CONFLICT");
+    // v0.5.3: an id that already has a settlement receipt (e.g. restored from a snapshot) is never reused:
+    // generated ids skip it, an explicit one is refused.
+    let orderId = input.orderId ?? makeId("ord", `${listing.listingId}|${input.buyerId}|${input.quantity}`, ++this.sequence);
+    if (input.orderId === undefined) {
+      while (this.orders.has(orderId) || this.settlementEngine.hasExecuted(orderId)) orderId = makeId("ord", `${listing.listingId}|${input.buyerId}|${input.quantity}`, ++this.sequence);
+    }
+    if (this.orders.has(orderId) || this.settlementEngine.hasExecuted(orderId)) throw new Error("ORDER_ID_CONFLICT");
     // v0.5.2: category settlement ids ("swap:", "relay:", "dispute:") share the treasury and engine id space.
     if (/^(?:swap|relay|dispute):/.test(orderId)) throw new Error("ORDER_ID_RESERVED");
     const gasFee = input.gasQuote?.gasFee ?? 0n;

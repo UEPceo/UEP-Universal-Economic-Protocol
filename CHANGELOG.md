@@ -14,14 +14,17 @@ Package version `0.5.3-public-iot-m2m`. Fixes and wiring on top of 0.5.2. **Not 
 
 - **Atomic settlement commit:** port moves are journaled; on failure they are undone and the treasury fee allocation is reverted; a failed undo halts the engine.
 - **Signed credits by default** (`requireSignedCredits`); unsigned credits only through test-only options, refused in production.
-- **Marketplace snapshot** (format 2) with persisted settlement receipts; migration 1 → 2 and a golden fixture.
-- **Settlement receipts v2** bind the `networkId` in the receipt hash; v1 receipts verify through a versioned alias. Anchors refuse receipts from another network.
+- **Marketplace snapshot** (format 3) with persisted settlement receipts; migrations 1 → 2 → 3 and golden fixtures. Format 3 is signed (Ed25519 over the snapshot hash, `snapshotSigningKeys`; restore checks a trusted signature), persists the order-id counter (after a restart a new order never reuses an id that already has a receipt; an explicit one is refused with `ORDER_ID_CONFLICT`), and lists the legacy v1 receipts carried over from a migrated snapshot. Unsigned format 1 / 2 snapshots restore only with `acceptUnsignedLegacySnapshot`; migration 2 → 3 derives the counter from the receipt count (generated ids are hashes, so the counter cannot be read back from them).
+- **Settlement receipts v2** bind the `networkId` in the receipt hash; v1 receipts verify through a versioned alias but are accepted only as listed legacy receipts of a migrated old snapshot and are never anchored. Anchors refuse receipts from another network.
+- **Anchor authorization:** `UepLedger.anchorSettlements` anchors a batch under a Marketplace id only with a signature of that Marketplace's registered anchor key over the request (network, ids, anchor index, previous anchor, receipt hashes); `setSettlementAnchorAuthority` / `settlementAnchorAuthorities`, `Marketplace.anchorPublicKeyHex()`.
+- **Retired ledger:** after `restore(..., { replaces })` the old ledger refuses spends (`prepare*`, `submit`, `submitBatch` → `LEDGER_RETIRED`), faucet, issuer key changes, height advances, anchors and snapshot signing, so only one history can continue.
 - **Ledger anchors (settlement bridge):** settlement batches are verified, hash-chained and stored in ledger state (snapshot format 8) and re-checked on restore ([`docs/SETTLEMENT-BRIDGE.md`](./docs/SETTLEMENT-BRIDGE.md)). A cumulative receipt log with RFC 9162 consistency proofs links the batches.
 
 ### Oracle (commit `1c9f712` and follow-ups)
 
 - One signing key counts as one source; re-registering a source with another key is refused (explicit `rotateSourceKey`); quote payload v2 carries the `networkId` with a locally derived domain separator (V52-04); capped weighted median; signed `SettlementAuthorization` v2; legacy v0.1 quotes only through an explicit shim.
-- **`OraclePolicyGate`** wired into Marketplace listings and reservations, IoT tariffs and hashlock swaps; it fails closed.
+- **`OraclePolicyGate`** wired into Marketplace listings and reservations, IoT tariffs and hashlock swaps.
+- **Swaps: explicit opt-in.** The swap rate check runs only when the buyer signs an `oracleBand` in the intent; a registry pair policy or pause no longer binds a swap, and `setPairPaused` no longer creates a pair policy. The outcome (with the aggregated quote hash) is stored on the swap. `requireOracle` / `maxSkewPpm` constructor options are deprecated shims.
 - Data-source policy in [`docs/ORACLE.md`](./docs/ORACLE.md): FX reference rates are display-only; future physical-trigger adapters need at least 2 origins and k-of-n signed evidence; NWS and IMF are not used; optional LEI checked offline (`isValidLei()`, ISO 17442); a leap-seconds file is deferred and would only ever be used in an exporter.
 
 ### Category modules

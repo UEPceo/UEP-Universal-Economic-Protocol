@@ -17,18 +17,42 @@
  * the Marketplace rules (who may settle, dispute outcomes). See
  * docs/SETTLEMENT-BRIDGE.md.
  *
- * Pure: no clock, no keys. The height is the ledger height passed in.
+ * Pure: no clock, no stored keys. The height is the ledger height passed in.
+ * v0.5.3: the ledger accepts a batch only with a signature of the
+ * Marketplace's registered anchor key over the request
+ * (settlementAnchorAuthorizationMessage), so nobody else can anchor under a
+ * Marketplace id.
  */
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../core/canonical-json.ts";
 import { settlementBatch } from "./batch.ts";
 import { verifySettlementReceipt } from "./engine.ts";
-import type { SettlementReceipt } from "./types.ts";
+import { LEGACY_SETTLEMENT_RECEIPT_VERSION, type SettlementReceipt } from "./types.ts";
+import { signEd25519, type PrivateKeyLike } from "../core/ed25519.ts";
 
 export const SETTLEMENT_ANCHOR_DOMAIN = "UEP-SETTLEMENT-ANCHOR-v1";
 export const GENESIS_ANCHOR_HASH = "0".repeat(64);
 /** Upper bound of receipts per anchor (keeps one transition bounded). */
 export const MAX_RECEIPTS_PER_ANCHOR = 4096;
+/** v0.5.3: domain of the Marketplace's authorization of one anchor request. */
+export const SETTLEMENT_ANCHOR_AUTH_DOMAIN = "UEP-SETTLEMENT-ANCHOR-AUTH-v1";
+
+/** v0.5.3: signature of the Marketplace anchor key over one anchor request. */
+export type SettlementAnchorAuthorization = { publicKeyHex: string; signature: string };
+
+/**
+ * v0.5.3: canonical message a Marketplace signs to authorize anchoring
+ * `receipts` as anchor `index` after `prevAnchorHash` on ledger network
+ * `networkId`. Binding the index and the previous anchor makes the
+ * authorization single-use; binding the receipt hashes makes it specific.
+ */
+export function settlementAnchorAuthorizationMessage(input: { networkId: string; marketplaceId: string; treasuryId: string; index: number; prevAnchorHash: string; receipts: readonly SettlementReceipt[] }): string {
+  return canonicalJson([SETTLEMENT_ANCHOR_AUTH_DOMAIN, input.networkId, input.marketplaceId, input.treasuryId, input.index, input.prevAnchorHash, input.receipts.map((r) => r.receiptHash)]);
+}
+
+export function signSettlementAnchorRequest(key: PrivateKeyLike, publicKeyHex: string, input: Parameters<typeof settlementAnchorAuthorizationMessage>[0]): SettlementAnchorAuthorization {
+  return { publicKeyHex, signature: signEd25519(settlementAnchorAuthorizationMessage(input), key) };
+}
 
 export type SettlementAnchorTotals = Record<string, { gross: string; fees: string; providerNet: string; refunds: string; gas: string }>;
 
@@ -54,9 +78,11 @@ export function settlementAnchorHash(a: Omit<SettlementAnchor, "anchorHash">): s
 /** Per-receipt checks done by the ledger before anchoring. Returns a problem or undefined. */
 export function receiptProblem(r: SettlementReceipt, treasuryId: string, networkId?: string): string | undefined {
   if (!r || typeof r !== "object") return "receipt is not an object";
+  // v0.5.3: legacy v1 receipts (no network in the hash) are never anchored; they only survive in migrated old snapshots.
+  if (r.version === LEGACY_SETTLEMENT_RECEIPT_VERSION) return `receipt ${String(r.settlementId)}: legacy v1 receipts are not anchored`;
   if (!verifySettlementReceipt(r)) return `receipt ${String(r.settlementId)}: hash does not match its fields`;
   if (r.treasuryId !== treasuryId) return `receipt ${r.settlementId}: treasury mismatch`;
-  if (networkId !== undefined && r.networkId !== undefined && r.networkId !== networkId) return `receipt ${r.settlementId}: network mismatch`;
+  if (networkId !== undefined && r.networkId !== networkId) return `receipt ${r.settlementId}: network mismatch`;
   for (const k of ["grossAmount", "providerAmount", "marketplaceFee", "providerNet", "gasCaptured", "buyerRefund"] as const) {
     if (typeof r[k] !== "bigint" || r[k] < 0n || r[k] >= 2n ** 64n) return `receipt ${r.settlementId}: ${k} out of range`;
   }

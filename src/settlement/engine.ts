@@ -97,6 +97,7 @@ export class SettlementEngine {
   readonly paymaster?: MarketplacePaymaster;
   private readonly height: HeightSource;
   private readonly receipts = new Map<string, SettlementReceipt>();
+  private readonly legacyV1 = new Set<string>();
   private executing = false;
   private halted: string | undefined;
   private readonly rollbackCap: TreasuryRollbackCapability;
@@ -241,17 +242,28 @@ export class SettlementEngine {
    * hash is re-verified and must belong to this treasury; ids already known
    * are refused. Restored ids count as executed (a re-execution is refused).
    */
-  restoreReceipts(receipts: readonly SettlementReceipt[]): void {
+  restoreReceipts(receipts: readonly SettlementReceipt[], opts: { legacyV1SettlementIds?: readonly string[] } = {}): void {
     const incoming = new Map<string, SettlementReceipt>();
+    const legacy = new Set(opts.legacyV1SettlementIds ?? []);
     for (const r of receipts) {
       if (!r || !isKnownReceiptVersion(r.version) || !verifySettlementReceipt(r)) throw new Error("SETTLEMENT_RECEIPT_INVALID");
-      // v2 receipts must belong to this network; legacy v1 receipts carry no network and are accepted as historical.
+      // v2 receipts must belong to this network.
       if (r.version === SETTLEMENT_RECEIPT_VERSION && r.networkId !== this.networkId) throw new Error("SETTLEMENT_RECEIPT_NETWORK_MISMATCH");
+      // v0.5.3: legacy v1 receipts (no network) only when listed as carried over from a migrated old snapshot.
+      if (r.version !== SETTLEMENT_RECEIPT_VERSION && !legacy.has(r.settlementId)) throw new Error("SETTLEMENT_RECEIPT_LEGACY_NOT_ALLOWED");
       if (r.treasuryId !== this.treasury.treasuryId) throw new Error("SETTLEMENT_RECEIPT_TREASURY_MISMATCH");
       if (this.receipts.has(r.settlementId) || incoming.has(r.settlementId)) throw new Error("SETTLEMENT_RECEIPT_DUPLICATE");
       incoming.set(r.settlementId, Object.freeze({ ...r }));
     }
-    for (const [id, r] of incoming) this.receipts.set(id, r);
+    for (const [id, r] of incoming) {
+      this.receipts.set(id, r);
+      if (r.version !== SETTLEMENT_RECEIPT_VERSION) this.legacyV1.add(id);
+    }
+  }
+
+  /** v0.5.3: ids of the restored legacy v1 receipts (carried into the next snapshot). */
+  legacyV1SettlementIds(): string[] {
+    return [...this.legacyV1];
   }
 
   hasExecuted(settlementId: string): boolean {

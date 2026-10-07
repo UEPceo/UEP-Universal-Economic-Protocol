@@ -1,0 +1,80 @@
+{
+  "kind": "uep-marketplace-snapshot",
+  "formatVersion": 2,
+  "marketplaceId": "uep-marketplace-testnet",
+  "treasuryId": "marketplace-treasury",
+  "networkId": "uep-testnet-1",
+  "height": 42,
+  "settlement": {
+    "receiptVersions": [
+      "uep-settlement-receipt-v1",
+      "uep-settlement-receipt-v2"
+    ],
+    "count": 3,
+    "batchRoot": "fba9aeac6363a2c0b4a225ec9700626886ab91cabbf72a61022cec314df16f63",
+    "totals": {
+      "uep-test/teur": {
+        "gross": "300n",
+        "fees": "9n",
+        "providerNet": "291n",
+        "refunds": "0n",
+        "gas": "0n"
+      }
+    },
+    "receipts": [
+      {
+        "version": "uep-settlement-receipt-v1",
+        "settlementId": "ord-fixture-0",
+        "asset": "uep-test/teur",
+        "payerId": "b0",
+        "payeeId": "p1",
+        "grossAmount": "100n",
+        "providerAmount": "100n",
+        "marketplaceFee": "3n",
+        "providerNet": "97n",
+        "gasCaptured": "0n",
+        "buyerRefund": "0n",
+        "outcome": "RELEASE",
+        "height": 42,
+        "treasuryId": "marketplace-treasury",
+        "receiptHash": "5148f1fbd676900e60cc6bb31a5f1d6617b0f3fc45e847ba11526554226b0a7b"
+      },
+      {
+        "version": "uep-settlement-receipt-v1",
+        "settlementId": "ord-fixture-1",
+        "asset": "uep-test/teur",
+        "payerId": "b1",
+        "payeeId": "p1",
+        "grossAmount": "100n",
+        "providerAmount": "100n",
+        "marketplaceFee": "3n",
+        "providerNet": "97n",
+        "gasCaptured": "0n",
+        "buyerRefund": "0n",
+        "outcome": "RELEASE",
+        "height": 42,
+        "treasuryId": "marketplace-treasury",
+        "receiptHash": "101ae9274be932ed8330489f1f4681c55f742497a6e520c6f88bc0ac31a85594"
+      },
+      {
+        "version": "uep-settlement-receipt-v2",
+        "networkId": "uep-testnet-1",
+        "settlementId": "ord_9166611ebfe3572aef8591ba",
+        "asset": "uep-test/teur",
+        "payerId": "b0",
+        "payeeId": "p1",
+        "grossAmount": "100n",
+        "providerAmount": "100n",
+        "marketplaceFee": "3n",
+        "providerNet": "97n",
+        "gasCaptured": "0n",
+        "buyerRefund": "0n",
+        "outcome": "RELEASE",
+        "height": 42,
+        "treasuryId": "marketplace-treasury",
+        "receiptHash": "0da0d7b5ed1355d28c2486304ed65dfd783c1ff86ebd4be8cb23788145c3aca1"
+      }
+    ]
+  },
+  "snapshotHash": "ea5548446a089e3aac72d0d4d4f611975d89df364a5c8e8845cc48372d48726c"
+}

@@ -13,7 +13,7 @@ import type { CategoryEscrowPort } from "../marketplace/category-escrow.ts";
 import { HeightGuard, ReplayGuard } from "./signed.ts";
 import type { IndexWriter, SettlementIndex } from "./settlement-index.ts";
 import { newDisputeCapRegistry, type DisputeCap, type Disputable, type EscrowView } from "./disputable.ts";
-import type { OraclePolicyGate } from "../oracle/policy-gate.ts";
+import { assertOracleUnavailablePolicy, MAX_ORACLE_DEVIATION_PPM, runOracleCheck, type OracleCheckRecord, type OraclePolicyGate, type OracleUnavailablePolicy } from "../oracle/policy-gate.ts";
 import { assertHex32, assertNonNegInt, assertPositiveBigint, mulDivFloor, sha256Hex, swapHashlock } from "./relay-crypto.ts";
 
 export type SwapState = "DUAL_HOLD_LOCKED" | "ATOMICALLY_SETTLED" | "EXPIRED_REFUNDED" | "DISPUTE_RESOLVED";
@@ -37,7 +37,16 @@ export interface SwapIntentBody {
   /** Absolute height deadline (ADR 0002). */
   deadline: number;
   orderNonce: number;
+  /**
+   * v0.5.3: explicit per-swap opt-in to an oracle rate check, signed by the
+   * buyer (part of the intent id). Without it the oracle is never consulted,
+   * whatever the registry holds. `onOracleUnavailable` (default
+   * FOLLOW_SIGNED_PRICE) decides what happens when the oracle cannot answer.
+   */
+  oracleBand?: SwapOracleBand;
 }
+
+export type SwapOracleBand = { maxSkewPpm: bigint; onOracleUnavailable?: OracleUnavailablePolicy };
 
 export interface SwapAcceptBody {
   intentId: string;
@@ -51,6 +60,8 @@ export interface OpenSwap {
   settledAt?: number;
   revealedPreimage?: string;
   frozenBy?: string;
+  /** v0.5.3: outcome of the opt-in oracle check at open (absent when the intent has no oracleBand). */
+  oracleCheck?: OracleCheckRecord;
 }
 
 export function swapIntentId(intent: SwapIntentBody): string {
@@ -71,6 +82,7 @@ function detailsOf(intent: SwapIntentBody): Record<string, unknown> {
     hashlock: intent.hashlock,
     deadline: intent.deadline,
     orderNonce: intent.orderNonce,
+    ...(intent.oracleBand ? { oracleBand: { ...intent.oracleBand } } : {}),
   };
 }
 
@@ -84,18 +96,21 @@ export class SwapCategory implements Disputable {
   private readonly port: CategoryEscrowPort;
   private readonly networkId: string;
 
-  /** v0.5.3: oracle rate check (fail closed for governed pairs, or for every pair with requireOracle). */
+  /** v0.5.3: oracle used by intents that opt in with a signed `oracleBand`. */
   private readonly priceGate: OraclePolicyGate | undefined;
-  private readonly maxSkewPpm: bigint;
-  private readonly requireOracle: boolean;
 
+  /**
+   * `opts.maxSkewPpm` and `opts.requireOracle` are deprecated v0.5.3-pre
+   * options kept as compatibility shims: they no longer make any pair
+   * oracle-bound (the band is chosen per swap in the signed intent).
+   * `requireOracle: true` still requires a `priceGate`.
+   */
   constructor(port: CategoryEscrowPort, index: SettlementIndex, networkId = "uep-testnet", opts: { priceGate?: OraclePolicyGate; maxSkewPpm?: bigint; requireOracle?: boolean } = {}) {
     if (port.module !== "swap") throw new Error("CATEGORY_PORT_MISMATCH");
     this.priceGate = opts.priceGate;
-    this.maxSkewPpm = opts.maxSkewPpm ?? 30_000n;
-    this.requireOracle = opts.requireOracle === true;
-    if (this.requireOracle && !this.priceGate) throw new Error("ORACLE_NOT_CONFIGURED");
-    if (this.maxSkewPpm < 0n || this.maxSkewPpm > 500_000n) throw new Error("SWAP_ORACLE_SKEW_INVALID");
+    if (opts.requireOracle === true && !this.priceGate) throw new Error("ORACLE_NOT_CONFIGURED");
+    const skew = opts.maxSkewPpm ?? 30_000n;
+    if (skew < 0n || skew > MAX_ORACLE_DEVIATION_PPM) throw new Error("SWAP_ORACLE_SKEW_INVALID");
     this.port = port;
     this.networkId = networkId;
     this.writeIndex = index.issueWriter("swap");
@@ -106,10 +121,11 @@ export class SwapCategory implements Disputable {
     this.heights.check(height);
     this.validateIntent(intent, height);
     const intentId = swapIntentId(intent);
-    // v0.5.3: oracle rate check before any signature or hold work (fail closed).
-    if (this.priceGate && (this.requireOracle || this.priceGate.governs(intent.fromAsset, intent.toAsset))) {
-      this.priceGate.assertSwapRate(intent.fromAsset, intent.fromAmount, intent.toAsset, intent.toAmount, height, this.maxSkewPpm);
-    }
+    // v0.5.3: oracle rate check only when the signed intent opts in (oracleBand), before any hold work.
+    const band = intent.oracleBand;
+    const oracleCheck = band
+      ? runOracleCheck(this.priceGate, band.onOracleUnavailable, height, (g) => g.assertSwapRate(intent.fromAsset, intent.fromAmount, intent.toAsset, intent.toAmount, height, band.maxSkewPpm))
+      : undefined;
 
     const buyer = this.port.authenticate(intentAuth, "swap-intent", intentId, detailsOf(intent));
     if (buyer !== intent.buyerId) throw new Error("SWAP_BAD_SIGNATURE");
@@ -132,7 +148,7 @@ export class SwapCategory implements Disputable {
       throw err;
     }
     this.replay.consume("swap-nonce", intent.buyerId, intent.orderNonce);
-    const order: OpenSwap = { intentId, intent: { ...intent }, state: "DUAL_HOLD_LOCKED", openedAt: height };
+    const order: OpenSwap = { intentId, intent: { ...intent }, state: "DUAL_HOLD_LOCKED", openedAt: height, ...(oracleCheck ? { oracleCheck } : {}) };
     this.orders.set(intentId, order);
     return structuredClone(order);
   }
@@ -247,6 +263,12 @@ export class SwapCategory implements Disputable {
     if (i.deadline - height > MAX_SWAP_LIFETIME_HEIGHTS) throw new Error("SWAP_DEADLINE_TOO_FAR");
     if (i.fromAmount < MIN_LEG_AMOUNT || this.port.quoteFee(i.fromAmount, i.fromAsset) >= i.fromAmount) {
       throw new Error("SWAP_AMOUNT_TOO_SMALL");
+    }
+    if (i.oracleBand !== undefined) {
+      const b = i.oracleBand;
+      if (!b || typeof b !== "object" || typeof b.maxSkewPpm !== "bigint" || b.maxSkewPpm < 0n || b.maxSkewPpm > MAX_ORACLE_DEVIATION_PPM) throw new Error("SWAP_ORACLE_BAND_INVALID");
+      assertOracleUnavailablePolicy(b.onOracleUnavailable);
+      if (Object.keys(b).some((k) => k !== "maxSkewPpm" && k !== "onOracleUnavailable")) throw new Error("SWAP_ORACLE_BAND_INVALID");
     }
   }
 

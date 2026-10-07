@@ -20,7 +20,7 @@ const SNAP = generateEd25519KeyPair();
 
 test("receipts anchored over several rounds form one consistent append-only log", () => {
   const m = new DigitalServicesMarketplace({ testOnlyNowMs: () => 1_700_000_000_000, adminIdentity: "admin-1", adminPublicKey: ADMIN.publicKeyHex, adminAuthorizer: (id) => id === "admin-1" });
-  const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: null, testOnlyUnboundedHeightAdvance: true });
+  const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: null, testOnlyUnboundedHeightAdvance: true, settlementAnchorAuthorities: { [m.marketplaceId]: [m.anchorPublicKeyHex()] } });
   const eur = publishAs(m, { providerId: "p1", title: "t", description: "d", category: "COMPUTE", asset: "EUR", unitPrice: 20n, capacity: 10_000n });
   const usd = publishAs(m, { providerId: "p2", title: "u", description: "d", category: "COMPUTE", asset: "USD", unitPrice: 7n, capacity: 10_000n });
   let n = 0;
