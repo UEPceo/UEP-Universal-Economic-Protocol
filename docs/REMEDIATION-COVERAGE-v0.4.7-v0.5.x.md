@@ -78,18 +78,26 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 |---|---|---|
 | Atomic settlement commit: journaled port moves, rollback on failure, engine halts if an undo fails | `src/settlement/settlement-atomicity.test.ts` | Implemented (testnet), tested |
 | Signed credits by default (`requireSignedCredits`; unsigned only through test-only options, refused in production) | `src/marketplace/multi-asset.test.ts` | Implemented (testnet), tested |
-| Marketplace snapshot (format 2) with persisted settlement receipts; migration 1 → 2, golden fixture | `src/marketplace/marketplace-snapshot.test.ts` | Implemented (testnet), tested |
+| Marketplace snapshot (format 3, signed) with persisted settlement receipts; migrations 1 → 2 → 3, golden fixtures | `src/marketplace/marketplace-snapshot.test.ts` | Implemented (testnet), tested |
 | Receipts v2 bind the `networkId` in their hash; v1 receipts verified through a versioned alias; anchors refuse foreign-network receipts | `src/settlement/receipt-network.test.ts` | Implemented (testnet), tested |
 | Ledger anchors for settlement batches (verified, hash-chained, in snapshot format 8, re-checked on restore) | `src/settlement/settlement-anchor.test.ts` | Implemented (testnet), tested. The anchor proves which receipts were committed; it does not move ledger value (see `SETTLEMENT-BRIDGE.md`) |
 | Cumulative receipt log with RFC 9162 consistency proofs across batches | `src/settlement/cross-batch-consistency.test.ts` | Implemented (testnet), tested |
+| Anchor authorization: a batch is anchored under a Marketplace id only with that Marketplace's registered anchor key | `src/settlement/settlement-anchor.test.ts` | Implemented (testnet), tested |
+| Evidence-bound listings: provider bond in the listing asset and per-buyer quota (Sybil cost without a token) | `src/marketplace/evidence-caps.test.ts` | Implemented (testnet), tested. A provider with enough capital can still split identities; the bond prices it |
+| HTTP API serves a Marketplace only with a `HeightProducer` that seals its height; producer status in `/v1/marketplace/height`; injected producer clock refused in live deployments | `src/service/height-producer.test.ts` | Implemented (testnet), tested |
+| Negative bigint note amounts refused; order `domainProfile` fixed at reservation | `src/testnet/snapshot-canonical.test.ts`, `src/marketplace/evidence-caps.test.ts` | Implemented (testnet), tested |
 
 ### Ledger and assets
 
 | Change | Tests | Status |
 |---|---|---|
-| Asset registry manifest wired into the ledger; snapshot format 8 binds the registry; migration 7 → 8; golden fixtures v7 and v8 | `src/testnet/ledger-asset-registry.test.ts`, `snapshot-fixtures.test.ts`, `snapshot-migration-chain.test.ts` | **Partial**: listed assets, decimals, network, deprecation, fee floor and the snapshot binding are enforced; mints are still signed by the node's faucet key or the per-asset issuer key (v0.4.7), not by the manifest's issuer key set and threshold. Next step: require a manifest issuer key for every mint under a registry and disable the faucet fallback there |
+| Asset registry manifest wired into the ledger; snapshot format 8 binds the registry; migration 7 → 8; golden fixtures v7 and v8 | `src/testnet/ledger-asset-registry.test.ts`, `snapshot-fixtures.test.ts`, `snapshot-migration-chain.test.ts` | Implemented (testnet), tested |
+| Mints under a registry: non-test assets need `threshold` signatures of the manifest issuer key set (M-of-N); faucet only for `uep-test/*`; registry `supplyCap` enforced; restore re-checks issuer mints against the manifest version | `src/testnet/ledger-issuer-mint.test.ts` | Implemented (testnet), tested. Without a registry the 0.5.2 behaviour is kept |
+| 12-block catch-up cap as a state invariant (snapshot format 9 `ticks`, checked on restore and across chain links); migration 8 → 9 | `src/testnet/ledger-height-cap.test.ts`, `snapshot-migration-chain.test.ts`, `snapshot-fixtures.test.ts` | Implemented (testnet), tested. A cap, not a rate limit |
+| Retired ledger after `restore(..., { replaces })` | `src/testnet/ledger-retired.test.ts` | Implemented (testnet), tested |
+| Wallet migration of v2 receive-only accounts (`walletAccountBalances`, `migrateV2ToV3`), v0.5.0 fixture | `src/identity/wallet-migration.test.ts` | Implemented (testnet), tested |
 | Multi-input transactions (UEP-C04): up to 8 inputs of one sender and asset, one fee, change consolidation; single-input transactions and ids unchanged; reconciliation over all nullifiers (ADR 0004) | `src/testnet/multi-input.test.ts` | Implemented (testnet), tested. The dev-MAC path and zk-spend refuse multi-input |
-| zk-spend on the transaction path: verifier allowed only with non-development keys in production; public inputs 4..11 bound to the transaction | `src/testnet/zk-tx-path.test.ts`, `src/lab/zk-witness-contract.test.ts` | **Partial**: roots (inputs 0..3) are not bound (tree depth 254 vs 32), the circuit proves a different account-id derivation, the sender signature is still required, restore does not re-verify proofs; see `LABS.md` point 7 |
+| zk-spend on the transaction path: verifier allowed only with non-development keys in live deployments; public inputs 4..11 bound to the transaction; opt-in root binding (inputs 0..3) through the depth-32 projection of the ledger trees, matching the Rust circuit code; one account-id adapter; re-verification on restore and on the pending path | `src/testnet/zk-tx-path.test.ts`, `src/testnet/zk-root-binding.test.ts`, `src/lab/zk-root-projection.test.ts`, `src/lab/zk-witness-contract.test.ts` | **Partial**: slot collisions at depth 32 (a deeper circuit is needed before root binding can be the default), the circuit nullifier and account-id derivations differ from the ledger's, the sender signature is still required, the verifier hook is synchronous, development keys only; see `LABS.md` point 7 |
 
 ### Category modules
 
@@ -99,6 +107,7 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 | V52-02: a wrong key or no key costs the provider part of its bond, paid to the buyer | `src/category/category-hardening.test.ts` | Implemented (testnet), tested |
 | V52-03: a dispute timeout pays part of the claimant's bond to the respondent | `src/category/category-hardening.test.ts` | Partial (mitigation; arbiter liveness is still an assumption) |
 | Per-asset dispute bond minimum; quorum and frivolous-dispute negatives; deterministic fuzz | `src/category/category-hardening.test.ts` | Implemented (testnet), tested |
+| Maximum freeze duration (`MAX_FREEZE_HEIGHTS`): after it the refund / timeout path opens without a verdict | `src/category/freeze-cap.test.ts` | Implemented (testnet), tested |
 | Category commitments in Poseidon | — | Open / documented limit: SHA-256 kept (HTLC compatibility, raw chunk hashing, no circuit consumer); `CATEGORY-MODULES.md` |
 
 ### Oracle
@@ -122,7 +131,8 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 
 - No independent assessment of v0.4.7 – v0.5.3 has been published; the fixes above were not re-assessed by a third party.
 - ZK: development keys only (no ceremony); see the zk-spend row above.
-- Consensus and networking exist only as labs; several multi-process labs are timing-dependent (`scripts/lab-known-issues.json`).
+- Consensus and networking exist only as labs on one machine; `scripts/lab-known-issues.json` is empty on this branch, but the multi-process labs remain local experiments.
+- External review starting point: [`EXTERNAL-AUDIT-PACKAGE.md`](./EXTERNAL-AUDIT-PACKAGE.md).
 - Arbiters, oracle sources and the snapshot authority are configured keys: Sybil resistance, arbiter appeal and rotation, and oracle consensus are not implemented.
 - IoT telemetry is signed by the device key; physical attestation is out of scope.
 - Relay payload digests are visible to relayers (no HPKE).

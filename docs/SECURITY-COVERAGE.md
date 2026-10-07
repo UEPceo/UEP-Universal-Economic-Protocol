@@ -17,6 +17,7 @@ This document states the review status of the public UEP reference. It is a disc
 
 - "Independent assessment" means a reviewer outside the code author reviewed that commit. A non-public report is **not** a validation of the release: the fixed state was not re-assessed and the per-finding status is not published.
 - CHANGELOG entries that mention fixes from an assessment of v0.4.7 or v0.5.0 refer to these non-public reports. They do not move the threshold above v0.4.6.
+- `docs/EXTERNAL-AUDIT-PACKAGE.md` is the starting point for an independent review of the `v0.5.3-fixes` branch (scope, threat model, reproduction, accepted residuals). It is not a review result.
 - `docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md` lists every security-relevant feature added since v0.4.6, the tests that cover it and its status. It is a self-assessment.
 - Do not interpret main or any branch as externally validated or ready for production.
 - A future release can move the threshold only with a published remediation document matching an independent assessment of that exact commit.

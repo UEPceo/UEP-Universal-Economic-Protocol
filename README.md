@@ -72,7 +72,7 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
 | CI | Blocking: `npm run test:core` on Node.js 22.x and 24.x, and `npm run test:lab` (labs not listed in `scripts/lab-known-issues.json`). Non-blocking: the lab files with known issues |
 | Network | Local, single-node, in-process **testnet only** |
-| External review | External assessments of each release up to **v0.4.6** (the last externally assessed version). v0.4.7 – v0.5.3 changes come from internal reviews and are **not** externally assessed: [`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md), [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md) |
+| External review | External assessments of each release up to **v0.4.6** (the last externally assessed version). v0.4.7 – v0.5.3 changes come from internal reviews and are **not** externally assessed: [`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md), [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md); starting point for an independent review of v0.5.3: [`docs/EXTERNAL-AUDIT-PACKAGE.md`](./docs/EXTERNAL-AUDIT-PACKAGE.md) |
 
 Architecture by layer: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). Phases and next milestones: [`ROADMAP.md`](./ROADMAP.md).
 
@@ -551,6 +551,7 @@ Repository layout:
     ├── adr/              # architecture decision records (0001 asset model … 0004 multi-input transactions)
     ├── MODULES.md        # module map: status, since, tests, docs per module
     ├── SECURITY-COVERAGE.md, REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md   # what was externally assessed (up to v0.4.6) and what was not
+    ├── EXTERNAL-AUDIT-PACKAGE.md         # review package for v0.5.3: scope, threat model, reproduction, residuals
     ├── history/          # integration notes (formerly AUDIT-FIXES.md / SETTLEMENT-AUDIT-REPORT.md; not audits)
     ├── ARCHITECTURE.md   # layers A–N, status table, diagrams
     ├── THREAT-MODEL.md
