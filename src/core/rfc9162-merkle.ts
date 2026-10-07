@@ -83,3 +83,66 @@ export function verifyMerklePath(leafHash: Uint8Array, index: number, size: numb
   }
   return sn === 0 && r.equals(Buffer.from(root));
 }
+
+/**
+ * v0.5.3: RFC 9162 section 2.1.4.1 consistency proof that the tree over the
+ * first `m` leaves is a prefix of the tree over all `leafHashes` (size n).
+ */
+export function merkleConsistencyProof(leafHashes: readonly Buffer[], m: number): Buffer[] {
+  const n = leafHashes.length;
+  if (!Number.isSafeInteger(m) || m < 1 || m > n) throw new Error("MERKLE_CONSISTENCY_SIZE");
+  const sub = (leaves: readonly Buffer[], k: number, complete: boolean): Buffer[] => {
+    const size = leaves.length;
+    if (k === size) return complete ? [] : [merkleRoot(leaves)];
+    const split = splitPoint(size);
+    if (k <= split) return [...sub(leaves.slice(0, split), k, complete), merkleRoot(leaves.slice(split))];
+    return [...sub(leaves.slice(split), k - split, false), merkleRoot(leaves.slice(0, split))];
+  };
+  return sub(leafHashes, m, true);
+}
+
+/** RFC 9162 section 2.1.4.2 consistency-proof verification. Never throws. */
+export function verifyMerkleConsistency(
+  firstSize: number,
+  secondSize: number,
+  firstRoot: Uint8Array,
+  secondRoot: Uint8Array,
+  proof: readonly Uint8Array[],
+): boolean {
+  if (!Number.isSafeInteger(firstSize) || !Number.isSafeInteger(secondSize) || firstSize < 1 || firstSize > secondSize) return false;
+  if (!Array.isArray(proof)) return false;
+  const r1 = Buffer.from(firstRoot);
+  const r2 = Buffer.from(secondRoot);
+  if (firstSize === secondSize) return proof.length === 0 && r1.equals(r2);
+  let path = proof.map((p) => Buffer.from(p));
+  // Step 1: if first_size is an exact power of 2, prepend first_hash.
+  if ((firstSize & (firstSize - 1)) === 0) path = [r1, ...path];
+  if (path.length === 0) return false;
+  let fn = firstSize - 1;
+  let sn = secondSize - 1;
+  // Step 3: shift right until LSB(fn) is not set.
+  while (fn % 2 === 1) {
+    fn = Math.floor(fn / 2);
+    sn = Math.floor(sn / 2);
+  }
+  let fr = path[0]!;
+  let sr = path[0]!;
+  for (const c of path.slice(1)) {
+    if (sn === 0) return false;
+    if (fn % 2 === 1 || fn === sn) {
+      fr = merkleNodeHash(c, fr);
+      sr = merkleNodeHash(c, sr);
+      if (fn % 2 === 0) {
+        while (fn % 2 === 0 && fn !== 0) {
+          fn = Math.floor(fn / 2);
+          sn = Math.floor(sn / 2);
+        }
+      }
+    } else {
+      sr = merkleNodeHash(sr, c);
+    }
+    fn = Math.floor(fn / 2);
+    sn = Math.floor(sn / 2);
+  }
+  return fr.equals(r1) && sr.equals(r2) && sn === 0;
+}

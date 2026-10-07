@@ -4,7 +4,7 @@
  * clock, no timing (the incoming batch measured wall-clock throughput, which
  * a transition must not do and which is not a claim this repository makes).
  */
-import { merkleLeafHash, merklePath, merkleRoot, verifyMerklePath } from "../core/rfc9162-merkle.ts";
+import { merkleConsistencyProof, merkleLeafHash, merklePath, merkleRoot, verifyMerkleConsistency, verifyMerklePath } from "../core/rfc9162-merkle.ts";
 import { verifySettlementReceipt } from "./engine.ts";
 import type { SettlementBatch, SettlementReceipt } from "./types.ts";
 
@@ -42,4 +42,24 @@ export function verifyReceiptInclusion(receipt: SettlementReceipt, index: number
   if (!verifySettlementReceipt(receipt)) return false;
   if (!Array.isArray(path) || path.some((p) => typeof p !== "string" || !/^[0-9a-f]{64}$/.test(p)) || !/^[0-9a-f]{64}$/.test(root)) return false;
   return verifyMerklePath(leafOf(receipt), index, size, path.map((p) => Buffer.from(p, "hex")), Buffer.from(root, "hex"));
+}
+
+/**
+ * v0.5.3: cumulative receipt log across batches. The log root over all receipts
+ * anchored so far is an RFC 9162 tree; a consistency proof shows that a later
+ * log only appends to an earlier one (no receipt rewritten, dropped or reordered).
+ */
+export function receiptLogRoot(receipts: readonly SettlementReceipt[]): string {
+  if (!Array.isArray(receipts) || receipts.length === 0) throw new Error("BATCH_EMPTY");
+  return merkleRoot(receipts.map(leafOf)).toString("hex");
+}
+
+export function receiptLogConsistencyProof(receipts: readonly SettlementReceipt[], firstSize: number): string[] {
+  return merkleConsistencyProof(receipts.map(leafOf), firstSize).map((b) => b.toString("hex"));
+}
+
+export function verifyReceiptLogConsistency(firstSize: number, secondSize: number, firstRoot: string, secondRoot: string, proof: readonly string[]): boolean {
+  if (!/^[0-9a-f]{64}$/.test(firstRoot) || !/^[0-9a-f]{64}$/.test(secondRoot)) return false;
+  if (!Array.isArray(proof) || proof.some((p) => typeof p !== "string" || !/^[0-9a-f]{64}$/.test(p))) return false;
+  return verifyMerkleConsistency(firstSize, secondSize, Buffer.from(firstRoot, "hex"), Buffer.from(secondRoot, "hex"), proof.map((p) => Buffer.from(p, "hex")));
 }
