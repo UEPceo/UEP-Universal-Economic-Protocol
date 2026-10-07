@@ -8,7 +8,7 @@ import { NullifierSet } from "../core/nullifier.ts";
 import { SparseMerkleTree } from "../core/smt.ts";
 import { markConflicts, reconcile, settlementRoot } from "../core/reconciliation.ts";
 import { assetEncodings, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr, resolveAssetIdAlias, MAX_REGISTRY_DECIMALS, type AssetRecord } from "../core/assets.ts";
-import type { AssetRegistry } from "../core/asset-registry.ts";
+import { meetsThreshold, validSigners, type AssetRegistry, type RegistrySignature } from "../core/asset-registry.ts";
 import { anchorChainProblem, buildSettlementAnchor, GENESIS_ANCHOR_HASH, settlementAnchorAuthorizationMessage, type SettlementAnchor, type SettlementAnchorAuthorization } from "../settlement/anchor.ts";
 import type { SettlementReceipt } from "../settlement/types.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
@@ -128,7 +128,12 @@ const RETIRED_MESSAGE = "this ledger was replaced by a restore (restore(..., { r
 const MINT_DOMAIN = "UEP-FAUCET-MINT-v1";
 const CHAIN_DOMAIN = "UEP-HISTORY-CHAIN-v1";
 
-/** A faucet issuance record, signed by the dedicated faucet (mint) key. */
+/**
+ * An issuance record. Faucet / v0.4.7 issuer-key mints carry one `signature`
+ * over mintMessage(). v0.5.3 registry mints carry `issuerSignatures` (at
+ * least `threshold` distinct keys of the asset's issuer key set in manifest
+ * `registryVersion`) over issuerMintMessage(), and `signature` is "".
+ */
 export type MintRecord = {
   index: number;
   networkId: string;
@@ -138,7 +143,23 @@ export type MintRecord = {
   amount: string;
   commitment: string;
   signature: string;
+  /** v0.5.3: manifest version whose issuer key set authorized this mint (registry mints only). */
+  registryVersion?: number;
+  /** v0.5.3: issuer signatures over issuerMintMessage() (registry mints only). */
+  issuerSignatures?: RegistrySignature[];
 };
+
+/** v0.5.3: unsigned body of a registry mint, as returned by prepareIssuerMint(). */
+export type IssuerMintRequest = Omit<MintRecord, "signature" | "issuerSignatures"> & { registryVersion: number };
+
+const ISSUER_MINT_DOMAIN = "UEP-ISSUER-MINT-v1";
+/** v0.5.3: namespace of test assets; under a registry the faucet mints only these. */
+export const TEST_ASSET_NAMESPACE = "uep-test";
+
+/** v0.5.3: canonical message the issuer key set signs for one registry mint (domain-separated from faucet mints). */
+export function issuerMintMessage(m: IssuerMintRequest): string {
+  return stableStringify({ domain: ISSUER_MINT_DOMAIN, index: m.index, networkId: m.networkId, domainId: m.domainId, account: m.account, assetId: m.assetId, amount: m.amount, commitment: m.commitment, registryVersion: m.registryVersion });
+}
 
 export type SnapshotSignature = { publicKey: string; signature: string };
 
@@ -843,6 +864,85 @@ export class UepLedger {
     this.state.set(this.leafKey(account, asset), this.leafFor(account, asset, balance));
   }
 
+  /**
+   * v0.5.3: prepare a mint under the asset registry. Returns the unsigned
+   * request; the asset's issuer key set (manifest issuer keys, `threshold`
+   * of them) signs issuerMintMessage(request) off-ledger, and mintWithIssuerSignatures()
+   * applies it. The request is bound to the next mint index and note, so it
+   * is valid only until the next mint or note on this ledger.
+   */
+  prepareIssuerMint(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint): IssuerMintRequest {
+    if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
+    const reg = this.assetRegistry;
+    if (!reg) throw new Error("MINT_REGISTRY_REQUIRED: issuer mints need a ledger built with an asset registry");
+    assetIdStr = resolveAssetIdAlias(assetIdStr);
+    let account: Fr;
+    try { account = this.resolveAccount(accountOrAddress); } catch (e) { throw new Error(`MINT_ACCOUNT_INVALID: ${(e as Error).message}`); }
+    if (!this.connected) throw new Error("Node is not connected");
+    const rec = isCanonicalLedgerAssetId(assetIdStr) ? this.assetRecord(assetIdStr) : undefined;
+    if (!rec) throw new Error("MINT_ASSET_UNKNOWN");
+    this.assertMintable(rec.assetId);
+    if (amount <= 0n || amount >= 2n ** 64n) throw new Error("MINT_AMOUNT_INVALID");
+    const assetId = ledgerAssetIdToFr(assetIdStr);
+    if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("MINT_AMOUNT_INVALID");
+    this.assertSupplyCap(rec.assetId, assetId, amount);
+    const blinding = hLeaf(account, new Fr(this.noteCounter + 1n));
+    const note = makeNote(account, assetId, amount, blinding);
+    return { index: this.mints.length, networkId: this.networkId, domainId: this.domainId, account: account.toHex(), assetId: assetId.toHex(), amount: amount.toString(), commitment: note.commitment.toHex(), registryVersion: reg.version };
+  }
+
+  /**
+   * v0.5.3: apply a registry mint signed by at least `threshold` distinct
+   * keys of the asset's issuer key set in the current manifest (M-of-N).
+   * Only valid signatures by listed keys are stored.
+   */
+  mintWithIssuerSignatures(request: IssuerMintRequest, signatures: RegistrySignature[]): Note {
+    const reg = this.assetRegistry;
+    if (!reg) throw new Error("MINT_REGISTRY_REQUIRED: issuer mints need a ledger built with an asset registry");
+    if (!request || typeof request !== "object") throw new Error("MINT_REQUEST_INVALID");
+    let account: Fr;
+    let assetIdStr: string | undefined;
+    try {
+      account = new Fr(request.account);
+      assetIdStr = this.assetRecordByFr(new Fr(request.assetId))?.assetId;
+    } catch { throw new Error("MINT_REQUEST_INVALID"); }
+    if (!assetIdStr || !/^[0-9]+$/.test(String(request.amount))) throw new Error("MINT_REQUEST_INVALID");
+    const expected = this.prepareIssuerMint(account, assetIdStr, BigInt(request.amount));
+    if (issuerMintMessage(expected) !== issuerMintMessage(request)) throw new Error("MINT_REQUEST_STALE: the request does not match the next mint of this ledger (index, note or manifest version changed)");
+    const ks = reg.issuerAt(expected.registryVersion, assetIdStr);
+    if (!ks) throw new Error("MINT_ISSUER_UNKNOWN");
+    const message = issuerMintMessage(expected);
+    if (!meetsThreshold(message, signatures, ks)) throw new Error(`MINT_ISSUER_THRESHOLD: fewer than ${ks.threshold} valid signature(s) of the asset's issuer key set`);
+    const valid = validSigners(message, signatures, ks);
+    const kept: RegistrySignature[] = [];
+    for (const s of signatures) {
+      let hex: string;
+      try { hex = publicKeyHexOf(s.publicKey); } catch { continue; }
+      if (valid.has(hex) && !kept.some((k) => k.publicKey === hex)) kept.push({ publicKey: hex, signature: s.signature });
+    }
+    kept.sort((a, b) => (a.publicKey < b.publicKey ? -1 : a.publicKey > b.publicKey ? 1 : 0));
+    const assetId = ledgerAssetIdToFr(assetIdStr);
+    const amount = BigInt(expected.amount);
+    const blinding = hLeaf(account, new Fr(++this.noteCounter));
+    const note = makeNote(account, assetId, amount, blinding);
+    if (note.commitment.toHex() !== expected.commitment) throw new Error("MINT_REQUEST_STALE");
+    this.addNote(note);
+    this.mints.push({ ...expected, signature: "", issuerSignatures: kept });
+    this.setBalance(account, assetId, this.balanceOf(account, assetId) + amount);
+    this.supply.set(assetId.toHex(), (this.supply.get(assetId.toHex()) ?? 0n) + amount);
+    return note;
+  }
+
+  /** v0.5.3: under a registry, total issuance of an asset may not exceed its supplyCap. */
+  private assertSupplyCap(assetIdStr: string, assetId: Fr, amount: bigint): void {
+    const reg = this.assetRegistry?.find(assetIdStr);
+    if (!reg) return;
+    let total = 0n;
+    for (const enc of assetEncodings(assetIdStr)) total += this.supply.get(enc.toHex()) ?? 0n;
+    if (total + amount > reg.supplyCap) throw new Error(`MINT_SUPPLY_CAP: issuance would exceed the registry supplyCap of ${assetIdStr}`);
+    void assetId;
+  }
+
   faucet(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint): Note {
     if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
     if (!this.allowFaucet) throw new Error("Faucet is TESTNET-only");
@@ -853,12 +953,16 @@ export class UepLedger {
     const rec = isCanonicalLedgerAssetId(assetIdStr) ? this.assetRecord(assetIdStr) : undefined;
     if (!rec) throw new Error("Unknown TESTNET asset");
     this.assertMintable(rec.assetId);
+    // v0.5.3: under a registry the faucet (and the v0.4.7 single issuer key) mints test assets only;
+    // every other registry asset is minted by its manifest issuer key set (mintWithIssuerSignatures).
+    if (this.assetRegistry && rec.assetId.split("/")[0] !== TEST_ASSET_NAMESPACE) throw new Error("FAUCET_TEST_ASSETS_ONLY: under the asset registry this asset is minted by its issuer key set (prepareIssuerMint / mintWithIssuerSignatures)");
     // v0.4.7: a per-asset issuer key, if configured, is the only key that mints this asset.
     const signer = this.issuerSigners.get(assetIdStr) ?? this.faucetSigner;
     if (!signer) throw new Error("FAUCET_KEY_REQUIRED");
     if (amount <= 0n || amount >= 2n ** 64n) throw new Error("FAUCET_AMOUNT_INVALID");
     const assetId = ledgerAssetIdToFr(assetIdStr);
     if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("FAUCET_AMOUNT_INVALID");
+    this.assertSupplyCap(rec.assetId, assetId, amount);
     const blinding = hLeaf(account, new Fr(++this.noteCounter));
     const note = makeNote(account, assetId, amount, blinding);
     this.addNote(note);
@@ -1677,7 +1781,7 @@ export class UepLedger {
       state: this.state.toJSON(),
       nullifiers: this.nullifiers.toJSON(),
       balances: [...this.balances.entries()].map(([k, v]) => [k, v.toString()] as const),
-      mints: this.mints.map((m) => ({ ...m })),
+      mints: this.mints.map((m) => ({ ...m, ...(m.issuerSignatures ? { issuerSignatures: m.issuerSignatures.map((x) => ({ ...x })) } : {}) })),
       notes: this.notes.map(serializeNote),
       txs: this.txs.map(serializeTx),
       // Entries that no longer validate (e.g. input spent since queuing) are not exported.
@@ -1944,7 +2048,8 @@ export class UepLedger {
     // Notes that are not the output of any transaction must be signed faucet mints.
     const mintedCommitments = new Set<string>();
     const minted = new Map<string, bigint>();
-    if (data.mints.length > 0 && faucetKeys.length === 0 && issuerEntries.length === 0) fail("MINT_KEY", "snapshot contains mints but no trusted faucet public key was supplied");
+    if (data.mints.some((m) => m && (m as MintRecord).issuerSignatures === undefined) && faucetKeys.length === 0 && issuerEntries.length === 0) fail("MINT_KEY", "snapshot contains mints but no trusted faucet public key was supplied");
+    const boundRegistryVersion = ((data as { assetRegistry?: { version?: number } | null }).assetRegistry ?? undefined)?.version;
     data.mints.forEach((m, i) => {
       if (!m || m.index !== i || m.networkId !== l.networkId || m.domainId !== l.domainId || typeof m.commitment !== "string" || typeof m.amount !== "string" || !/^[0-9]+$/.test(m.amount) || typeof m.assetId !== "string") fail("MINT_SHAPE");
       // v0.4.7: only registered assets can be minted, and only by a key trusted for that asset at this index.
@@ -1952,15 +2057,33 @@ export class UepLedger {
       try { assetFr = new Fr(m.assetId); } catch { fail("MINT_SHAPE"); }
       const asset = l.assetRecordByFr(assetFr!);
       if (!asset || assetFr!.toHex() !== m.assetId) fail("MINT_ASSET", `mint ${i} is for an asset that is not registered on this network`);
-      const { signature, ...unsigned } = m;
-      if (!mintKeysFor(asset!.assetId, i).some((k) => verifyEd25519(mintMessage(unsigned), signature, k))) fail("MINT_SIGNATURE", `mint ${i} is unsigned or not signed by a key trusted for this asset`);
+      const { signature, issuerSignatures, registryVersion, ...unsigned } = m as MintRecord;
+      if (issuerSignatures !== undefined) {
+        // v0.5.3: registry mint: threshold of the manifest issuer key set of that version.
+        const reg = l.assetRegistry;
+        if (!reg || !Array.isArray(issuerSignatures) || signature !== "" || !Number.isSafeInteger(registryVersion) || (registryVersion as number) < 1 || boundRegistryVersion === undefined || (registryVersion as number) > boundRegistryVersion) fail("MINT_SIGNATURE", `mint ${i}: a registry mint needs the trusted registry and a manifest version not above the bound one`);
+        const ks = reg!.issuerAt(registryVersion as number, asset!.assetId);
+        if (!ks || !meetsThreshold(issuerMintMessage({ ...unsigned, registryVersion: registryVersion as number }), issuerSignatures, ks)) fail("MINT_SIGNATURE", `mint ${i} lacks the threshold of the asset's issuer key set`);
+      } else {
+        if (registryVersion !== undefined) fail("MINT_SHAPE");
+        if (!mintKeysFor(asset!.assetId, i).some((k) => verifyEd25519(mintMessage(unsigned), signature, k))) fail("MINT_SIGNATURE", `mint ${i} is unsigned or not signed by a key trusted for this asset`);
+        // v0.5.3: under a registry, faucet-signed mints are for test assets only.
+        if (l.assetRegistry && boundRegistryVersion !== undefined && asset!.assetId.split("/")[0] !== TEST_ASSET_NAMESPACE) fail("MINT_SIGNATURE", `mint ${i}: under the asset registry only test assets are minted by the faucet key`);
+      }
       const note = noteByCommitment.get(m.commitment);
       if (!note || outputCommitments.has(m.commitment) || note.owner.toHex() !== m.account || note.assetId.toHex() !== m.assetId || note.amount.toString() !== m.amount) fail("MINT_NOTE");
       if (mintedCommitments.has(m.commitment)) fail("MINT_DUPLICATE");
       mintedCommitments.add(m.commitment);
       minted.set(m.assetId, (minted.get(m.assetId) ?? 0n) + BigInt(m.amount));
+      // v0.5.3: registry supply cap (summed over the asset's encodings).
+      const regAsset = l.assetRegistry?.find(asset!.assetId);
+      if (regAsset) {
+        let total = 0n;
+        for (const enc of assetEncodings(asset!.assetId)) total += minted.get(enc.toHex()) ?? 0n;
+        if (total > regAsset.supplyCap) fail("MINT_SUPPLY_CAP", `issuance of ${asset!.assetId} exceeds the registry supplyCap`);
+      }
     });
-    l.mints = data.mints.map((m) => ({ ...m }));
+    l.mints = data.mints.map((m) => ({ ...m, ...((m as MintRecord).issuerSignatures ? { issuerSignatures: (m as MintRecord).issuerSignatures!.map((x) => ({ ...x })) } : {}) }));
     l.supply = new Map(minted);
     const available = new Set<string>(mintedCommitments);
     const consumed = new Set<string>();
