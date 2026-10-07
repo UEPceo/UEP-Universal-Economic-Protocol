@@ -18,7 +18,9 @@ use ark_r1cs_std::{
     alloc::AllocVar,
     boolean::Boolean,
     eq::EqGadget,
-    fields::fp::FpVar,
+    fields::{fp::FpVar, FieldVar},
+    ToBitsGadget,
+    select::CondSelectGadget,
     uint64::UInt64,
 };
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
@@ -26,7 +28,7 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisE
 use arkworks_native_gadgets::poseidon::{
     sbox::PoseidonSbox, FieldHasher, Poseidon, PoseidonParameters,
 };
-use arkworks_r1cs_gadgets::poseidon::PoseidonGadget;
+use arkworks_r1cs_gadgets::poseidon::{FieldHasherGadget, PoseidonGadget};
 use arkworks_utils::{
     bytes_matrix_to_f, bytes_vec_to_f, poseidon_params::setup_poseidon_params, Curve,
 };
@@ -40,14 +42,15 @@ pub fn poseidon_params_bn254() -> PoseidonParameters<Fr> {
         round_keys: bytes_vec_to_f(&p.rounds),
         full_rounds: p.full_rounds,
         partial_rounds: p.partial_rounds,
-        sbox: PoseidonSbox::Quintic,
+        sbox: PoseidonSbox(p.exp),
+        width: p.width,
     }
 }
 
 fn u64_to_fp(bits: &UInt64<Fr>) -> Result<FpVar<Fr>, SynthesisError> {
     let mut acc = FpVar::<Fr>::constant(Fr::from(0u64));
     let mut pow = Fr::from(1u64);
-    for b in bits.iter() {
+    for b in bits.to_bits_le().iter() {
         let term = b.select(&FpVar::constant(pow), &FpVar::constant(Fr::from(0u64)))?;
         acc += term;
         pow += pow;
@@ -61,7 +64,7 @@ fn poseidon2(
     b: FpVar<Fr>,
     hasher: Poseidon<Fr>,
 ) -> Result<FpVar<Fr>, SynthesisError> {
-    let mut gadget = PoseidonGadget::<Fr>::from_native(&mut cs.clone(), hasher)?;
+    let gadget: PoseidonGadget<Fr> = FieldHasherGadget::<Fr>::from_native(&mut cs.clone(), hasher)?;
     gadget.hash(&[a, b])
 }
 

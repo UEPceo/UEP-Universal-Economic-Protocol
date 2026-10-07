@@ -7,14 +7,13 @@
 //! witness a,b; public c; PoseidonGadget::hash([a,b]); enforce equality.
 
 use ark_bn254::Fr;
-use ark_ff::PrimeField;
 use ark_r1cs_std::{alloc::AllocVar, eq::EqGadget, fields::fp::FpVar};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
 use arkworks_native_gadgets::poseidon::{
     sbox::PoseidonSbox, FieldHasher, Poseidon, PoseidonParameters,
 };
-use arkworks_r1cs_gadgets::poseidon::PoseidonGadget;
+use arkworks_r1cs_gadgets::poseidon::{FieldHasherGadget, PoseidonGadget};
 use arkworks_utils::{
     bytes_matrix_to_f, bytes_vec_to_f, poseidon_params::setup_poseidon_params, Curve,
 };
@@ -32,7 +31,8 @@ pub fn setup_bn254_poseidon_params() -> PoseidonParameters<Fr> {
         round_keys: bytes_vec_to_f(&pos_data.rounds),
         full_rounds: pos_data.full_rounds,
         partial_rounds: pos_data.partial_rounds,
-        sbox: PoseidonSbox::Quintic,
+        sbox: PoseidonSbox(pos_data.exp),
+        width: pos_data.width,
     }
 }
 
@@ -53,8 +53,8 @@ impl ConstraintSynthesizer<Fr> for Poseidon2To1Circuit {
         let b = FpVar::<Fr>::new_witness(cs.clone(), || Ok(self.b))?;
         let expected = FpVar::<Fr>::new_input(cs.clone(), || Ok(self.expected))?;
 
-        let mut gadget =
-            PoseidonGadget::<Fr>::from_native(&mut cs.clone(), self.hasher)?;
+        let gadget: PoseidonGadget<Fr> =
+            FieldHasherGadget::<Fr>::from_native(&mut cs.clone(), self.hasher)?;
 
         let digest = gadget.hash(&[a, b])?;
         digest.enforce_equal(&expected)?;
@@ -101,8 +101,8 @@ impl ConstraintSynthesizer<Fr> for TreasuryFeeCircuit {
         lhs.enforce_equal(&rhs)?;
 
         // CRITICAL: Poseidon is now a genuine R1CS gadget.
-        let mut gadget =
-            PoseidonGadget::<Fr>::from_native(&mut cs.clone(), self.hasher)?;
+        let gadget: PoseidonGadget<Fr> =
+            FieldHasherGadget::<Fr>::from_native(&mut cs.clone(), self.hasher)?;
         let digest = gadget.hash(&[treasury, fee])?;
         digest.enforce_equal(&expected)?;
 

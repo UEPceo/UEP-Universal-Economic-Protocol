@@ -1,6 +1,7 @@
 use ark_bn254::{Bn254, Fr};
 use ark_crypto_primitives::snark::SNARK;
-use ark_ff::PrimeField;
+use ark_relations::r1cs::ConstraintSynthesizer;
+use arkworks_native_gadgets::poseidon::FieldHasher;
 use ark_groth16::Groth16;
 use ark_relations::r1cs::ConstraintSystem;
 use ark_std::test_rng;
@@ -20,7 +21,7 @@ fn r1cs_poseidon_matches_native_digest() {
     let a = Fr::from(1u64);
     let b = Fr::from(2u64);
 
-    let mut native = hasher();
+    let native = hasher();
     let expected = native.hash(&[a, b]).unwrap();
 
     let cs = ConstraintSystem::<Fr>::new_ref();
@@ -42,7 +43,7 @@ fn wrong_digest_fails_r1cs() {
     let a = Fr::from(1u64);
     let b = Fr::from(2u64);
 
-    let mut native = hasher();
+    let native = hasher();
     let correct = native.hash(&[a, b]).unwrap();
     let wrong = correct + Fr::from(1u64);
 
@@ -65,7 +66,7 @@ fn treasury_fee_is_01_percent_and_wrong_fee_fails() {
     let amount = Fr::from(100_000u64);
     let fee = Fr::from(100u64);
 
-    let mut native = hasher();
+    let native = hasher();
     let commitment = native.hash(&[treasury, fee]).unwrap();
 
     let cs = ConstraintSystem::<Fr>::new_ref();
@@ -102,7 +103,7 @@ fn groth16_rejects_tampered_amount() {
     let amount = Fr::from(100_000u64);
     let fee = Fr::from(100u64);
 
-    let mut native = hasher();
+    let native = hasher();
     let commitment = native.hash(&[treasury, fee]).unwrap();
 
     let setup = TreasuryFeeCircuit {

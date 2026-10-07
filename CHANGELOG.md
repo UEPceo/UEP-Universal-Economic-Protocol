@@ -53,7 +53,7 @@ Package version `0.5.2-public-iot-m2m`. Version 0.5.2 integrates three module pa
 
 ## 0.5.1-public-iot-m2m — 2026-10-03
 
-Version 0.5.1 combines deterministic, height-based transitions with domain delay windows and evidence value caps, a compatibility policy with chained snapshot migrations, and fixes from an external review of v0.5.0. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
+Version 0.5.1 combines deterministic, height-based transitions with domain delay windows and evidence value caps, a compatibility policy with chained snapshot migrations, and fixes from a non-public independent assessment of v0.5.0 (no public remediation report; v0.4.6 remains the last threshold with a published remediation document, see docs/SECURITY-COVERAGE.md). No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
 
 ### Deterministic transitions, domain delay windows and evidence caps
 
@@ -102,7 +102,7 @@ See `docs/COMPATIBILITY.md` and `docs/adr/0003-compatibility-and-migrations.md`.
 - New `GET /v1/marketplace/height` (HTTP adapter 1.3.0), `ledger.restoredFrom` and `lastReconcileHeight`, and `snapshotToJSON` / `snapshotFromJSON`.
 - Not compatible, with explicit errors: IoT telemetry signed with a Unix-ms `observedAt` (`IOT_TELEMETRY_OBSERVED_AT_UNIT`), and an in-process Unix-ms `issuedAt` without a derived height (`ACTOR_AUTH_ISSUED_AT_UNIT`).
 
-### Fixes from the external review of v0.5.0
+### Fixes from the independent assessment of v0.5.0 (non-public; no remediation report published)
 
 - **`/v1/objects*`: Host and Origin allowlist (DNS rebinding).** Before any authorization, the object routes check the request's `Host` header against an allowlist (default: `127.0.0.1`, `localhost`, `::1` and the bind host when it is not a wildcard; `allowedHosts` option or `UEP_HTTP_ALLOWED_HOSTS`) and its `Origin` header, when present, against exact origins (default: the same-origin loopback origins of the listening port plus the CORS allowlist without `*`; `objectsAllowedOrigins` option). A port in `Host` must be the listening port. A missing, malformed or foreign `Host` is `403 OBJECTS_HOST_NOT_ALLOWED`, a foreign or `null` origin `403 OBJECTS_ORIGIN_NOT_ALLOWED`, with or without a bearer token. HTTP adapter version 1.3.0 (which also adds `GET /v1/marketplace/height`).
 - **Lab node domain binding.** `LabNode` validates its domain (a non-negative safe integer, `DOMAIN_ID_INVALID`), requires an operator-configured `defaultVkHex` and any registry key to be pinned for that domain (`VK_NOT_PINNED_FOR_DOMAIN`), and in ZK mode requires the proof's `domain_id` public input to equal the signed envelope domain and the node domain (`ZK_PUBLIC_DOMAIN_MISMATCH`, `ZK_DOMAIN_MISMATCH`), the same rule as the pinned verifiers. A proof made for another domain is rejected even when the envelope is correctly signed.
@@ -121,7 +121,7 @@ See `docs/COMPATIBILITY.md` and `docs/adr/0003-compatibility-and-migrations.md`.
 
 ## 0.5.0-public-iot-m2m (unreleased) — research labs, Poseidon protocol hash, asset model and hardening
 
-Version 0.5.0 bundles the research-labs integration and the Poseidon protocol hash (first sections below, unchanged) with the v0.5.0 work: namespaced assets and an asset registry manifest, circuit v4 with (account, asset) state keys, API authorization hardening, remote-safe signed spends, paymaster reserve protection, a compressed sparse Merkle tree and fixes from two independent external assessments. No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
+Version 0.5.0 bundles the research-labs integration and the Poseidon protocol hash (first sections below, unchanged) with the v0.5.0 work: namespaced assets and an asset registry manifest, circuit v4 with (account, asset) state keys, API authorization hardening, remote-safe signed spends, paymaster reserve protection, a compressed sparse Merkle tree and fixes from two non-public independent assessments (no public remediation report; see docs/SECURITY-COVERAGE.md). No native token; the protocol fee (0.1%) and the Marketplace fee (3%) are unchanged.
 
 ### Security hardening (v0.5.0)
 

@@ -1,41 +1,22 @@
 # Security Review Coverage Matrix
 
-This document states the current review status of the public UEP reference. It is a disclosure record, not a certification or legal opinion.
+This document states the review status of the public UEP reference. It is a disclosure record, not a certification or legal opinion. The project never describes any state as "audited", "secure" or ready for production use.
 
-| Version | Status | External review | Remediation document | Notes |
-|---|---|---|---|---|
-| v0.3.2 | Reviewed | Yes | `PUBLIC-SECURITY-REMEDIATION-v0.4.1.md` and related public remediation files | Public security fix release |
-| v0.4.1–v0.4.6 | Reviewed | Yes | `PUBLIC-SECURITY-REMEDIATION-v0.4.1.md` through `PUBLIC-SECURITY-REMEDIATION-v0.4.6.md` | Reviewed externally and documented |
-| v0.4.7 | Not externally reviewed | No | None | Multi-asset and per-asset hardening in the project history |
-| v0.5.0 | Not externally reviewed | No | None | API auth, signed spends, paymaster caps, circuit v4, asset registry work |
-| v0.5.1 | Not externally reviewed | No | None | Deterministic transitions and compatibility policy work |
-| v0.5.2 | Not externally reviewed | No | None | Current main branch state |
+**Last externally assessed threshold with a published remediation document: v0.4.6.**
 
-## Important interpretation
+| Version | Independent assessment | Public remediation document | Notes |
+|---|---|---|---|
+| v0.3.2 – v0.4.6 | Yes | `PUBLIC-SECURITY-REMEDIATION-v0.4.1.md` … `v0.4.6.md` | Per-finding status published |
+| v0.4.7 | Yes, non-public report | None | Fixes landed (CHANGELOG 0.4.7); no remediation report published |
+| v0.5.0 | Yes, non-public reports | None | Fixes landed in 0.5.0/0.5.1 (CHANGELOG); no remediation report published |
+| v0.5.1 | No | None | Deterministic transitions, compatibility policy |
+| v0.5.2 | Yes, non-public report on main `7173d37` (0 P0, 0 P1) | None | Findings addressed on the `v0.5.3-fixes` branch |
+| v0.5.3 (branch) | No | None | Local tests only, see `docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md` |
 
-The repository should be read as follows:
+## How to read this
 
-- Reviewed versions are those with a public remediation document and a documented public review in the project history.
-- Unreviewed versions are still useful research and engineering work, but they are not an externally validated release.
-- This document does not imply that a later version is insecure; it only makes clear that the project has not yet published a matching external remediation report for the newest changes.
-
-## Review posture by change set
-
-### v0.4.7
-
-The v0.4.7 work includes multi-asset hardening, per-asset keys and fee-floor behavior. These changes are important, but the project history does not include a separate external review against that state.
-
-### v0.5.0
-
-The v0.5.0 changes include signed spends, service API authorization hardening, paymaster caps and the circuit v4 work. These are significant security-relevant changes and should be considered pending external review until a dedicated remediation document and review are published.
-
-### v0.5.1 and v0.5.2
-
-The project continues to evolve on main with settlement engine, category modules, oracles and deterministic timing work. These changes are experimental, documented and tested locally, but not yet covered by an external review.
-
-## Operational guidance
-
-- Treat v0.4.6 as the last externally reviewed public threshold for this repo.
-- Treat v0.4.7–v0.5.2 as research / public reference states pending independent review.
-- Do not interpret the current main branch as audited or production-ready.
-- Any future public release should include a matching remediation document before claiming a fully reviewed state.
+- "Independent assessment" means a reviewer outside the code author reviewed that commit. A non-public report is **not** a validation of the release: the fixed state was not re-assessed and the per-finding status is not published.
+- CHANGELOG entries that mention fixes from an assessment of v0.4.7 or v0.5.0 refer to these non-public reports. They do not move the threshold above v0.4.6.
+- `docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md` lists every security-relevant feature added since v0.4.6, the tests that cover it and its status. It is a self-assessment.
+- Do not interpret main or any branch as externally validated or ready for production.
+- A future release can move the threshold only with a published remediation document matching an independent assessment of that exact commit.
