@@ -1,61 +1,13 @@
 {
-  "note": "Lab suites with known, documented failures. Skipped by scripts/test-lab.mjs unless --include-known. See docs/LABS.md.",
+  "note": "Lab suites with known, documented failures. Skipped by scripts/test-lab.mjs unless --include-known or --only-known. See docs/LABS.md. v0.5.3: 12 files left this list (TCP mesh tie-break for simultaneous dials, full-mesh wait in the process cluster, economic commitment on single-batch proposals).",
   "files": [
     {
-      "file": "src/lab/uep-econ-05.2-process-mesh.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Multi-process economic mesh does not reach finality within the test timeouts."
-    },
-    {
-      "file": "src/lab/uep35.10-topology.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Four-process convergence with per-node keys; result varies between runs."
-    },
-    {
-      "file": "src/lab/uep35.11-partition.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Process partition/heal timing; result varies between runs."
-    },
-    {
-      "file": "src/lab/uep35.7.1-consensus.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). DAG_READY vs FINALIZED state-root check."
-    },
-    {
-      "file": "src/lab/uep35.9-process.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Multi-transaction batch on OS processes; result varies between runs."
-    },
-    {
-      "file": "src/lab/uep36.1-scale.test.ts",
-      "reason": "v0.5.0: the in-process rotating-leader cases now follow the UEP-37.6 single-proposer schedule and pass; the OS-process case (two sequential aggregates on 4 processes) does not finalize within the timeout."
-    },
-    {
-      "file": "src/lab/uep36.1.1-hardening.test.ts",
-      "reason": "v0.5.0: in-process cases pass; the OS-process case (three heights on 4 processes) does not finalize within the timeout."
-    },
-    {
-      "file": "src/lab/uep36.5-process-aggregate.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Aggregate proposal on OS processes does not finalize."
-    },
-    {
-      "file": "src/lab/uep36.6-partition-heal.test.ts",
-      "reason": "Process 3|1 aggregate case; result varies between runs (passed in the source snapshot)."
-    },
-    {
-      "file": "src/lab/uep36.8-multileader-partition.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Rotating-leader partition case conflicts with the single-proposer schedule (UEP-37.6)."
-    },
-    {
-      "file": "src/lab/uep37.5-process-poseidon.test.ts",
-      "reason": "v0.5.0: the index collision is resolved ((account, asset) state keys, collisions rejected) and the test uses the aggregate proposal path; on 4 OS processes one of the two convergence cases still times out intermittently."
-    },
-    {
       "file": "src/lab/uep37.5-stress.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Stress run on processes does not converge within the timeout."
-    },
-    {
-      "file": "src/lab/uep37.7-process-view.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Silent-leader view change on processes times out."
+      "reason": "Poseidon-zk leaf mode on 4 OS processes with the uep-zk prover: three sequential transactions must each change the root within 120 s; under load the second or third root change can exceed the timeout (proving time, not a consensus disagreement). Still failing after the v0.5.3 mesh fix."
     },
     {
       "file": "src/lab/uep38-p4-view-mesh.test.ts",
-      "reason": "Fails in the source lab snapshot too (before integration). Proposal delivery after TCP view change times out."
+      "reason": "P4 process cluster: proposal delivery to every replica after a TCP view change without an explicit flush times out on one replica ('timeout p4-1'). Still failing after the v0.5.3 mesh fix; needs a re-proposal or catch-up path after a view change."
     }
   ]
 }

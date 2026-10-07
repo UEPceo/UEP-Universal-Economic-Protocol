@@ -11,6 +11,8 @@ type PeerConn = {
   peerId: string;
   socket: net.Socket;
   buf: Buffer;
+  /** v0.5.3: true when this endpoint opened the connection. */
+  outbound: boolean;
 };
 
 function frame(from: string, kind: string, payload: Uint8Array): Buffer {
@@ -96,7 +98,13 @@ export class TcpMeshEndpoint {
     const prev = this.peers.get(conn.peerId);
     if (prev && prev !== conn) {
       const prevLive = prev.socket.writable && !prev.socket.destroyed;
-      if (prevLive) {
+      // v0.5.3: when both ends dial at the same time, each end used to keep its
+      // own first socket and close the other one, so both sockets could die and
+      // the pair stayed disconnected (lab non-determinism). Both ends now keep
+      // the same socket: the one opened by the endpoint with the smaller id.
+      const preferOutbound = this.nodeId < conn.peerId;
+      const connPreferred = conn.outbound === preferOutbound;
+      if (prevLive && !connPreferred) {
         conn.socket.removeAllListeners();
         conn.socket.destroy();
         return;
@@ -116,6 +124,7 @@ export class TcpMeshEndpoint {
       peerId: knownPeer ?? "",
       socket,
       buf: Buffer.alloc(0),
+      outbound: knownPeer !== undefined,
     };
     socket.setNoDelay(true);
     socket.on("data", (chunk) => {

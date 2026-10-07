@@ -72,8 +72,9 @@ jobs:
         run: npm run test:core
 
   # Blocking (v0.5.3): every lab file EXCEPT those listed in
-  # scripts/lab-known-issues.json, including the labs fixed in v0.5.3
-  # (uep35.7.1-consensus, uep36.8-multileader-partition). A failure here fails CI.
+  # scripts/lab-known-issues.json, including the 12 labs fixed in v0.5.3
+  # (TCP mesh tie-break, full-mesh wait, uep35.7.1 economic commitment).
+  # A failure here fails CI.
   labs:
     name: Labs (blocking, known issues excluded)
     runs-on: ubuntu-latest

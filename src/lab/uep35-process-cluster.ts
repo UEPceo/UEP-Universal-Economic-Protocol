@@ -146,6 +146,39 @@ export class ProcessCluster {
     for (const node of this.nodes) {
       await waitEvent(node, (e) => e.event === "connected");
     }
+    await this.waitFullMesh(peers);
+  }
+
+  /**
+   * v0.5.3: "connected" only means that the dial loop finished; a peer can
+   * still be missing (simultaneous dials, slow accept). Wait until every node
+   * reports every other node as a peer, re-sending `connect` to nodes that
+   * miss one, so that tests never start a round on a partial mesh.
+   */
+  private async waitFullMesh(peers: Array<{ id: string; port: number; host: string }>, timeoutMs = 8000): Promise<void> {
+    const t0 = Date.now();
+    for (let round = 0; Date.now() - t0 < timeoutMs; round++) {
+      const st = await this.peerStatus();
+      const missing = this.nodes.filter((n) => {
+        const have = new Set(st.get(n.id) ?? []);
+        return this.nodes.some((o) => o.id !== n.id && !have.has(o.id));
+      });
+      if (missing.length === 0) return;
+      if (round % 5 === 4) for (const n of missing) send(n.child, { cmd: "connect", peers });
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error("PROCESS_CLUSTER_MESH_INCOMPLETE");
+  }
+
+  private async peerStatus(): Promise<Map<string, string[]>> {
+    for (const node of this.nodes) send(node.child, { cmd: "status" });
+    await new Promise((r) => setTimeout(r, 50));
+    const out = new Map<string, string[]>();
+    for (const n of this.nodes) {
+      const st = [...n.events].reverse().find((e) => (e as { event?: string }).event === "status") as { peers?: string[] } | undefined;
+      out.set(n.id, st?.peers ?? []);
+    }
+    return out;
   }
 
   async propose(

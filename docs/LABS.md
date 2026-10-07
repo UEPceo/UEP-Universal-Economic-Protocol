@@ -156,6 +156,19 @@ with a reason, skipped by `npm run test:lab`, and can be run with
 `node scripts/test-lab.mjs --include-known` (everything). In CI they run in a
 separate non-blocking job, so the CI badge reflects the core.
 
+**v0.5.3: from 14 files to 2.** Most known failures were not consensus bugs but
+a race in the lab TCP mesh: when two nodes dialled each other at the same time,
+each kept its own socket and closed the other one, so both sockets could die and
+the pair stayed disconnected; tests then proposed on a partial mesh and timed
+out. Both ends now keep the same socket (the one opened by the smaller node id,
+`src/lab/uep35-tcp-mesh.ts`), and `ProcessCluster.start()` waits until every node
+reports every other node as a peer. `uep35.7.1-consensus` also needed the economic
+commitment on single-batch proposals. The 12 files that left the list passed
+three or more consecutive runs on Node.js 22 and 24 and now block CI. Remaining:
+`uep37.5-stress` (Poseidon-zk proving time on 4 processes exceeds the timeout
+under load) and `uep38-p4-view-mesh` (delivery after a TCP view change; needs a
+catch-up path).
+
 Individual lab tests that are still skipped, each with a note in the test:
 
 - two tests that pin the SHA-256 of a prebuilt `uep-zk` binary; the binary is
