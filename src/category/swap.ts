@@ -13,6 +13,7 @@ import type { CategoryEscrowPort } from "../marketplace/category-escrow.ts";
 import { HeightGuard, ReplayGuard } from "./signed.ts";
 import type { IndexWriter, SettlementIndex } from "./settlement-index.ts";
 import { newDisputeCapRegistry, type DisputeCap, type Disputable, type EscrowView } from "./disputable.ts";
+import type { OraclePolicyGate } from "../oracle/policy-gate.ts";
 import { assertHex32, assertNonNegInt, assertPositiveBigint, mulDivFloor, sha256Hex, swapHashlock } from "./relay-crypto.ts";
 
 export type SwapState = "DUAL_HOLD_LOCKED" | "ATOMICALLY_SETTLED" | "EXPIRED_REFUNDED" | "DISPUTE_RESOLVED";
@@ -83,8 +84,18 @@ export class SwapCategory implements Disputable {
   private readonly port: CategoryEscrowPort;
   private readonly networkId: string;
 
-  constructor(port: CategoryEscrowPort, index: SettlementIndex, networkId = "uep-testnet") {
+  /** v0.5.3: oracle rate check (fail closed for governed pairs, or for every pair with requireOracle). */
+  private readonly priceGate: OraclePolicyGate | undefined;
+  private readonly maxSkewPpm: bigint;
+  private readonly requireOracle: boolean;
+
+  constructor(port: CategoryEscrowPort, index: SettlementIndex, networkId = "uep-testnet", opts: { priceGate?: OraclePolicyGate; maxSkewPpm?: bigint; requireOracle?: boolean } = {}) {
     if (port.module !== "swap") throw new Error("CATEGORY_PORT_MISMATCH");
+    this.priceGate = opts.priceGate;
+    this.maxSkewPpm = opts.maxSkewPpm ?? 30_000n;
+    this.requireOracle = opts.requireOracle === true;
+    if (this.requireOracle && !this.priceGate) throw new Error("ORACLE_NOT_CONFIGURED");
+    if (this.maxSkewPpm < 0n || this.maxSkewPpm > 500_000n) throw new Error("SWAP_ORACLE_SKEW_INVALID");
     this.port = port;
     this.networkId = networkId;
     this.writeIndex = index.issueWriter("swap");
@@ -95,6 +106,10 @@ export class SwapCategory implements Disputable {
     this.heights.check(height);
     this.validateIntent(intent, height);
     const intentId = swapIntentId(intent);
+    // v0.5.3: oracle rate check before any signature or hold work (fail closed).
+    if (this.priceGate && (this.requireOracle || this.priceGate.governs(intent.fromAsset, intent.toAsset))) {
+      this.priceGate.assertSwapRate(intent.fromAsset, intent.fromAmount, intent.toAsset, intent.toAmount, height, this.maxSkewPpm);
+    }
 
     const buyer = this.port.authenticate(intentAuth, "swap-intent", intentId, detailsOf(intent));
     if (buyer !== intent.buyerId) throw new Error("SWAP_BAD_SIGNATURE");

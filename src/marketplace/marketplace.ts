@@ -35,6 +35,7 @@ import { SettlementEngine } from "../settlement/engine.ts";
 import type { PayoutInstruction, SettlementLedgerPort, SettlementOutcome, SettlementReceipt } from "../settlement/types.ts";
 import { buildMarketplaceSnapshot, migrateMarketplaceSnapshot, verifyMarketplaceSnapshot, type MarketplaceSnapshot } from "./marketplace-snapshot.ts";
 import { CATEGORY_ACTIONS, type CategoryAction } from "./identity.ts";
+import { assertOracleReferenceTerms, type OraclePolicyGate, type OracleReferenceTerms } from "../oracle/policy-gate.ts";
 import type { CategoryEscrowPort, CategoryHoldState, CategoryModuleName, CategoryPayout, SubsidyPort } from "./category-escrow.ts";
 import type { TreasuryDripCapability } from "./economy.ts";
 
@@ -145,10 +146,14 @@ export type ServiceListing = {
   windows: ContractWindows;
   /** v0.5.1: evidence terms (attester set and per-contract value cap), when the listing is bound to evidence. */
   evidencePolicy?: ListingEvidencePolicy;
+  /** v0.5.3: oracle reference (signed); the price is checked against the oracle at publication and at every reservation. */
+  oracleReference?: OracleReferenceTerms;
 };
 
 /** Input of publishListing(). */
-export type ListingInput = Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint" | "domainProfile" | "delayHeights" | "windows" | "evidencePolicy"> & {
+export type ListingInput = Omit<ServiceListing, "listingId" | "available" | "active" | "sellerBond" | "catalogFingerprint" | "domainProfile" | "delayHeights" | "windows" | "evidencePolicy" | "oracleReference"> & {
+  /** v0.5.3: bind the listing price to the oracle (signed; needs a Marketplace `oracleGate`). */
+  oracleReference?: OracleReferenceTerms;
   listingId?: string;
   sellerBond?: bigint;
   /** v0.5.1: EARTH (default), MOON or MARS; signed as part of the listing terms when not EARTH. */
@@ -343,6 +348,8 @@ export type MarketplaceConfig = {
   cancellationGraceMs?: number;
   /** Domain separator bound into buyer signatures. Default "uep-marketplace-testnet". */
   marketplaceId?: string;
+  /** v0.5.3: oracle policy gate for listings with `oracleReference` (fail closed). */
+  oracleGate?: OraclePolicyGate;
   /**
    * v0.4.7: when set (e.g. "uep-testnet-1"), every listing and credit asset must
    * be an asset id registered on that ledger network (src/core/assets.ts).
@@ -508,6 +515,8 @@ export class DigitalServicesMarketplace {
   readonly maxActiveReservationsPerIdentity: number;
   readonly cancellationGraceMs: number;
   readonly marketplaceId: string;
+  /** v0.5.3: oracle policy gate (undefined: listings cannot bind to the oracle). */
+  readonly oracleGate: OraclePolicyGate | undefined;
   /** v0.4.5: network of the ledger addresses accepted as identity ids. */
   readonly ledgerNetworkId: string;
   /** v0.4.5: true only when the test-only zero-deposit flag was set. */
@@ -591,6 +600,7 @@ export class DigitalServicesMarketplace {
     this.maxActiveReservationsPerIdentity = config.maxActiveReservationsPerIdentity ?? DEFAULT_MAX_ACTIVE_RESERVATIONS;
     this.cancellationGraceMs = clock.toNominalMs(base.cancellationGrace);
     this.marketplaceId = config.marketplaceId ?? DEFAULT_MARKETPLACE_ID;
+    this.oracleGate = config.oracleGate;
     this.ledgerNetworkId = config.ledgerNetworkId ?? TESTNET.networkId;
     this.testOnlyAllowZeroReservationDeposit = testOnlyOption("testOnlyAllowZeroReservationDeposit", config.testOnlyAllowZeroReservationDeposit);
     if (this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit >= 0n && this.fixedReservationDeposit < MIN_RESERVATION_DEPOSIT && !(this.testOnlyAllowZeroReservationDeposit && this.fixedReservationDeposit === 0n)) {
@@ -845,6 +855,12 @@ export class DigitalServicesMarketplace {
     const actor = this.authenticateActor(auth, "publish", input.listingId ?? "", signedTerms);
     if (actor !== input.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (input.unitPrice <= 0n || input.capacity <= 0n) throw new Error("INVALID_LISTING_ECONOMICS");
+    // v0.5.3: oracle-bound listing price, checked at publication (fail closed).
+    const oracleReference = input.oracleReference !== undefined ? assertOracleReferenceTerms(input.oracleReference) : undefined;
+    if (oracleReference) {
+      if (!this.oracleGate) throw new Error("ORACLE_NOT_CONFIGURED");
+      this.oracleGate.assertServicePrice(oracleReference, input.asset, input.unitPrice, this.now());
+    }
     const now = this.now();
     const recent = (this.listingAttempts.get(input.providerId) ?? []).filter((t) => now - t < this.baseWindows.listingWindow);
     if (recent.length >= this.maxListingsPerWindow) throw new Error("LISTING_RATE_LIMITED");
@@ -870,9 +886,10 @@ export class DigitalServicesMarketplace {
     if (this.listings.has(listingId)) throw new Error("LISTING_ALREADY_EXISTS");
     recent.push(now);
     this.listingAttempts.set(input.providerId, recent);
-    const { domainProfile: _profile, evidencePolicy: _evidence, ...terms } = input;
+    const { domainProfile: _profile, evidencePolicy: _evidence, oracleReference: _oracle, ...terms } = input;
     const listing: ServiceListing = { ...terms, listingId, available: input.capacity, active: true, sellerBond: input.sellerBond ?? 0n, catalogFingerprint: fingerprint, domainProfile: profile, delayHeights: domainProfile(profile).delayHeights, windows: Object.freeze(this.contractWindowsFor(profile)) };
     if (evidencePolicy) listing.evidencePolicy = Object.freeze(evidencePolicy);
+    if (oracleReference) listing.oracleReference = Object.freeze(oracleReference);
     // v0.5.1: the signed terms, the domain profile and the windows cannot change after publication,
     // also not through an in-process reference; only `available` and `active` stay writable.
     for (const key of Object.keys(listing) as Array<keyof ServiceListing>) {
@@ -958,6 +975,11 @@ export class DigitalServicesMarketplace {
     // reservations cannot fill it.
     const evidenceValue = grossAmount + gasFee;
     if (listing.evidencePolicy) this.#evidence.checkLock(listing.evidencePolicy, listing.asset, evidenceValue, listing.providerId);
+    // v0.5.3: an oracle-bound listing is re-checked at the reservation height (stale or deviating feed: no reservation).
+    if (listing.oracleReference) {
+      if (!this.oracleGate) throw new Error("ORACLE_NOT_CONFIGURED");
+      this.oracleGate.assertServicePrice(listing.oracleReference, listing.asset, listing.unitPrice, this.now());
+    }
     listing.available -= input.quantity;
     this.accounts.add(listing.asset, input.buyerId, -deposit);
     this.locked.add(listing.asset, input.buyerId, deposit);

@@ -12,6 +12,7 @@ export * from "./canonical.ts";
 export * from "./registry.ts";
 export * from "./verifier.ts";
 export * from "./risk-policy.ts";
+export * from "./policy-gate.ts";
 
 export class OracleAggregator {
   readonly policy: OraclePolicy;

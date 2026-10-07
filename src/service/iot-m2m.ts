@@ -130,6 +130,12 @@ export type IoTSettlement = ReturnType<DigitalServicesMarketplace["settle"]> & {
 
 export type IoTM2MConfig = {
   /**
+   * v0.5.3: IoT tariffs must be oracle-bound. Every IoT request needs a listing
+   * with `oracleReference` and passes the oracle tariff check (band and buyer
+   * budget) through the Marketplace `oracleGate` (fail closed).
+   */
+  requireOracleTariff?: boolean;
+  /**
    * TEST-ONLY injected counter, in the Marketplace's time unit (used only
    * when the Marketplace uses the test-only millisecond clock; ignored with a
    * height-based Marketplace). Default: the Marketplace clock. Removed in 0.6.0.
@@ -251,9 +257,13 @@ export class IoTM2MService {
   private readonly orders: CategoryServiceAccess;
 
   readonly marketplace: DigitalServicesMarketplace;
+  /** v0.5.3: every IoT request must be oracle-bound (see IoTM2MConfig.requireOracleTariff). */
+  readonly requireOracleTariff: boolean;
 
   constructor(marketplace: DigitalServicesMarketplace, config: IoTM2MConfig = {}) {
     this.marketplace = marketplace;
+    this.requireOracleTariff = config.requireOracleTariff === true;
+    if (this.requireOracleTariff && !marketplace.oracleGate) throw new Error("ORACLE_NOT_CONFIGURED");
     const clock: TransitionClock = marketplace.transitionClock;
     // v0.5.1 compatibility: with a height-based Marketplace a legacy `now` is ignored (deprecated); time is the Marketplace height.
     if (config.now !== undefined && config.testOnlyNowMs !== undefined) throw new Error("CLOCK_CONFIG_CONFLICT: `now` is the deprecated alias of `testOnlyNowMs`; pass one");
@@ -331,7 +341,7 @@ export class IoTM2MService {
    * { listingId, buyerId, quantity, idempotencyKey }. The reservation deposit is
    * locked from the buyer's marketplace balance.
    */
-  requestService(input: { requestId?: string; idempotencyKey: string; authorization: string; buyerId: string; listingId: string; machineId: string; quantity: bigint }): IoTServiceRequest & { order: ServiceOrder; contract: IoTContract } {
+  requestService(input: { requestId?: string; idempotencyKey: string; authorization: string; buyerId: string; listingId: string; machineId: string; quantity: bigint; maxCost?: bigint }): IoTServiceRequest & { order: ServiceOrder; contract: IoTContract } {
     const machine = this.machine(input.machineId);
     if (!machine.active) throw new Error("IOT_MACHINE_INACTIVE");
     const listing = this.marketplace.getListing(input.listingId);
@@ -343,6 +353,14 @@ export class IoTM2MService {
     if (input.quantity <= 0n) throw new Error("IOT_INVALID_QUANTITY");
     if (!input.idempotencyKey) throw new Error("IOT_IDEMPOTENCY_KEY_REQUIRED");
 
+    // v0.5.3: oracle tariff (band + optional buyer budget), before any state is touched.
+    if (listing.oracleReference || this.requireOracleTariff) {
+      if (!listing.oracleReference) throw new Error("IOT_ORACLE_TARIFF_REQUIRED");
+      const gate = this.marketplace.oracleGate;
+      if (!gate) throw new Error("ORACLE_NOT_CONFIGURED");
+      if (input.maxCost !== undefined && (typeof input.maxCost !== "bigint" || input.maxCost < 0n)) throw new Error("IOT_MAX_COST_INVALID");
+      gate.assertIotTariff(listing.oracleReference, listing.asset, listing.unitPrice, input.quantity, this.marketplace.transitionClock.tick(), input.maxCost);
+    }
     const reservation = { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, signature: input.authorization };
     // Fail closed before touching any state: registered buyer + valid signature.
     this.marketplace.assertReservationAuthorized(reservation);

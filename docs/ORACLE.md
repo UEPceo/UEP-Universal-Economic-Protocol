@@ -1,4 +1,4 @@
-# Oracle layer (v0.5.2)
+# Oracle layer (v0.5.2, hardened and wired in v0.5.3)
 
 Status: **IMPLEMENTED (testnet reference)**. Verifiable economic evidence for
 **policy evaluation only** (SVC SLA, IoT tariff, dispute evidence, AMM/swap
@@ -14,6 +14,30 @@ or consensus path.
 
 Residual limits: configured source keys only (no on-network oracle consensus);
 in-process; policy helpers are pure evaluation.
+
+## Wiring (v0.5.3)
+
+The oracle is consulted on three real paths through `OraclePolicyGate`
+(`src/oracle/policy-gate.ts`, tests `src/oracle/oracle-wiring.test.ts`). The
+gate requires a signature-checking aggregator and fails closed.
+
+- **Marketplace.** `new DigitalServicesMarketplace({ oracleGate })`. A listing
+  may carry signed `oracleReference = { baseAssetId, baseUnitsPerQuantity,
+  maxDeviationPpm }`; its `unitPrice` must stay within the band of the oracle
+  price of `baseUnitsPerQuantity` base units in the listing asset, at
+  publication and again at every `reserve()`. A stale, missing or moved feed
+  blocks new reservations (`ORACLE_STALE`, `ORACLE_POLICY_REJECTED`, …).
+- **IoT/M2M.** `new IoTM2MService(marketplace, { requireOracleTariff: true })`
+  requires every IoT listing to be oracle-bound and checks the tariff band
+  plus the buyer's optional `maxCost` budget (`evaluateIotTariff`) before any
+  state is touched. Oracle-bound IoT listings are checked even without the flag.
+- **Hashlock swap** (`uep.service.swap.v1`, the Marketplace category; not the
+  AMM lab pool). `new SwapCategory(port, index, networkId, { priceGate,
+  maxSkewPpm, requireOracle })` checks the implied rate at `open()` for every
+  pair with an oracle pair policy (or every pair with `requireOracle`).
+
+The oracle never moves funds and is not on the ledger spend path; it decides
+whether a Marketplace, IoT or swap operation may proceed.
 
 ## v0.5.3 hardening (EXP-063, V-1 … V-5; auditor V52-04)
 
