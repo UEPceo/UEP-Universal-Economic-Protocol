@@ -32,7 +32,8 @@ import { domainProfile, isDomainProfileId, DEFAULT_DOMAIN_PROFILE, type DomainPr
 import { EvidenceCaps, evidenceCapsView, type EvidenceCapsConfig, type EvidenceCapsView, type ListingEvidencePolicy } from "./evidence.ts";
 import { looksLikeLegacyMs } from "../core/deprecation.ts";
 import { SettlementEngine } from "../settlement/engine.ts";
-import type { PayoutInstruction, SettlementLedgerPort, SettlementOutcome } from "../settlement/types.ts";
+import type { PayoutInstruction, SettlementLedgerPort, SettlementOutcome, SettlementReceipt } from "../settlement/types.ts";
+import { buildMarketplaceSnapshot, migrateMarketplaceSnapshot, verifyMarketplaceSnapshot, type MarketplaceSnapshot } from "./marketplace-snapshot.ts";
 import { CATEGORY_ACTIONS, type CategoryAction } from "./identity.ts";
 import type { CategoryEscrowPort, CategoryHoldState, CategoryModuleName, CategoryPayout, SubsidyPort } from "./category-escrow.ts";
 import type { TreasuryDripCapability } from "./economy.ts";
@@ -743,6 +744,35 @@ export class DigitalServicesMarketplace {
     this.accounts.add(asset, identityId, amount);
     this.add(this.credited, asset, amount);
     return this.availableBalance(asset, identityId);
+  }
+
+  /**
+   * v0.5.3 (format 1, src/marketplace/marketplace-snapshot.ts): snapshot of the
+   * settlement receipts executed so far (orders and category holds), with the
+   * batch root and totals, bound to this marketplace and treasury.
+   */
+  exportSnapshot(): MarketplaceSnapshot {
+    return buildMarketplaceSnapshot({ marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, height: this.now(), receipts: this.settlementEngine.receiptsList() });
+  }
+
+  /**
+   * v0.5.3: restore persisted settlement receipts into a fresh Marketplace
+   * (no settlement executed yet). The snapshot is migrated per ADR 0003, its
+   * hash, receipts, batch root and binding are verified; afterwards every
+   * persisted settlement id is refused for re-execution
+   * (SETTLEMENT_ALREADY_EXECUTED) and its receipt is readable again.
+   */
+  restoreSnapshot(snapshot: MarketplaceSnapshot | Record<string, unknown>): number {
+    if (this.settlementEngine.receiptsList().length > 0) throw new Error("MARKETPLACE_SNAPSHOT_RESTORE_NOT_FRESH");
+    const migrated = migrateMarketplaceSnapshot(snapshot as Record<string, unknown>);
+    const receipts = verifyMarketplaceSnapshot(migrated, { marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId });
+    this.settlementEngine.restoreReceipts(receipts);
+    return receipts.length;
+  }
+
+  /** v0.5.3: receipt of one executed settlement id (order id, or `swap:` / `relay:` / `dispute:` ids). */
+  settlementReceipt(settlementId: string): SettlementReceipt | undefined {
+    return this.settlementEngine.receipt(settlementId);
   }
 
   /**
