@@ -10,8 +10,13 @@
  * native token, no consensus finality.
  */
 
-export const SETTLEMENT_RECEIPT_VERSION = "uep-settlement-receipt-v1" as const;
-export const SETTLEMENT_RECEIPT_DOMAIN = "UEP-SETTLEMENT-RECEIPT-v1" as const;
+/** v0.5.3: receipts carry `networkId` inside the hash (domain UEP-SETTLEMENT-RECEIPT-v2). */
+export const SETTLEMENT_RECEIPT_VERSION = "uep-settlement-receipt-v2" as const;
+export const SETTLEMENT_RECEIPT_DOMAIN = "UEP-SETTLEMENT-RECEIPT-v2" as const;
+/** Legacy (v0.5.2) receipt version without networkId; still verified (versioned alias), never produced. */
+export const LEGACY_SETTLEMENT_RECEIPT_VERSION = "uep-settlement-receipt-v1" as const;
+export const LEGACY_SETTLEMENT_RECEIPT_DOMAIN = "UEP-SETTLEMENT-RECEIPT-v1" as const;
+export type SettlementReceiptVersion = typeof SETTLEMENT_RECEIPT_VERSION | typeof LEGACY_SETTLEMENT_RECEIPT_VERSION;
 
 export type SettlementOutcome = "RELEASE" | "REFUND_BUYER" | "SPLIT";
 
@@ -82,7 +87,9 @@ export interface SettlementLedgerPort {
 
 /** Receipt of one executed settlement; `receiptHash` commits to every other field. */
 export type SettlementReceipt = {
-  version: typeof SETTLEMENT_RECEIPT_VERSION;
+  version: SettlementReceiptVersion;
+  /** v2: network the settlement belongs to (bound by the receipt hash). Absent in legacy v1 receipts. */
+  networkId?: string;
   settlementId: string;
   asset: string;
   payerId: string;

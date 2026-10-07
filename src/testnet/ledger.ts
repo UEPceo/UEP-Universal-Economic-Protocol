@@ -503,6 +503,7 @@ export class UepLedger {
       treasuryId: input?.treasuryId,
       receipts: input?.receipts,
       anchored,
+      networkId: this.networkId,
     });
     this.settlementAnchors.push(anchor);
     const set = new Set(anchored);

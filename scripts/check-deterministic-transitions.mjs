@@ -134,6 +134,11 @@ export const ALLOWLIST = [
     reason: "Test-only: sets NODE_ENV=production temporarily to check that test-only credit overrides are refused in production; restored in finally.",
   },
   {
+    file: "src/settlement/receipt-network.test.ts",
+    rule: "net-import",
+    reason: "Test-only node:fs read of the committed golden Marketplace snapshot fixture with legacy v1 receipts (src/marketplace/fixtures); static repository data, not live data.",
+  },
+  {
     file: "src/testnet/key-derived-accounts.test.ts",
     rule: "net-import",
     reason: "Test-only node:fs read of a committed golden snapshot fixture (v2 account ids); static repository data, not live data.",

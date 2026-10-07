@@ -1,5 +1,7 @@
 /**
- * Marketplace snapshot (v0.5.3, format 1): persisted settlement receipts.
+ * Marketplace snapshot (v0.5.3, format 2): persisted settlement receipts.
+ * Format 2 adds the networkId and allows v2 (networkId-bound) receipts next
+ * to legacy v1 receipts (migration 1 -> 2).
  *
  * Before v0.5.3 the Marketplace kept settlement receipts only in memory, so a
  * restart lost them and nothing stopped a restored process from executing the
@@ -29,16 +31,17 @@ import { createHash } from "node:crypto";
 import { canonicalJson } from "../core/canonical-json.ts";
 import { snapshotFromJSON, snapshotToJSON } from "../testnet/snapshot-json.ts";
 import { settlementBatch } from "../settlement/batch.ts";
-import { verifySettlementReceipt } from "../settlement/engine.ts";
-import { SETTLEMENT_RECEIPT_VERSION, type SettlementBatch, type SettlementReceipt } from "../settlement/types.ts";
+import { isKnownReceiptVersion, verifySettlementReceipt } from "../settlement/engine.ts";
+import { type SettlementBatch, type SettlementReceipt } from "../settlement/types.ts";
 
 export const MARKETPLACE_SNAPSHOT_KIND = "uep-marketplace-snapshot" as const;
-export const MARKETPLACE_SNAPSHOT_FORMAT_VERSION = 1;
+export const MARKETPLACE_SNAPSHOT_FORMAT_VERSION = 2;
 export const OLDEST_MIGRATABLE_MARKETPLACE_SNAPSHOT_FORMAT = 1;
 const SNAPSHOT_DOMAIN = "UEP-MARKETPLACE-SNAPSHOT-v1";
 
 export type MarketplaceSettlementSection = {
-  receiptVersion: typeof SETTLEMENT_RECEIPT_VERSION;
+  /** Format 2: distinct receipt versions present (v2, and legacy v1 receipts restored from older snapshots). */
+  receiptVersions: SettlementReceipt["version"][];
   count: number;
   /** RFC 9162 root over receipt hashes, in execution order (null when empty). */
   batchRoot: string | null;
@@ -51,6 +54,8 @@ export type MarketplaceSnapshotPayload = {
   formatVersion: number;
   marketplaceId: string;
   treasuryId: string;
+  /** Format 2: network of the Marketplace (null for a migrated format 1 snapshot). */
+  networkId: string | null;
   height: number;
   settlement: MarketplaceSettlementSection;
 };
@@ -67,8 +72,28 @@ export type MarketplaceSnapshotMigrationStep = {
   migrate(payload: Record<string, unknown>): Record<string, unknown>;
 };
 
-/** Append-only. Format 1 is the first persisted format, so there are no steps yet. */
-export const MARKETPLACE_SNAPSHOT_MIGRATIONS: readonly MarketplaceSnapshotMigrationStep[] = Object.freeze([]);
+/** Append-only. */
+export const MARKETPLACE_SNAPSHOT_MIGRATIONS: readonly MarketplaceSnapshotMigrationStep[] = Object.freeze([
+  {
+    from: 1,
+    to: 2,
+    title: "networkId-bound receipts (v2) next to legacy v1 receipts",
+    derivation: [
+      "networkId = null: format 1 recorded no network",
+      "settlement.receiptVersions = [settlement.receiptVersion]; receiptVersion is removed",
+      "receipts are unchanged: legacy v1 receipts keep their hash (inclusion proofs and anchors stay valid) and verify through the v1 alias",
+    ],
+    fixtures: ["mkt-v1-receipts-v1.json"],
+    migrate(p: Record<string, unknown>): Record<string, unknown> {
+      if (p.formatVersion !== 1) throw new Error("MARKETPLACE_MIGRATION_1_2: expected format 1");
+      const settlement = { ...(p.settlement as Record<string, unknown>) };
+      const v = settlement.receiptVersion;
+      delete settlement.receiptVersion;
+      settlement.receiptVersions = typeof v === "string" ? [v] : [];
+      return { ...p, networkId: null, settlement };
+    },
+  },
+]);
 
 /** Registry consistency (same rules as the ledger registry). */
 export function marketplaceMigrationRegistryProblems(current = MARKETPLACE_SNAPSHOT_FORMAT_VERSION): string[] {
@@ -90,7 +115,7 @@ export function marketplaceSnapshotHash(payload: MarketplaceSnapshotPayload): st
 }
 
 /** Build a snapshot of the given receipts (execution order). */
-export function buildMarketplaceSnapshot(input: { marketplaceId: string; treasuryId: string; height: number; receipts: readonly SettlementReceipt[] }): MarketplaceSnapshot {
+export function buildMarketplaceSnapshot(input: { marketplaceId: string; treasuryId: string; networkId: string; height: number; receipts: readonly SettlementReceipt[] }): MarketplaceSnapshot {
   if (!Number.isSafeInteger(input.height) || input.height < 0) throw new Error("MARKETPLACE_SNAPSHOT_HEIGHT_INVALID");
   const receipts = input.receipts.map((r) => ({ ...r }));
   const batch = receipts.length ? settlementBatch(receipts) : undefined;
@@ -99,9 +124,10 @@ export function buildMarketplaceSnapshot(input: { marketplaceId: string; treasur
     formatVersion: MARKETPLACE_SNAPSHOT_FORMAT_VERSION,
     marketplaceId: input.marketplaceId,
     treasuryId: input.treasuryId,
+    networkId: input.networkId,
     height: input.height,
     settlement: {
-      receiptVersion: SETTLEMENT_RECEIPT_VERSION,
+      receiptVersions: [...new Set(receipts.map((r) => r.version))].sort(),
       count: receipts.length,
       batchRoot: batch?.root ?? null,
       totals: batch?.totals ?? {},
@@ -134,14 +160,16 @@ export function migrateMarketplaceSnapshot(snapshot: Record<string, unknown>): M
  * Verify a (migrated) snapshot: receipt hashes, versions, duplicates, the
  * batch root and totals, and the marketplace / treasury binding.
  */
-export function verifyMarketplaceSnapshot(snapshot: MarketplaceSnapshot, expect: { marketplaceId: string; treasuryId: string }): SettlementReceipt[] {
+export function verifyMarketplaceSnapshot(snapshot: MarketplaceSnapshot, expect: { marketplaceId: string; treasuryId: string; networkId?: string }): SettlementReceipt[] {
   if (snapshot.marketplaceId !== expect.marketplaceId) throw new Error("MARKETPLACE_SNAPSHOT_MARKETPLACE_MISMATCH");
   if (snapshot.treasuryId !== expect.treasuryId) throw new Error("MARKETPLACE_SNAPSHOT_TREASURY_MISMATCH");
+  if (expect.networkId !== undefined && snapshot.networkId !== null && snapshot.networkId !== expect.networkId) throw new Error("MARKETPLACE_SNAPSHOT_NETWORK_MISMATCH");
   const s = snapshot.settlement;
-  if (!s || s.receiptVersion !== SETTLEMENT_RECEIPT_VERSION || !Array.isArray(s.receipts) || s.count !== s.receipts.length) throw new Error("MARKETPLACE_SNAPSHOT_INVALID: settlement");
+  if (!s || !Array.isArray(s.receiptVersions) || !s.receiptVersions.every(isKnownReceiptVersion) || !Array.isArray(s.receipts) || s.count !== s.receipts.length) throw new Error("MARKETPLACE_SNAPSHOT_INVALID: settlement");
   for (const r of s.receipts) {
-    if (!verifySettlementReceipt(r)) throw new Error("SETTLEMENT_RECEIPT_INVALID");
+    if (!isKnownReceiptVersion(r.version) || !s.receiptVersions.includes(r.version) || !verifySettlementReceipt(r)) throw new Error("SETTLEMENT_RECEIPT_INVALID");
     if (r.treasuryId !== expect.treasuryId) throw new Error("SETTLEMENT_RECEIPT_TREASURY_MISMATCH");
+    if (r.networkId !== undefined && expect.networkId !== undefined && r.networkId !== expect.networkId) throw new Error("SETTLEMENT_RECEIPT_NETWORK_MISMATCH");
   }
   if (s.receipts.length === 0) {
     if (s.batchRoot !== null) throw new Error("MARKETPLACE_SNAPSHOT_BATCH_MISMATCH");

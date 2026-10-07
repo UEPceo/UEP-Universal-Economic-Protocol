@@ -52,10 +52,11 @@ export function settlementAnchorHash(a: Omit<SettlementAnchor, "anchorHash">): s
 }
 
 /** Per-receipt checks done by the ledger before anchoring. Returns a problem or undefined. */
-export function receiptProblem(r: SettlementReceipt, treasuryId: string): string | undefined {
+export function receiptProblem(r: SettlementReceipt, treasuryId: string, networkId?: string): string | undefined {
   if (!r || typeof r !== "object") return "receipt is not an object";
   if (!verifySettlementReceipt(r)) return `receipt ${String(r.settlementId)}: hash does not match its fields`;
   if (r.treasuryId !== treasuryId) return `receipt ${r.settlementId}: treasury mismatch`;
+  if (networkId !== undefined && r.networkId !== undefined && r.networkId !== networkId) return `receipt ${r.settlementId}: network mismatch`;
   for (const k of ["grossAmount", "providerAmount", "marketplaceFee", "providerNet", "gasCaptured", "buyerRefund"] as const) {
     if (typeof r[k] !== "bigint" || r[k] < 0n || r[k] >= 2n ** 64n) return `receipt ${r.settlementId}: ${k} out of range`;
   }
@@ -74,13 +75,15 @@ export function buildSettlementAnchor(input: {
   treasuryId: string;
   receipts: readonly SettlementReceipt[];
   anchored: ReadonlySet<string>;
+  /** Ledger network: v2 receipts of another network are refused. */
+  networkId?: string;
 }): SettlementAnchor {
   const fail = (d: string): never => { throw new Error(`SETTLEMENT_ANCHOR_INVALID: ${d}`); };
   if (typeof input.marketplaceId !== "string" || !input.marketplaceId || typeof input.treasuryId !== "string" || !input.treasuryId) fail("marketplaceId and treasuryId are required");
   if (!Array.isArray(input.receipts) || input.receipts.length === 0) fail("no receipts");
   if (input.receipts.length > MAX_RECEIPTS_PER_ANCHOR) fail(`at most ${MAX_RECEIPTS_PER_ANCHOR} receipts per anchor`);
   for (const r of input.receipts) {
-    const p = receiptProblem(r, input.treasuryId);
+    const p = receiptProblem(r, input.treasuryId, input.networkId);
     if (p) fail(p);
     if (input.anchored.has(r.settlementId)) fail(`settlement ${r.settlementId} is already anchored`);
   }

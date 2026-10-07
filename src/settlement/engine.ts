@@ -30,6 +30,8 @@ import type { MarketplacePaymaster } from "../marketplace/paymaster.ts";
 import {
   SETTLEMENT_RECEIPT_DOMAIN,
   SETTLEMENT_RECEIPT_VERSION,
+  LEGACY_SETTLEMENT_RECEIPT_VERSION,
+  LEGACY_SETTLEMENT_RECEIPT_DOMAIN,
   type PayoutInstruction,
   type SettlementLedgerPort,
   type SettlementPlan,
@@ -47,9 +49,27 @@ function assertId(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 256) throw new Error(`SETTLEMENT_ID_INVALID: ${label}`);
 }
 
-/** Canonical hash of a receipt body (every field except receiptHash). */
+/**
+ * Canonical hash of a receipt body (every field except receiptHash). The
+ * domain follows the version: v2 (networkId bound) or the legacy v1 alias.
+ */
 export function settlementReceiptHash(body: Omit<SettlementReceipt, "receiptHash">): string {
-  return createHash("sha256").update(canonicalJson([SETTLEMENT_RECEIPT_DOMAIN, body])).digest("hex");
+  let domain: string;
+  if (body.version === SETTLEMENT_RECEIPT_VERSION) {
+    if (typeof body.networkId !== "string" || body.networkId.length === 0) throw new Error("SETTLEMENT_RECEIPT_NETWORK_REQUIRED");
+    domain = SETTLEMENT_RECEIPT_DOMAIN;
+  } else if (body.version === LEGACY_SETTLEMENT_RECEIPT_VERSION) {
+    if ("networkId" in body) throw new Error("SETTLEMENT_RECEIPT_INVALID: v1 receipts carry no networkId");
+    domain = LEGACY_SETTLEMENT_RECEIPT_DOMAIN;
+  } else {
+    throw new Error("SETTLEMENT_RECEIPT_VERSION_UNKNOWN");
+  }
+  return createHash("sha256").update(canonicalJson([domain, body])).digest("hex");
+}
+
+/** True for a receipt version this release can verify (v2, or the legacy v1 alias). */
+export function isKnownReceiptVersion(v: unknown): v is SettlementReceipt["version"] {
+  return v === SETTLEMENT_RECEIPT_VERSION || v === LEGACY_SETTLEMENT_RECEIPT_VERSION;
 }
 
 /** True when `receipt.receiptHash` matches its fields. */
@@ -66,9 +86,13 @@ export type SettlementEngineConfig = {
   treasury: MarketplaceTreasury;
   paymaster?: MarketplacePaymaster;
   height: HeightSource;
+  /** v0.5.3: network bound into every receipt hash (default uep-testnet-1). */
+  networkId?: string;
 };
 
 export class SettlementEngine {
+  /** v0.5.3: network bound into receipts. */
+  readonly networkId: string;
   readonly treasury: MarketplaceTreasury;
   readonly paymaster?: MarketplacePaymaster;
   private readonly height: HeightSource;
@@ -82,6 +106,8 @@ export class SettlementEngine {
     this.treasury = config.treasury;
     this.paymaster = config.paymaster;
     this.height = config.height;
+    this.networkId = config.networkId ?? "uep-testnet-1";
+    if (typeof this.networkId !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(this.networkId)) throw new Error("SETTLEMENT_ENGINE_CONFIG_INVALID: networkId");
     this.rollbackCap = this.treasury.issueSettlementRollbackCapability();
   }
 
@@ -171,6 +197,7 @@ export class SettlementEngine {
       }
       const body: Omit<SettlementReceipt, "receiptHash"> = {
         version: SETTLEMENT_RECEIPT_VERSION,
+        networkId: this.networkId,
         settlementId: i.settlementId,
         asset: i.asset,
         payerId: i.payerId,
@@ -217,7 +244,9 @@ export class SettlementEngine {
   restoreReceipts(receipts: readonly SettlementReceipt[]): void {
     const incoming = new Map<string, SettlementReceipt>();
     for (const r of receipts) {
-      if (!r || r.version !== SETTLEMENT_RECEIPT_VERSION || !verifySettlementReceipt(r)) throw new Error("SETTLEMENT_RECEIPT_INVALID");
+      if (!r || !isKnownReceiptVersion(r.version) || !verifySettlementReceipt(r)) throw new Error("SETTLEMENT_RECEIPT_INVALID");
+      // v2 receipts must belong to this network; legacy v1 receipts carry no network and are accepted as historical.
+      if (r.version === SETTLEMENT_RECEIPT_VERSION && r.networkId !== this.networkId) throw new Error("SETTLEMENT_RECEIPT_NETWORK_MISMATCH");
       if (r.treasuryId !== this.treasury.treasuryId) throw new Error("SETTLEMENT_RECEIPT_TREASURY_MISMATCH");
       if (this.receipts.has(r.settlementId) || incoming.has(r.settlementId)) throw new Error("SETTLEMENT_RECEIPT_DUPLICATE");
       incoming.set(r.settlementId, Object.freeze({ ...r }));

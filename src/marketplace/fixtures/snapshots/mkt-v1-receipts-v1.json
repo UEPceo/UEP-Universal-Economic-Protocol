@@ -1,0 +1,58 @@
+{
+  "kind": "uep-marketplace-snapshot",
+  "formatVersion": 1,
+  "marketplaceId": "uep-marketplace-testnet",
+  "treasuryId": "marketplace-treasury",
+  "height": 42,
+  "settlement": {
+    "receiptVersion": "uep-settlement-receipt-v1",
+    "count": 2,
+    "batchRoot": "8835d20361e4a6e0acbc7052d5b2f5c583ba3991ebc5e664387aecce5b6fa7e8",
+    "totals": {
+      "uep-test/teur": {
+        "gross": "200n",
+        "fees": "6n",
+        "providerNet": "194n",
+        "refunds": "0n",
+        "gas": "0n"
+      }
+    },
+    "receipts": [
+      {
+        "version": "uep-settlement-receipt-v1",
+        "settlementId": "ord-fixture-0",
+        "asset": "uep-test/teur",
+        "payerId": "b0",
+        "payeeId": "p1",
+        "grossAmount": "100n",
+        "providerAmount": "100n",
+        "marketplaceFee": "3n",
+        "providerNet": "97n",
+        "gasCaptured": "0n",
+        "buyerRefund": "0n",
+        "outcome": "RELEASE",
+        "height": 42,
+        "treasuryId": "marketplace-treasury",
+        "receiptHash": "5148f1fbd676900e60cc6bb31a5f1d6617b0f3fc45e847ba11526554226b0a7b"
+      },
+      {
+        "version": "uep-settlement-receipt-v1",
+        "settlementId": "ord-fixture-1",
+        "asset": "uep-test/teur",
+        "payerId": "b1",
+        "payeeId": "p1",
+        "grossAmount": "100n",
+        "providerAmount": "100n",
+        "marketplaceFee": "3n",
+        "providerNet": "97n",
+        "gasCaptured": "0n",
+        "buyerRefund": "0n",
+        "outcome": "RELEASE",
+        "height": 42,
+        "treasuryId": "marketplace-treasury",
+        "receiptHash": "101ae9274be932ed8330489f1f4681c55f742497a6e520c6f88bc0ac31a85594"
+      }
+    ]
+  },
+  "snapshotHash": "2d02b2b8eecaabef61e4a48610e0fcf7721e553347264882339d6a879d59334e"
+}

@@ -620,7 +620,7 @@ export class DigitalServicesMarketplace {
     this.#unsignedCredits = testOnlyOption("testOnlyUnsignedCredits", config.testOnlyUnsignedCredits);
     this.maxUnfundedReservationsPerListing = config.maxUnfundedReservationsPerListing ?? DEFAULT_MAX_UNFUNDED_RESERVATIONS_PER_LISTING;
     if (!Number.isSafeInteger(this.maxUnfundedReservationsPerListing) || this.maxUnfundedReservationsPerListing < 1) throw new Error("INVALID_RESERVATION_LIMIT");
-    this.settlementEngine = new SettlementEngine({ treasury: this.treasury, paymaster: this.paymaster, height: () => this.now() });
+    this.settlementEngine = new SettlementEngine({ treasury: this.treasury, paymaster: this.paymaster, height: () => this.now(), networkId: this.ledgerNetworkId });
     this.#evidence = new EvidenceCaps(config.evidence);
     this.evidenceCaps = evidenceCapsView(this.#evidence);
   }
@@ -762,7 +762,7 @@ export class DigitalServicesMarketplace {
    * batch root and totals, bound to this marketplace and treasury.
    */
   exportSnapshot(): MarketplaceSnapshot {
-    return buildMarketplaceSnapshot({ marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, height: this.now(), receipts: this.settlementEngine.receiptsList() });
+    return buildMarketplaceSnapshot({ marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, networkId: this.ledgerNetworkId, height: this.now(), receipts: this.settlementEngine.receiptsList() });
   }
 
   /**
@@ -775,7 +775,7 @@ export class DigitalServicesMarketplace {
   restoreSnapshot(snapshot: MarketplaceSnapshot | Record<string, unknown>): number {
     if (this.settlementEngine.receiptsList().length > 0) throw new Error("MARKETPLACE_SNAPSHOT_RESTORE_NOT_FRESH");
     const migrated = migrateMarketplaceSnapshot(snapshot as Record<string, unknown>);
-    const receipts = verifyMarketplaceSnapshot(migrated, { marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId });
+    const receipts = verifyMarketplaceSnapshot(migrated, { marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, networkId: this.ledgerNetworkId });
     this.settlementEngine.restoreReceipts(receipts);
     return receipts.length;
   }
