@@ -58,7 +58,8 @@ Package version `0.5.3-public-iot-m2m`. Fixes and wiring on top of 0.5.2. **Not 
 
 ### Tests (0.5.3)
 
-TESTCOUNTS
+- `npm run test:all` passes on Node.js 22.23 and 24.21 (Rust 1.85.1): determinism lint (126 files, 0 violations), snapshot compatibility (format 8, 2 migration steps from format 6), donation-address check, protocol 172/172, Marketplace + IoT + HTTP + height producer 178/178, settlement 17/17, oracle 20/20, category 18/18, poisoned clock 360/360, smoke, quickstart, 20k simulation (0 errors, value conserved), Rust 127 (uep-21 7, uep-25 9, uep-26 99, uep-23 6, uep-24 6), labs 110 files / 528 tests (2 known-issue files skipped, down from 14).
+- Earlier README and CHANGELOG test counts disagreed; this entry is the reference for 0.5.3.
 
 ## 0.5.2-public-iot-m2m — 2026-10-05 (on `main`, not released)
 
