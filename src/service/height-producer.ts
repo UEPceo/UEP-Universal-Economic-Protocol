@@ -48,7 +48,7 @@
  * outside test mode). See docs/THREAT-MODEL.md.
  */
 import { MAX_BLOCKS_PER_TICK, REFERENCE_BLOCK_TIME_MS, assertHeight } from "../core/height.ts";
-import { testOnlyOption } from "../core/test-only.ts";
+import { isProductionEnvironment, testOnlyOption } from "../core/test-only.ts";
 
 /** Shortest block time the producer accepts (the reference block time). */
 export const MIN_BLOCK_SPACING_MS = REFERENCE_BLOCK_TIME_MS;
@@ -66,8 +66,15 @@ export type HeightProducerConfig = {
   ledger: HeightProducerTarget;
   /** Block time in ms (default REFERENCE_BLOCK_TIME_MS); at least MIN_BLOCK_SPACING_MS. */
   blockTimeMs?: number;
-  /** Monotonic clock in ms (default performance.now). Simulations inject a simulated clock. */
+  /**
+   * Monotonic clock in ms (default performance.now). Simulations inject a
+   * simulated clock. v0.5.3: refused under NODE_ENV=production (an injected
+   * clock lets the caller fast-forward every window); `testOnlyClock` is
+   * the explicit name.
+   */
   clock?: () => number;
+  /** v0.5.3 TEST-ONLY alias of `clock` (refused under NODE_ENV=production). */
+  testOnlyClock?: () => number;
   /** Wall clock in Unix ms, only to detect and log jumps (default Date.now; none when `clock` is injected and this is not). Never used for heights. */
   wallClock?: () => number;
   /** Difference between wall and monotonic elapsed time that counts as a jump (default one block time). */
@@ -93,6 +100,8 @@ export type HeightProducerStatus = {
   droppedBlocks: number;
   /** Wall-clock jumps seen so far (logged, never sealed). */
   wallClockJumps: number;
+  /** v0.5.3: message of the error that stopped the timer, if any (cleared by start()). */
+  lastError?: string;
 };
 
 const defaultLog = (e: HeightProducerEvent) => console.warn(`[uep height-producer] ${JSON.stringify(e)}`);
@@ -103,6 +112,7 @@ export class HeightProducer {
   readonly blockTimeMs: number;
   readonly maxBlocksPerTick: number;
   private ledger: HeightProducerTarget;
+  private lastErrorMessage: string | undefined;
   private readonly clock: () => number;
   private readonly wallClock?: () => number;
   private readonly jumpToleranceMs: number;
@@ -129,8 +139,14 @@ export class HeightProducer {
     this.maxBlocksPerTick = cap;
     this.jumpToleranceMs = tolerance;
     this.ledger = config.ledger;
-    this.clock = config.clock ?? defaultMonotonic;
-    this.wallClock = config.wallClock ?? (config.clock ? undefined : defaultWall);
+    if (config.clock !== undefined && config.testOnlyClock !== undefined) throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: pass clock or testOnlyClock, not both");
+    const injected = config.testOnlyClock ?? config.clock;
+    if (injected !== undefined) {
+      if (typeof injected !== "function") throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: clock is a function");
+      if (isProductionEnvironment()) throw new Error("HEIGHT_PRODUCER_CLOCK_TEST_ONLY: an injected producer clock is refused under NODE_ENV=production (it could fast-forward every window)");
+    }
+    this.clock = injected ?? defaultMonotonic;
+    this.wallClock = config.wallClock ?? (injected ? undefined : defaultWall);
     this.onBlocks = config.onBlocks;
     this.log = config.log ?? defaultLog;
     this.anchorMs = this.readClock();
@@ -225,8 +241,9 @@ export class HeightProducer {
   /** Start sealing on a timer (unref'ed, so it never keeps the process alive). */
   start(): this {
     if (this.timer) return this;
+    this.lastErrorMessage = undefined;
     this.timer = setInterval(() => {
-      try { this.tick(); } catch (e) { this.log({ kind: "stopped", reason: e instanceof Error ? e.message : String(e) }); this.stop(); }
+      try { this.tick(); } catch (e) { this.lastErrorMessage = e instanceof Error ? e.message : String(e); this.log({ kind: "stopped", reason: this.lastErrorMessage }); this.stop(); }
     }, this.blockTimeMs);
     this.timer.unref?.();
     return this;
@@ -244,7 +261,12 @@ export class HeightProducer {
   status(): HeightProducerStatus {
     const allowed = this.allowedHeight();
     const height = this.ledger.height;
-    return { height, allowedHeight: allowed, aheadBy: Math.max(0, height - allowed), blockTimeMs: this.blockTimeMs, maxBlocksPerTick: this.maxBlocksPerTick, running: this.running, droppedBlocks: this.dropped, wallClockJumps: this.jumps };
+    return { height, allowedHeight: allowed, aheadBy: Math.max(0, height - allowed), blockTimeMs: this.blockTimeMs, maxBlocksPerTick: this.maxBlocksPerTick, running: this.running, droppedBlocks: this.dropped, wallClockJumps: this.jumps, ...(this.lastErrorMessage !== undefined ? { lastError: this.lastErrorMessage } : {}) };
+  }
+
+  /** v0.5.3: the target this producer seals blocks on (the ledger, or a ProducedHeight). */
+  get target(): HeightProducerTarget {
+    return this.ledger;
   }
 }
 

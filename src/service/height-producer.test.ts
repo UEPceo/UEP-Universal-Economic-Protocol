@@ -17,7 +17,7 @@ import { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
 import { act, getOrder, publishAs, reserveAs } from "../marketplace/testkit.ts";
 import { UepServiceApi } from "./uep-service-api.ts";
 import { MemoryStorageProvider } from "./memory-storage.ts";
-import { listenUepHttpApi } from "./uep-http-api.ts";
+import { createUepHttpApi, listenUepHttpApi } from "./uep-http-api.ts";
 
 const B = REFERENCE_BLOCK_TIME_MS;
 
@@ -237,6 +237,49 @@ describe("height producer", () => {
     const local = new UepServiceApi({ storageProviders: new Map([["memory", new MemoryStorageProvider()]]), marketplace: new DigitalServicesMarketplace({ testOnlyLocalHeight: true }) });
     const { server } = await listenUepHttpApi({ api: local });
     await new Promise((resolve) => server.close(resolve));
+  });
+
+  it("the HTTP adapter checks the producer for real: class, same ledger, and status on /v1/marketplace/height", async () => {
+    const chain = new ProducedHeight();
+    const other = new ProducedHeight();
+    const m = new DigitalServicesMarketplace({ height: heightOf(chain) });
+    const api = new UepServiceApi({ storageProviders: new Map([["memory", new MemoryStorageProvider()]]), marketplace: m });
+    // A stand-in object with start() / stop() is refused, in listen and in create.
+    const fake = { start() {}, stop() {} };
+    await assert.rejects(listenUepHttpApi({ api, heightProducer: fake as never }), /HEIGHT_PRODUCER_INVALID/);
+    assert.throws(() => createUepHttpApi({ api, heightProducer: fake as never }), /HEIGHT_PRODUCER_INVALID/);
+    // The producer of another ledger is refused once the heights differ.
+    other.advanceHeight(3);
+    let wall = 0;
+    const wrong = new HeightProducer({ ledger: other, testOnlyClock: () => wall, log: () => {} });
+    await assert.rejects(listenUepHttpApi({ api, heightProducer: wrong }), /HEIGHT_PRODUCER_MISMATCH/);
+    assert.throws(() => createUepHttpApi({ api, heightProducer: wrong }), /HEIGHT_PRODUCER_MISMATCH/);
+    // The right producer: the height route shows running / aheadBy / lastError.
+    const events: HeightProducerEvent[] = [];
+    const right = new HeightProducer({ ledger: chain, testOnlyClock: () => wall, log: (e) => events.push(e) });
+    assert.equal(right.target, chain);
+    const { server, port } = await listenUepHttpApi({ api, heightProducer: right });
+    try {
+      const body = (await (await fetch(`http://127.0.0.1:${port}/v1/marketplace/height`)).json()) as { data: { producer: { running: boolean; aheadBy: number; lastError?: string } } };
+      assert.deepEqual([body.data.producer.running, body.data.producer.aheadBy, body.data.producer.lastError], [true, 0, undefined]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    assert.equal(right.status().lastError, undefined);
+  });
+
+  it("an injected producer clock is refused under NODE_ENV=production", () => {
+    const chain = new ProducedHeight();
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      assert.throws(() => new HeightProducer({ ledger: chain, clock: () => 0 }), /HEIGHT_PRODUCER_CLOCK_TEST_ONLY/);
+      assert.throws(() => new HeightProducer({ ledger: chain, testOnlyClock: () => 0 }), /HEIGHT_PRODUCER_CLOCK_TEST_ONLY/);
+      assert.ok(new HeightProducer({ ledger: chain, log: () => {} })); // the default monotonic clock
+    } finally {
+      if (prev === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prev;
+    }
+    assert.throws(() => new HeightProducer({ ledger: chain, clock: () => 0, testOnlyClock: () => 0 }), /not both/);
   });
 
   it("the paymaster and the Marketplace must read the same height source, not only the same unit", () => {

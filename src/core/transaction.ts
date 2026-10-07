@@ -198,7 +198,8 @@ function frHex(v: unknown): string {
 export function canonicalSerializedNote(note: unknown): SerializedNote {
   if (!note || typeof note !== "object") throw new Error("TX_NOTE_INVALID");
   const n = note as Record<string, unknown>;
-  const amount = typeof n.amount === "bigint" ? n.amount.toString() : typeof n.amount === "string" && /^(0|[1-9][0-9]*)$/.test(n.amount) ? n.amount : undefined;
+  // v0.5.3: a bigint amount follows the same rule as the string form (non-negative).
+  const amount = typeof n.amount === "bigint" ? (n.amount >= 0n ? n.amount.toString() : undefined) : typeof n.amount === "string" && /^(0|[1-9][0-9]*)$/.test(n.amount) ? n.amount : undefined;
   if (amount === undefined) throw new Error("TX_NOTE_INVALID");
   if (n.spent !== undefined && typeof n.spent !== "boolean") throw new Error("TX_NOTE_INVALID: spent is a boolean");
   return {

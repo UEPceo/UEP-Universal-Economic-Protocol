@@ -1,6 +1,28 @@
-# Public API reference: changed signatures (v0.4.3 – v0.5.2)
+# Public API reference: changed signatures (v0.4.3 – v0.5.3)
 
-This page lists the public signatures that changed in `0.5.2-public-iot-m2m`, `0.5.1-public-iot-m2m`, `0.5.0-public-iot-m2m`, `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+This page lists the public signatures that changed in `0.5.3`, `0.5.2-public-iot-m2m`, `0.5.1-public-iot-m2m`, `0.5.0-public-iot-m2m`, `0.4.7-public-iot-m2m`, `0.4.6-public-iot-m2m`, `0.4.5-public-iot-m2m`, `0.4.4-public-iot-m2m` and `0.4.3-public-iot-m2m`, newest first. Everything else is unchanged; see the source for full types. Error codes are thrown as `Error(message)` where the message starts with the code. Ledger submit errors are returned as `{ error: { code, message } }`.
+
+# v0.5.3
+
+## Ledger and wallet
+
+- Snapshot format 9: `UepLedgerSnapshot.ticks` (`HeightAdvanceRecord`), `UepLedger.heightAdvanceRecord()`, `SnapshotCheckpoint.tickCount`, `RestoreOptions.testOnlyUnboundedHeightAdvance`; error `INVALID_SNAPSHOT_HEIGHT_CAP`.
+- `src/identity/wallet-migration.ts`: `walletAccountBalances(ledger, secrets, asset)`, `migrateV2ToV3(ledger, secrets, asset, { maxSpends? })`.
+
+## Marketplace and evidence
+
+- `AttesterSetPolicy.buyerCapBps?`, `AttesterSetPolicy.providerBondBps?`; `evidenceCaps.buyerOpenValue / buyerCap / minProviderBond`; `listingBondLocked(listingId)`; `ValueAccounting.listingBonds`. Errors `EVIDENCE_BUYER_CAP_EXCEEDED`, `EVIDENCE_PROVIDER_BOND_REQUIRED`, `INSUFFICIENT_FUNDS_FOR_BOND`.
+
+## Category
+
+- `MAX_FREEZE_HEIGHTS`, `freezeLapsed(frozenAt, height)` (`disputable.ts`); `SwapCategory.lapseFreeze(intentId)`, `RelayCategory.lapseFreeze(orderId)`; `OpenSwap.frozenAt / freezeLapsedAt`, `RelayOrder.freezeLapsedAt / lapsedOverKeyDeadline`, `DisputeCase.freezeLapsed`; error `DISPUTE_WINDOWS`.
+
+## HTTP adapter and height producer
+
+- `HttpApiOptions.heightProducer` is a `HeightProducer`; `heightProducerProblem(opts)`; errors `HEIGHT_PRODUCER_INVALID`, `HEIGHT_PRODUCER_MISMATCH`. `GET /v1/marketplace/height` adds `data.producer`.
+- `HeightProducer.target`, `HeightProducerStatus.lastError`, `HeightProducerConfig.testOnlyClock`; `HEIGHT_PRODUCER_CLOCK_TEST_ONLY` under `NODE_ENV=production`. `TransitionClock.readsSource(source)`.
+
+The oracle, settlement-anchor and listing changes of 0.5.3 are described in `CHANGELOG.md`, `docs/ORACLE.md` and `docs/SETTLEMENT-BRIDGE.md`.
 
 # v0.5.2
 

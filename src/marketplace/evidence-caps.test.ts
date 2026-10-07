@@ -241,6 +241,9 @@ test("listing terms, domain profile and windows are frozen inside the Marketplac
   assert.throws(() => { (internalOrder.windows as Record<string, number>).cancellationGrace = 1_000_000; }, TypeError);
   assert.throws(() => { internalOrder.windows = { ...(internalOrder.windows as object), cancellationGrace: 1_000_000 }; }, TypeError);
   assert.ok(Object.isFrozen(getOrder(m, o.orderId, "w").windows));
+  // v0.5.3: so is the order's domain profile.
+  assert.throws(() => { internalOrder.domainProfile = "MARS"; }, TypeError);
+  assert.equal(getOrder(m, o.orderId, "w").domainProfile, "EARTH");
   assert.equal(m.getListing(listing.listingId).domainProfile, "EARTH");
   // Capacity accounting still works.
   reserveAs(m, { listingId: listing.listingId, buyerId: "b", quantity: 1n });

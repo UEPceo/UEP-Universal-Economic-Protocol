@@ -5,6 +5,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { UepServiceApi } from "./uep-service-api.ts";
+import { HeightProducer } from "./height-producer.ts";
+import { heightOf } from "../core/height.ts";
 import { UEP_API_VERSION, httpStatusOf, type ApiRequestMeta } from "./uep-api-types.ts";
 
 export const UEP_HTTP_API_VERSION = "1.3.0";
@@ -36,7 +38,7 @@ export type HttpApiOptions = {
    * producer that height would stand still. Not needed for a Marketplace on
    * a test-only local counter or the test-only millisecond clock.
    */
-  heightProducer?: { start(): unknown; stop(): void };
+  heightProducer?: HeightProducer;
   /**
    * v0.5.1 (DNS rebinding): host names accepted in the `Host`
    * header of the object routes. Default: `127.0.0.1`, `localhost`, `::1` and
@@ -218,6 +220,8 @@ async function readBody(req: IncomingMessage, limit = 16 * 1024 * 1024): Promise
 }
 
 export function createUepHttpApi(opts: HttpApiOptions): Server {
+  const producerProblem = heightProducerProblem(opts);
+  if (producerProblem) throw new Error(producerProblem);
   const host = opts.host ?? "127.0.0.1";
   return createServer(async (req, res) => {
     try {
@@ -309,6 +313,11 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
       }
       if (req.method === "GET" && path === "/v1/marketplace/height") {
         const result = opts.api.marketplaceHeight(metaOf(req));
+        // v0.5.3: expose the producer state, so a stopped or stalled producer is visible from outside.
+        if (opts.heightProducer && (result as { ok?: boolean }).ok && (result as { data?: unknown }).data && typeof (result as { data?: unknown }).data === "object") {
+          const s = opts.heightProducer.status();
+          (result as { data: Record<string, unknown> }).data.producer = { running: s.running, aheadBy: s.aheadBy, allowedHeight: s.allowedHeight, droppedBlocks: s.droppedBlocks, ...(s.lastError !== undefined ? { lastError: s.lastError } : {}) };
+        }
         send(res, httpStatusOf(result), result);
         return;
       }
@@ -435,13 +444,31 @@ export function needsHeightProducer(api: HttpApiOptions["api"]): boolean {
   return !!m && m.timeUnit === "height" && m.transitionClock?.counter === undefined;
 }
 
+/**
+ * v0.5.3: a height producer must be a real HeightProducer and must seal the
+ * height the Marketplace reads: the Marketplace source is `heightOf(target)`,
+ * or (for a hand-written closure) reads the same height as the target.
+ * Returns the error message, or undefined.
+ */
+export function heightProducerProblem(opts: Pick<HttpApiOptions, "api" | "heightProducer">): string | undefined {
+  const producer = opts.heightProducer as unknown;
+  if (producer === undefined) return undefined;
+  if (!(producer instanceof HeightProducer)) return "HEIGHT_PRODUCER_INVALID: heightProducer must be a HeightProducer (src/service/height-producer.ts)";
+  const m = (opts.api as { marketplace?: { timeUnit?: string; clock?: () => number; transitionClock?: { counter?: unknown; readsSource?: (s: () => number) => boolean } } }).marketplace;
+  if (m && m.timeUnit === "height" && m.transitionClock && m.transitionClock.counter === undefined) {
+    const target = producer.target;
+    const bound = m.transitionClock.readsSource?.(heightOf(target)) === true;
+    if (!bound && m.clock?.() !== target.height) return "HEIGHT_PRODUCER_MISMATCH: the producer seals another ledger than the one the Marketplace reads (pass heightOf(ledger) to the Marketplace and the same ledger to the producer)";
+  }
+  return undefined;
+}
+
 export function listenUepHttpApi(opts: HttpApiOptions): Promise<{ server: Server; port: number }> {
   if (!opts.heightProducer && needsHeightProducer(opts.api)) {
     return Promise.reject(new Error("HEIGHT_PRODUCER_REQUIRED: the API serves a Marketplace on an injected height source; pass `heightProducer` (src/service/height-producer.ts) or the height stands still"));
   }
-  if (opts.heightProducer && (typeof opts.heightProducer.start !== "function" || typeof opts.heightProducer.stop !== "function")) {
-    return Promise.reject(new Error("HEIGHT_PRODUCER_INVALID: heightProducer needs start() and stop()"));
-  }
+  const problem = heightProducerProblem(opts);
+  if (problem) return Promise.reject(new Error(problem));
   const server = createUepHttpApi(opts);
   const host = opts.host ?? "127.0.0.1";
   if (opts.heightProducer) {

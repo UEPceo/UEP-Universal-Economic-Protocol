@@ -1144,6 +1144,8 @@ export class DigitalServicesMarketplace {
     };
     // v0.5.1: the contract windows of an order are fixed at reserve() (not writable, frozen).
     Object.defineProperty(order, "windows", { enumerable: true, writable: false, configurable: false });
+    // v0.5.3: so is its domain profile.
+    Object.defineProperty(order, "domainProfile", { enumerable: true, writable: false, configurable: false });
     this.orders.set(orderId, order);
     this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
     this.adjustUnfunded(order, 1);

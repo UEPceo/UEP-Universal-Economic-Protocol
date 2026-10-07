@@ -158,6 +158,11 @@ export class TransitionClock {
    * Two local counters are never the same source. The test-only millisecond
    * mode compares the unit only (removed in 0.6.0).
    */
+  /** v0.5.3: does this clock read exactly `source` (height mode)? Used to bind a height producer to its Marketplace. */
+  readsSource(source: HeightSource): boolean {
+    return this.unit === "height" && this.source === source;
+  }
+
   sameSourceAs(other: TransitionClock): boolean {
     if (this.unit !== other.unit) return false;
     return this.unit === "legacy-ms" || this.source === other.source;

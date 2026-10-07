@@ -67,4 +67,8 @@ test("canonical notes: non-canonical field elements and a non-boolean `spent` ar
   assert.throws(() => canonicalSerializedNote({ ...ok, blinding: "0xzz" }), /TX_NOTE_INVALID/);
   assert.throws(() => canonicalSerializedNote({ ...ok, spent: "no" }), /TX_NOTE_INVALID: spent is a boolean/);
   assert.equal(canonicalSerializedNote({ ...ok, spent: undefined }).spent, undefined);
+  // v0.5.3: a negative bigint amount is refused like its string form.
+  assert.throws(() => canonicalSerializedNote({ ...ok, amount: -1n }), /TX_NOTE_INVALID/);
+  assert.throws(() => canonicalSerializedNote({ ...ok, amount: "-1" }), /TX_NOTE_INVALID/);
+  assert.equal(canonicalSerializedNote({ ...ok, amount: 0n }).amount, "0");
 });
