@@ -69,8 +69,8 @@ test("height: carried by the signed snapshot (format 7) and checked on restore",
   l.reconcilePending();
   l.advanceHeight(8);
   const snap = l.snapshot();
-  assert.equal(SNAPSHOT_FORMAT_VERSION, 7);
-  assert.equal(snap.formatVersion, 7);
+  assert.equal(SNAPSHOT_FORMAT_VERSION, 8);
+  assert.equal(snap.formatVersion, 8);
   assert.equal(snap.height, 50);
   assert.equal(snap.lastReconcileAt, 42);
   assert.equal(snap.policy.windowHeights, 12);

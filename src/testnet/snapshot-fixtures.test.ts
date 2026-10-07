@@ -124,8 +124,13 @@ describe("golden snapshot fixtures", () => {
       assert.equal(snapshotToJSON(payload), before, "input not mutated");
       assert.equal(snapshotToJSON(a.payload), snapshotToJSON(b.payload));
       for (const k of ["txs", "mints", "notes", "state", "nullifiers", "balances", "noteRoot"]) assert.equal(snapshotToJSON(a.payload[k]), snapshotToJSON(payload[k]), k);
-      assert.equal(a.payload.height, 0);
-      assert.equal(a.payload.lastReconcileAt, 0);
+      if (fx.formatVersion === 6) {
+        assert.equal(a.payload.height, 0);
+        assert.equal(a.payload.lastReconcileAt, 0);
+      } else {
+        assert.equal(a.payload.height, payload.height);
+      }
+      assert.equal(a.payload.assetRegistry, null);
     }
   });
 
@@ -135,6 +140,6 @@ describe("golden snapshot fixtures", () => {
     const { fx } = fixtures.find((f) => f.fx.formatVersion === SNAPSHOT_FORMAT_VERSION)!;
     const future = clone(fx.chain[0]!) as unknown as Record<string, unknown>;
     future.formatVersion = SNAPSHOT_FORMAT_VERSION + 1;
-    assert.throws(() => UepLedger.restore(future as unknown as UepLedgerSnapshot, fx.trust), /INVALID_SNAPSHOT_VERSION: snapshot formatVersion 8 is newer/);
+    assert.throws(() => UepLedger.restore(future as unknown as UepLedgerSnapshot, fx.trust), new RegExp(`INVALID_SNAPSHOT_VERSION: snapshot formatVersion ${SNAPSHOT_FORMAT_VERSION + 1} is newer`));
   });
 });

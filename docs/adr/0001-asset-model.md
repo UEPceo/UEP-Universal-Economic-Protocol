@@ -1,6 +1,6 @@
 # ADR 0001: Unit of account and asset model
 
-- Status: accepted for the asset manifest (v0.5.0); ledger integration pending.
+- Status: accepted for the asset manifest (v0.5.0); ledger integration of the registry in v0.5.3 (steps 1 and 3 below); threshold-signed mints and removal of the faucet fallback remain open.
 - Scope: D-1 (unit of account) and D-3 (asset model) of the multi-asset milestone.
 - Code: `src/core/asset-registry.ts`, `src/core/assets.ts`, tests in `src/core/asset-registry.test.ts`.
 
@@ -70,7 +70,17 @@ The manifest is designed so that the registry can be opened later without changi
 
 `devAssetRegistry(networkId)` builds a signed manifest from the network templates using **ephemeral keys generated in memory**. It is meant for local tests and demos only. No persistent private key is committed or generated to disk. A real deployment supplies its own manifest and key sets through configuration.
 
-## Pending: ledger integration (next milestone)
+## Ledger integration (v0.5.3)
+
+Implemented in `src/testnet/ledger.ts` (option `assetRegistry`, trust field `assetRegistry`), tests in `src/testnet/ledger-asset-registry.test.ts`:
+
+- With a registry, the ledger admits an asset only if it is a network template **and** listed in the governance-verified registry with the same `decimals` (at most 8). Unlisted assets are refused by `faucet()`, `prepareSpend()`, `submit()` and restore (`ASSET_MISMATCH`, `INVALID_SNAPSHOT_NOTE_ASSET` / `MINT_ASSET`).
+- A `deprecated` asset cannot be minted (`ASSET_DISABLED`); holders can still spend it, so no balance is trapped; mints made before the deprecation stay valid.
+- The protocol fee floor is the registry `minProtocolFee` (immutable across versions, so replay does not depend on the manifest version).
+- Snapshot format 8 commits `assetRegistry = { networkId, version, hash }` (null without a registry). `restore()` requires `trust.assetRegistry` when a binding is present and checks that the bound hash is in the trusted chain. Format 7 snapshots migrate with `assetRegistry: null` (step 7→8) and may adopt a registry on restore; every asset is then re-checked.
+- Without a registry the ledger behaves as before (templates only), so existing clients keep working.
+
+## Still pending
 
 The ledger still uses the static templates in `assets.ts`. It also keeps a per-asset issuer signer map that falls back to the faucet key. The planned integration:
 

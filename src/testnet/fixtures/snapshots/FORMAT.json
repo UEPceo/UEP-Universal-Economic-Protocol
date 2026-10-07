@@ -1,7 +1,8 @@
 {
-  "formatVersion": 7,
+  "formatVersion": 8,
   "payloadKeys": [
     "allowFaucet",
+    "assetRegistry",
     "balances",
     "connected",
     "domainId",

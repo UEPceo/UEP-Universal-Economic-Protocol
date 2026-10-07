@@ -7,7 +7,8 @@ import { ACCOUNT_DEPTH } from "../core/smt.ts";
 import { NullifierSet } from "../core/nullifier.ts";
 import { SparseMerkleTree } from "../core/smt.ts";
 import { markConflicts, reconcile, settlementRoot } from "../core/reconciliation.ts";
-import { assetEncodings, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr, resolveAssetIdAlias } from "../core/assets.ts";
+import { assetEncodings, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr, resolveAssetIdAlias, MAX_REGISTRY_DECIMALS, type AssetRecord } from "../core/assets.ts";
+import type { AssetRegistry } from "../core/asset-registry.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 import { migrateSnapshotPayload, snapshotFormatSupport } from "./snapshot-migrations.ts";
 import { hAccount, hLeaf } from "../core/hash.ts";
@@ -104,8 +105,10 @@ function ak(account: Fr, asset: Fr): AccountKey {
  * `lastReconcileAt` and the `createdAt` of spends prepared by this ledger are
  * heights, and the policy window is `windowHeights`. No wall-clock value is
  * part of the state.
+ * v8 (v0.5.3, ADR 0001): adds `assetRegistry` = { networkId, version, hash } of the
+ * signed asset manifest the ledger enforces, or null for a template-only ledger.
  */
-export const SNAPSHOT_FORMAT_VERSION = 7;
+export const SNAPSHOT_FORMAT_VERSION = 8;
 /** Default bound of the pending (offline / conflict) queue. */
 export const DEFAULT_MAX_PENDING_TRANSACTIONS = 1024;
 /** Upper limit accepted for `maxPendingTransactions`. */
@@ -156,6 +159,12 @@ export type SnapshotTrust = {
   previousSnapshotHash?: string;
   /** A known earlier (or identical) checkpoint the snapshot must extend. */
   checkpoint?: SnapshotCheckpoint;
+  /**
+   * v0.5.3 (ADR 0001): the governance-verified asset registry the restored
+   * ledger enforces. Required when the snapshot binds a registry; its chain
+   * must contain the bound manifest hash.
+   */
+  assetRegistry?: AssetRegistry;
 };
 
 /** Private keys handed to a restored ledger so an authority node can keep signing. Optional. */
@@ -430,6 +439,14 @@ export class UepLedger {
     maxPendingTransactions?: number;
     /** v0.4.7: per-asset issuer (mint) private keys, asset id -> key. Distinct from every snapshot key. */
     issuerSigningKeys?: Record<string, PrivateKeyLike>;
+    /**
+     * v0.5.3 (ADR 0001): governance-verified asset registry. When set, the
+     * ledger accepts only assets that are both network templates and listed in
+     * the registry with the same decimals (at most 8); deprecated assets
+     * cannot be minted; the fee floor is the registry `minProtocolFee`; the
+     * registry hash is committed in every snapshot.
+     */
+    assetRegistry?: AssetRegistry;
     /** v0.4.7 TEST-ONLY: build a ledger with requireProof = false. Never set outside tests. */
     testOnlyDisableProof?: boolean;
     /** v0.5.1 TEST-ONLY: advanceHeight(n) accepts n > MAX_BLOCKS_PER_TICK (tests and offline simulations). */
@@ -452,6 +469,56 @@ export class UepLedger {
     );
     this.state = new SparseMerkleTree(ACCOUNT_DEPTH);
     this.nullifiers = new NullifierSet();
+    if (opts.assetRegistry !== undefined) {
+      const reg = opts.assetRegistry;
+      if (!reg || typeof reg.find !== "function" || typeof reg.hash !== "string") throw new Error("ASSET_REGISTRY_INVALID");
+      if (reg.networkId !== this.networkId) throw new Error("ASSET_REGISTRY_NETWORK_MISMATCH");
+      this.assetRegistry = reg;
+    }
+  }
+
+  /** v0.5.3 (ADR 0001): registry enforced by this ledger (undefined: network templates only). */
+  readonly assetRegistry: AssetRegistry | undefined;
+
+  /** v0.5.3: registry binding committed in snapshots (null without a registry). */
+  assetRegistryBinding(): { networkId: string; version: number; hash: string } | null {
+    const r = this.assetRegistry;
+    return r ? { networkId: r.networkId, version: r.version, hash: r.hash } : null;
+  }
+
+  /**
+   * v0.5.3 (ADR 0001): the template record of an asset if this ledger admits
+   * it: a network template and, with a registry, listed there with the same
+   * decimals (D-1: at most 8). Unknown assets return undefined.
+   */
+  assetRecord(assetIdStr: string): AssetRecord | undefined {
+    return this.admit(findAsset(this.networkId, assetIdStr));
+  }
+
+  assetRecordByFr(assetId: Fr): AssetRecord | undefined {
+    return this.admit(findAssetByFr(this.networkId, assetId));
+  }
+
+  /** Protocol fee floor: the registry `minProtocolFee` when a registry is enforced, else the template's. */
+  feeFloorOf(assetId: Fr): bigint {
+    const rec = this.assetRecordByFr(assetId);
+    if (rec && this.assetRegistry) return this.assetRegistry.find(rec.assetId)!.minProtocolFee;
+    return rec?.minProtocolFee ?? MIN_PROTOCOL_FEE;
+  }
+
+  /** Throws ASSET_DISABLED when the registry has deprecated the asset (no new issuance). */
+  private assertMintable(assetIdStr: string): void {
+    const reg = this.assetRegistry?.find(assetIdStr);
+    if (reg && reg.status === "deprecated") throw new Error("ASSET_DISABLED: deprecated in the asset registry; no new issuance");
+  }
+
+  private admit(rec: AssetRecord | undefined): AssetRecord | undefined {
+    if (!rec) return undefined;
+    if (!Number.isSafeInteger(rec.decimals) || rec.decimals < 0 || rec.decimals > MAX_REGISTRY_DECIMALS) return undefined;
+    if (!this.assetRegistry) return rec;
+    const reg = this.assetRegistry.find(rec.assetId);
+    if (!reg || reg.decimals !== rec.decimals) return undefined;
+    return rec;
   }
 
   /** v0.5.1: current block height (deterministic; see advanceHeight()). */
@@ -498,7 +565,7 @@ export class UepLedger {
    * from before the v0.5.0 rename, the legacy alias encoding.
    */
   balanceOfAsset(account: Fr, assetIdStr: string): bigint {
-    const rec = findAsset(this.networkId, assetIdStr);
+    const rec = this.assetRecord(assetIdStr);
     if (!rec) return 0n;
     let total = 0n;
     for (const enc of assetEncodings(rec.assetId)) total += this.balanceOf(account, enc);
@@ -646,8 +713,9 @@ export class UepLedger {
     let account: Fr;
     try { account = this.resolveAccount(accountOrAddress); } catch (e) { throw new Error(`FAUCET_ACCOUNT_INVALID: ${(e as Error).message}`); }
     if (!this.connected) throw new Error("Node is not connected");
-    const rec = isCanonicalLedgerAssetId(assetIdStr) ? findAsset(this.networkId, assetIdStr) : undefined;
+    const rec = isCanonicalLedgerAssetId(assetIdStr) ? this.assetRecord(assetIdStr) : undefined;
     if (!rec) throw new Error("Unknown TESTNET asset");
+    this.assertMintable(rec.assetId);
     // v0.4.7: a per-asset issuer key, if configured, is the only key that mints this asset.
     const signer = this.issuerSigners.get(assetIdStr) ?? this.faucetSigner;
     if (!signer) throw new Error("FAUCET_KEY_REQUIRED");
@@ -673,7 +741,7 @@ export class UepLedger {
     const issuers = new Map<string, KeyObject>();
     for (const [rawAssetId, k] of Object.entries(issuerKeys ?? {})) {
       const assetIdStr = resolveAssetIdAlias(rawAssetId);
-      if (!isCanonicalLedgerAssetId(assetIdStr) || !findAsset(this.networkId, assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
+      if (!isCanonicalLedgerAssetId(assetIdStr) || !this.assetRecord(assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
       const key = toPrivateKey(k);
       if (hexes.includes(publicKeyHexOf(key))) throw new Error("ISSUER_KEY_NOT_DISTINCT");
       issuers.set(assetIdStr, key);
@@ -690,7 +758,7 @@ export class UepLedger {
    */
   setIssuerSigningKey(assetIdStr: string, key: PrivateKeyLike | null): void {
     assetIdStr = resolveAssetIdAlias(assetIdStr);
-    if (!isCanonicalLedgerAssetId(assetIdStr) || !findAsset(this.networkId, assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
+    if (!isCanonicalLedgerAssetId(assetIdStr) || !this.assetRecord(assetIdStr)) throw new Error("ISSUER_ASSET_UNKNOWN");
     if (key === null) { this.issuerSigners.delete(assetIdStr); return; }
     const k = toPrivateKey(key);
     if (this.snapshotAuthorityPublicKeys().includes(publicKeyHexOf(k))) throw new Error("ISSUER_KEY_NOT_DISTINCT");
@@ -835,11 +903,11 @@ export class UepLedger {
       };
     }
     // v0.4.7: canonical, registered asset id only.
-    if (!isCanonicalLedgerAssetId(assetIdStr) || !findAsset(this.networkId, assetIdStr)) {
+    if (!isCanonicalLedgerAssetId(assetIdStr) || !this.assetRecord(assetIdStr)) {
       return { error: { code: "ASSET_MISMATCH", message: "Asset is not registered on this network." } };
     }
     const assetId = ledgerAssetIdToFr(assetIdStr);
-    const minFee = protocolFeeFloor(this.networkId, assetId);
+    const minFee = this.feeFloorOf(assetId);
     {
       const feeGuess = creatorFee(amount, minFee);
       const verdict = this.policy.check(
@@ -868,7 +936,7 @@ export class UepLedger {
 
   /** Unspent notes of `owner` in the asset of `assetId`, in every accepted encoding of that asset (namespaced first). */
   private spendableNotes(owner: Fr, assetId: Fr): Note[] {
-    const rec = findAssetByFr(this.networkId, assetId);
+    const rec = this.assetRecordByFr(assetId);
     const encodings = rec ? assetEncodings(rec.assetId) : [assetId];
     const notes = this.notesOf(owner).filter((n) => encodings.some((e) => e.eq(n.assetId)) && openNote(n));
     const rank = (n: Note) => encodings.findIndex((e) => e.eq(n.assetId));
@@ -1093,7 +1161,7 @@ export class UepLedger {
       if (tx.amount <= 0n) return { error: { code: "AMOUNT_MISMATCH", message: "Transaction amount must be greater than zero." }, index };
       if (tx.networkId !== this.networkId || tx.domainId !== this.domainId) return { error: { code: "WRONG_NETWORK", message: "Transaction network or domain does not match this ledger." }, index };
     }
-    const assetIdStr = findAssetByFr(this.networkId, first.assetId)?.assetId ?? "unknown";
+    const assetIdStr = this.assetRecordByFr(first.assetId)?.assetId ?? "unknown";
     const height = this.blockHeight;
     const verdict = this.policy.checkSequence(txs.map((tx) => ({ accountHex: tx.senderId.toHex(), assetId: assetIdStr, amount: tx.amount, fee: tx.fee, height })));
     if (!verdict.ok) return { error: { code: "POLICY", message: `${verdict.code}: ${verdict.message}` } };
@@ -1120,8 +1188,8 @@ export class UepLedger {
     secrets: IdentitySecrets | undefined,
     opts: { skipPolicy?: boolean; overlay?: Map<AccountKey, bigint> },
   ): { error: SubmitError } | CheckedSpend {
-    const assetIdStr = findAssetByFr(this.networkId, tx.assetId)?.assetId ?? "unknown";
-    const minFee = protocolFeeFloor(this.networkId, tx.assetId);
+    const assetIdStr = this.assetRecordByFr(tx.assetId)?.assetId ?? "unknown";
+    const minFee = this.feeFloorOf(tx.assetId);
     if (!opts.skipPolicy) {
     const policyVerdict = this.policy.check(
       {
@@ -1175,7 +1243,7 @@ export class UepLedger {
     if (tx.fee !== creatorFee(tx.amount, minFee)) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Fee does not match protocol policy." } };
     }
-    if (!findAssetByFr(this.networkId, tx.assetId)) {
+    if (!this.assetRecordByFr(tx.assetId)) {
       return { error: { code: "ASSET_MISMATCH", message: "Asset is not registered on this network." } };
     }
 
@@ -1321,7 +1389,7 @@ export class UepLedger {
     // Pending reconciliation must never promote an unchecked envelope.
     // Validate canonical fields and note commitments without mutating live state.
     if (tx.networkId !== this.networkId || tx.domainId !== this.domainId || tx.amount <= 0n) return { error: { code: "POLICY", message: "Pending transaction envelope invalid." } };
-    if (tx.fee !== creatorFee(tx.amount, protocolFeeFloor(this.networkId, tx.assetId))) return { error: { code: "AMOUNT_MISMATCH", message: "Pending fee invalid." } };
+    if (tx.fee !== creatorFee(tx.amount, this.feeFloorOf(tx.assetId))) return { error: { code: "AMOUNT_MISMATCH", message: "Pending fee invalid." } };
     const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
     if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction commitment invalid." } };
     if (this.nullifiers.contains(tx.nullifier) || this.txs.some((x) => x.txId.eq(tx.txId))) return { error: { code: "REPLAY", message: "Pending transaction already committed." } };
@@ -1416,6 +1484,7 @@ export class UepLedger {
       noteCounter: this.noteCounter.toString(),
       lastReconcileAt: this.lastReconcileAt,
       height: this.blockHeight,
+      assetRegistry: this.assetRegistryBinding(),
     };
   }
 
@@ -1551,9 +1620,22 @@ export class UepLedger {
         snapshotSigningKeys: [],
         faucetSigningKey: null,
         maxPendingTransactions: data.maxPendingTransactions,
+        assetRegistry: trust.assetRegistry,
       });
     } catch (e) {
       fail("PENDING", (e as Error).message);
+    }
+    // v0.5.3 (ADR 0001): the registry bound by the snapshot must be the trusted one (or an earlier version of its chain).
+    {
+      const bound = (data as { assetRegistry?: unknown }).assetRegistry;
+      if (bound !== null && bound !== undefined) {
+        const b = bound as { networkId?: unknown; version?: unknown; hash?: unknown };
+        if (typeof b.hash !== "string" || !Number.isSafeInteger(b.version) || b.networkId !== data.networkId) fail("ASSET_REGISTRY", "malformed registry binding");
+        if (!trust.assetRegistry) fail("ASSET_REGISTRY", "the snapshot binds an asset registry; pass trust.assetRegistry");
+        const chain = trust.assetRegistry.chain();
+        const at = chain.find((m) => m.version === b.version);
+        if (!at || at.manifestHash !== b.hash) fail("ASSET_REGISTRY", "the snapshot's registry hash is not in the trusted registry chain");
+      }
     }
     // Optional private keys for an authority node resuming its own chain.
     if (keys.snapshotSigningKeys?.some((k) => !authorities.includes(publicKeyHexOf(toPrivateKey(k))))) throw new Error("SNAPSHOT_SIGNING_KEY_NOT_TRUSTED");
@@ -1607,7 +1689,7 @@ export class UepLedger {
       if (noteByCommitment.has(n.commitment.toHex())) fail("NOTE_DUPLICATE");
       // v0.5.0: v3 ids, or the v2 form of state written v0.4.5 to v0.5.0 (grandfathered; its spends still need the key).
       if (!isKeyDerivedOrV2Form(n.owner)) fail("NOTE_OWNER", "note owner is not a key-derived account");
-      if (!findAssetByFr(l.networkId, n.assetId)) fail("NOTE_ASSET", "note asset is not registered on this network");
+      if (!l.assetRecordByFr(n.assetId)) fail("NOTE_ASSET", "note asset is not registered on this network");
       noteByCommitment.set(n.commitment.toHex(), n);
     }
     // 2b. Note-commitment tree rebuilt in creation order must match the signed root.
@@ -1626,7 +1708,7 @@ export class UepLedger {
       // v0.4.7: only registered assets can be minted, and only by a key trusted for that asset at this index.
       let assetFr: Fr | undefined;
       try { assetFr = new Fr(m.assetId); } catch { fail("MINT_SHAPE"); }
-      const asset = findAssetByFr(l.networkId, assetFr!);
+      const asset = l.assetRecordByFr(assetFr!);
       if (!asset || assetFr!.toHex() !== m.assetId) fail("MINT_ASSET", `mint ${i} is for an asset that is not registered on this network`);
       const { signature, ...unsigned } = m;
       if (!mintKeysFor(asset!.assetId, i).some((k) => verifyEd25519(mintMessage(unsigned), signature, k))) fail("MINT_SIGNATURE", `mint ${i} is unsigned or not signed by a key trusted for this asset`);
@@ -1649,8 +1731,8 @@ export class UepLedger {
       txIds.add(tx.txId.toHex());
       if (!rebuiltNullifiers.insertOnce(tx.nullifier)) fail("NULLIFIER_SET");
       if (tx.spendProof?.kind === "sender-signature" && !signedSpendNullifier(tx.senderId, tx.nonce).eq(tx.nullifier)) fail("TX_NULLIFIER");
-      if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount, protocolFeeFloor(l.networkId, tx.assetId))) fail("TX_VALUE");
-      if (!findAssetByFr(l.networkId, tx.assetId)) fail("TX_ASSET");
+      if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount, l.feeFloorOf(tx.assetId))) fail("TX_VALUE");
+      if (!l.assetRecordByFr(tx.assetId)) fail("TX_ASSET");
       if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) fail("TX_NOTES");
       const recomputed = computeTxCommitment({ networkId: tx.networkId, domainId: tx.domainId, senderId: tx.senderId, recipientId: tx.recipientId, assetId: tx.assetId, amount: tx.amount, fee: tx.fee, nonce: tx.nonce, nullifier: tx.nullifier, inputCommitments: tx.inputCommitments, outputCommitments: tx.outputCommitments });
       if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) fail("TX_COMMITMENT");

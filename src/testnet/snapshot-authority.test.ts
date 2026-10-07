@@ -49,7 +49,7 @@ test("B05: honest 1-of-1 restore needs only public keys; a verify-only restore c
   const l = ledger();
   l.faucet(a.accountId, EUR, 1_000n);
   const snap = l.snapshot();
-  assert.equal(snap.formatVersion, 7);
+  assert.equal(snap.formatVersion, 8);
   assert.equal(snap.sequence, 1);
   assert.equal(snap.prevSnapshotHash, "0".repeat(64));
   assert.deepEqual(l.snapshotAuthorityPublicKeys(), [S1.publicKeyHex]);

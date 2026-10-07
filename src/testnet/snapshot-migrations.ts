@@ -78,8 +78,25 @@ const step6to7: SnapshotMigrationStep = {
   },
 };
 
+const step7to8: SnapshotMigrationStep = {
+  from: 7,
+  to: 8,
+  title: "asset registry binding (ADR 0001)",
+  derivation: [
+    "assetRegistry = null: format 7 ledgers enforced only the network asset templates; a restore may adopt a trusted registry (trust.assetRegistry), and every note, mint and transaction asset is then checked against it",
+    "every other field is unchanged",
+  ],
+  fixtures: ["v7-v0.5.0-evidence-time.json", "v7-v0.5.2-7173d37.json"],
+  migrate(p) {
+    const name = "MIGRATION_7_8";
+    if (p.formatVersion !== 7) fail(name, "expected formatVersion 7");
+    if ("assetRegistry" in p) fail(name, "format 7 has no assetRegistry field");
+    return { ...p, formatVersion: 8, assetRegistry: null };
+  },
+};
+
 /** Registered steps, in order. Append only. */
-export const SNAPSHOT_MIGRATIONS: readonly SnapshotMigrationStep[] = Object.freeze([step6to7]);
+export const SNAPSHOT_MIGRATIONS: readonly SnapshotMigrationStep[] = Object.freeze([step6to7, step7to8]);
 
 /** Oldest format that can still be restored (through migration). */
 export const OLDEST_MIGRATABLE_SNAPSHOT_FORMAT = 6;
