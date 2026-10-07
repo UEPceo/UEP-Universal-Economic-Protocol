@@ -51,7 +51,7 @@ test("V-2: re-registering a source id with another key is refused; rotation is e
   assert.throws(() => registry.registerSource({ sourceId: "src-a", displayName: "A", publicKeyHex: evil.publicKeyHex, weight: 10, status: "ACTIVE", registeredAtHeight: 5 }), /ORACLE_SOURCE_EXISTS/);
   assert.equal(registry.getSource("src-a")!.publicKeyHex, a.publicKeyHex);
   // Same key: metadata update only.
-  registry.registerSource({ sourceId: "src-a", displayName: "A renamed", publicKeyHex: a.publicKeyHex, weight: 20, status: "ACTIVE", registeredAtHeight: 0 });
+  registry.registerSource({ sourceId: "src-a", displayName: "A renamed", publicKeyHex: a.publicKeyHex, weight: a.weight, status: "ACTIVE", registeredAtHeight: 0 });
   assert.equal(registry.getSource("src-a")!.displayName, "A renamed");
   assert.throws(() => registry.rotateSourceKey("src-a", b.publicKeyHex, 7), /ORACLE_SOURCE_KEY_IN_USE/);
   assert.equal(registry.rotateSourceKey("src-a", evil.publicKeyHex, 7), a.publicKeyHex);

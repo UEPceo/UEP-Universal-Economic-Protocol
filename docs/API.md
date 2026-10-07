@@ -423,6 +423,7 @@ Registered identities sign with their registered key. `adminIdentity` signs with
 | Call (v0.4.4) | action / target / details | Allowed actors |
 |---|---|---|
 | `publishListing(input, auth)` | `publish` / `input.listingId ?? ""` / `listingTerms(input)` | the registered provider |
+| `delistListing(listingId, auth)` (v0.5.3) | `delist` / `listingId` / `{}` | the listing's provider; no new reservations, running orders continue, the same terms may be published again |
 | `fundOrder(orderId, amount, auth, idem?)` | `fund` / orderId / `{ amount }` | buyer |
 | `deliver(orderId, auth, bytes, idem?)`, `deliverWithExpectedHash(orderId, auth, bytes, hash, idem?)` | `deliver` / orderId / `{ deliveryHash }` | provider |
 | `settle(orderId, auth)` | `settle` / orderId | buyer; provider after `deliveryDisputeWindowMs` without a dispute; arbiter. Never the admin |

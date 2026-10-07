@@ -92,6 +92,7 @@ Tests: `src/oracle/oracle-hardening.test.ts` (one negative test per issue).
 | V-4 one heavy source dominates the median | Effective weights are capped so one key carries strictly less than `maxSourceWeightSharePpm` (default one half) of the total; with weights 100/1/1 the two agreeing sources set the price. |
 | V-5 forgeable `SettlementAuthorization` | Vouchers are version 2: a hash over every field (amount, recipient, asset, expiry, context, nonce, network, policy hash) signed by a policy authority key. `AuthorizationLedger({ trustedAuthorityKeys, networkId })` refuses unsigned, edited, foreign-network or untrusted vouchers (`AUTH_UNSIGNED`, `AUTH_FORGED`, `AUTH_NETWORK_MISMATCH`). Unsigned vouchers are accepted only with `testOnlyAcceptUnsigned` (refused under `NODE_ENV=production`). |
 | `publishSync` bypass | Refused when `requireSignatures` is on. |
+| Registry follow-ups (v0.5.3) | A rotated-out key, or the key of a revoked source, is retired: its quotes stop counting at once and it can never be registered again (`ORACLE_SOURCE_KEY_RETIRED`). `REVOKED` is final. Re-registering with the same key changes metadata only, never the weight or the status. Keys must be prime-order Ed25519 points. `AuthorizationLedger` requires a `networkId` and refuses vouchers that name none. The gate refuses an aggregator that accepts unbound v0.1 quotes, and the Marketplace refuses a gate whose oracle network differs from its ledger network (`ORACLE_NETWORK_MISMATCH`). |
 
 ## Data sources: what may and may not enter policies or state
 

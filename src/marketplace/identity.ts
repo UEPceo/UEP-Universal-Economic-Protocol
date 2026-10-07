@@ -75,6 +75,7 @@ export type MarketplaceAction =
   | "dispute" | "resolve" | "refund" | "review" | "credit"
   | "iot-provider-register" | "iot-provider-deactivate" | "iot-machine-register" | "iot-machine-deactivate"
   | "drip-budget"
+  | "delist"
   | CategoryAction;
 
 /**

@@ -120,10 +120,23 @@ export function assertOracleReferenceTerms(t: unknown): OracleReferenceTerms {
 export class OraclePolicyGate {
   readonly aggregator: OracleAggregator;
 
-  constructor(aggregator: OracleAggregator) {
+  /**
+   * v0.5.3: the gate refuses an aggregator that accepts legacy v0.1 quotes
+   * (no network binding); with `expectedNetworkId` it also refuses an
+   * aggregator configured for another network.
+   */
+  constructor(aggregator: OracleAggregator, opts: { expectedNetworkId?: string } = {}) {
     if (!aggregator || typeof aggregator.read !== "function") throw new Error("ORACLE_GATE_INVALID");
     if (!aggregator.policy.requireSignatures) throw new Error("ORACLE_GATE_UNSIGNED: the gate needs an aggregator with requireSignatures");
+    if (aggregator.policy.acceptLegacyV1Quotes) throw new Error("ORACLE_GATE_LEGACY_QUOTES: the gate refuses an aggregator that accepts v0.1 quotes without a network binding");
+    if (typeof aggregator.policy.networkId !== "string" || !aggregator.policy.networkId) throw new Error("ORACLE_GATE_NETWORK_REQUIRED");
+    if (opts.expectedNetworkId !== undefined && aggregator.policy.networkId !== opts.expectedNetworkId) throw new Error(`ORACLE_NETWORK_MISMATCH: oracle network ${aggregator.policy.networkId}, expected ${opts.expectedNetworkId}`);
     this.aggregator = aggregator;
+  }
+
+  /** v0.5.3: network the oracle quotes are bound to (must match the ledger network of the Marketplace). */
+  get networkId(): string {
+    return this.aggregator.policy.networkId;
   }
 
   /** Aggregated quote or ORACLE_<code> (fail closed). */

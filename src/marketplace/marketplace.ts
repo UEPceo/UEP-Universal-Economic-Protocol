@@ -631,6 +631,8 @@ export class DigitalServicesMarketplace {
     this.#snapshotSigningKeys = config.snapshotSigningKeys && config.snapshotSigningKeys.length > 0 ? [...config.snapshotSigningKeys] : [generateEd25519KeyPair().privateKey];
     this.#anchorSigningKey = config.anchorSigningKey ?? generateEd25519KeyPair().privateKey;
     this.ledgerNetworkId = config.ledgerNetworkId ?? TESTNET.networkId;
+    // v0.5.3: oracle quotes must be bound to the same network as the ledger this Marketplace settles on.
+    if (this.oracleGate && this.oracleGate.networkId !== this.ledgerNetworkId) throw new Error(`ORACLE_NETWORK_MISMATCH: oracle network ${this.oracleGate.networkId}, ledger network ${this.ledgerNetworkId}`);
     this.testOnlyAllowZeroReservationDeposit = testOnlyOption("testOnlyAllowZeroReservationDeposit", config.testOnlyAllowZeroReservationDeposit);
     if (this.fixedReservationDeposit !== undefined && this.fixedReservationDeposit >= 0n && this.fixedReservationDeposit < MIN_RESERVATION_DEPOSIT && !(this.testOnlyAllowZeroReservationDeposit && this.fixedReservationDeposit === 0n)) {
       throw new Error(`RESERVATION_DEPOSIT_BELOW_MINIMUM: reservationDeposit must be at least ${MIN_RESERVATION_DEPOSIT} (testOnlyAllowZeroReservationDeposit permits 0n in tests)`);
@@ -979,6 +981,22 @@ export class DigitalServicesMarketplace {
     const bucket = this.listingIndex.get(indexKey) ?? new Set<string>();
     bucket.add(listingId);
     this.listingIndex.set(indexKey, bucket);
+    return copyListing(listing);
+  }
+
+  /**
+   * v0.5.3: the provider withdraws a listing (signed "delist" action on the
+   * listing id). No new reservations; orders already reserved keep running
+   * under their own terms and windows. The provider may publish the same
+   * terms again afterwards (a delisted listing does not block its
+   * fingerprint), e.g. without an oracle reference.
+   */
+  delistListing(listingId: string, auth: ActorAuth): ServiceListing {
+    const listing = this.listings.get(listingId);
+    if (!listing) throw new Error("LISTING_NOT_FOUND");
+    const actor = this.authenticateActor(auth, "delist", listingId);
+    if (actor !== listing.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
+    listing.active = false;
     return copyListing(listing);
   }
 

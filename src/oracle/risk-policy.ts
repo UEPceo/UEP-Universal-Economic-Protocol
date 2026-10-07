@@ -203,10 +203,15 @@ export class AuthorizationLedger {
   private readonly networkId: string | undefined;
   private readonly acceptUnsigned: boolean;
 
+  /**
+   * v0.5.3: `networkId` is required (a voucher of another network, or with no
+   * network, is refused). Only the test-only unsigned mode may omit it.
+   */
   constructor(opts: { trustedAuthorityKeys?: PublicKeyLike[]; networkId?: string; testOnlyAcceptUnsigned?: boolean } = {}) {
     this.trusted = new Set((opts.trustedAuthorityKeys ?? []).map((k) => publicKeyHexOf(k)));
     this.networkId = opts.networkId;
     this.acceptUnsigned = testOnlyOption("testOnlyAcceptUnsigned", opts.testOnlyAcceptUnsigned);
+    if ((typeof this.networkId !== "string" || !this.networkId) && !this.acceptUnsigned) throw new Error("AUTH_NETWORK_REQUIRED: AuthorizationLedger needs the networkId it serves");
   }
 
   /** Throws AUTH_* unless `auth` is a valid voucher for this ledger. */
@@ -214,6 +219,7 @@ export class AuthorizationLedger {
     if (!auth || auth.authorized !== true) throw new Error("AUTH_INVALID");
     if (auth.signature === undefined && this.acceptUnsigned) return;
     if (auth.version !== SETTLEMENT_AUTH_VERSION || typeof auth.signature !== "string" || typeof auth.signerPublicKeyHex !== "string") throw new Error("AUTH_UNSIGNED: a signed v2 voucher is required");
+    if (typeof auth.networkId !== "string" || !auth.networkId) throw new Error("AUTH_NETWORK_MISMATCH: the voucher names no network");
     if (this.networkId !== undefined && auth.networkId !== this.networkId) throw new Error("AUTH_NETWORK_MISMATCH");
     let signer: string;
     try { signer = publicKeyHexOf(auth.signerPublicKeyHex); } catch { throw new Error("AUTH_FORGED: signer key invalid"); }
