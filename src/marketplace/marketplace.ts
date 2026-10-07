@@ -770,6 +770,20 @@ export class DigitalServicesMarketplace {
     return receipts.length;
   }
 
+  /**
+   * v0.5.3 settlement bridge: anchor every receipt not yet anchored in the
+   * consensus state through `sink` (a UepLedger or anything with the same
+   * `anchorSettlements` / `settlementAnchorOf` methods). The ledger verifies
+   * the receipts itself. Returns the anchor, or undefined when there is
+   * nothing new to anchor. Idempotent: receipts the sink already holds are
+   * skipped, so a restarted process can call it again safely.
+   */
+  anchorSettlements<A>(sink: { anchorSettlements(input: { marketplaceId: string; treasuryId: string; receipts: readonly SettlementReceipt[] }): A; settlementAnchorOf(marketplaceId: string, settlementId: string): unknown }): A | undefined {
+    const pending = this.settlementEngine.receiptsList().filter((r) => sink.settlementAnchorOf(this.marketplaceId, r.settlementId) === undefined);
+    if (pending.length === 0) return undefined;
+    return sink.anchorSettlements({ marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, receipts: pending });
+  }
+
   /** v0.5.3: receipt of one executed settlement id (order id, or `swap:` / `relay:` / `dispute:` ids). */
   settlementReceipt(settlementId: string): SettlementReceipt | undefined {
     return this.settlementEngine.receipt(settlementId);

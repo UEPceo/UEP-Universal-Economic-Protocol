@@ -9,6 +9,8 @@ import { SparseMerkleTree } from "../core/smt.ts";
 import { markConflicts, reconcile, settlementRoot } from "../core/reconciliation.ts";
 import { assetEncodings, findAsset, findAssetByFr, isCanonicalLedgerAssetId, ledgerAssetIdToFr, resolveAssetIdAlias, MAX_REGISTRY_DECIMALS, type AssetRecord } from "../core/assets.ts";
 import type { AssetRegistry } from "../core/asset-registry.ts";
+import { anchorChainProblem, buildSettlementAnchor, GENESIS_ANCHOR_HASH, type SettlementAnchor } from "../settlement/anchor.ts";
+import type { SettlementReceipt } from "../settlement/types.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 import { migrateSnapshotPayload, snapshotFormatSupport } from "./snapshot-migrations.ts";
 import { hAccount, hLeaf } from "../core/hash.ts";
@@ -105,7 +107,9 @@ function ak(account: Fr, asset: Fr): AccountKey {
  * `lastReconcileAt` and the `createdAt` of spends prepared by this ledger are
  * heights, and the policy window is `windowHeights`. No wall-clock value is
  * part of the state.
- * v8 (v0.5.3, ADR 0001): adds `assetRegistry` = { networkId, version, hash } of the
+ * v8 (v0.5.3): adds `settlementAnchors` (Marketplace settlement batches anchored
+ * in consensus state, src/settlement/anchor.ts) and, ADR 0001,
+ * `assetRegistry` = { networkId, version, hash } of the
  * signed asset manifest the ledger enforces, or null for a template-only ledger.
  */
 export const SNAPSHOT_FORMAT_VERSION = 8;
@@ -475,6 +479,46 @@ export class UepLedger {
       if (reg.networkId !== this.networkId) throw new Error("ASSET_REGISTRY_NETWORK_MISMATCH");
       this.assetRegistry = reg;
     }
+  }
+
+  /** v0.5.3: anchored Marketplace settlement batches, hash-chained (see src/settlement/anchor.ts). */
+  settlementAnchors: SettlementAnchor[] = [];
+  private anchoredSettlements = new Map<string, Set<string>>();
+
+  /**
+   * v0.5.3 settlement bridge: verify `receipts` (hashes, per-receipt
+   * conservation, treasury binding, no duplicate and no settlement anchored
+   * before) and append their batch commitment to the consensus state at the
+   * current height. Returns the anchor. Re-anchoring a settlement id fails.
+   */
+  anchorSettlements(input: { marketplaceId: string; treasuryId: string; receipts: readonly SettlementReceipt[] }): SettlementAnchor {
+    if (this.retired) throw new Error("LEDGER_RETIRED");
+    const prev = this.settlementAnchors[this.settlementAnchors.length - 1];
+    const anchored = this.anchoredSettlements.get(input?.marketplaceId) ?? new Set<string>();
+    const anchor = buildSettlementAnchor({
+      index: this.settlementAnchors.length,
+      prevAnchorHash: prev?.anchorHash ?? GENESIS_ANCHOR_HASH,
+      height: this.blockHeight,
+      marketplaceId: input?.marketplaceId,
+      treasuryId: input?.treasuryId,
+      receipts: input?.receipts,
+      anchored,
+    });
+    this.settlementAnchors.push(anchor);
+    const set = new Set(anchored);
+    for (const id of anchor.settlementIds) set.add(id);
+    this.anchoredSettlements.set(anchor.marketplaceId, set);
+    return { ...anchor, settlementIds: [...anchor.settlementIds], totals: { ...anchor.totals } };
+  }
+
+  /** v0.5.3: the anchor that committed `settlementId` of `marketplaceId`, and its position in the batch. */
+  settlementAnchorOf(marketplaceId: string, settlementId: string): { anchor: SettlementAnchor; position: number } | undefined {
+    for (const a of this.settlementAnchors) {
+      if (a.marketplaceId !== marketplaceId) continue;
+      const position = a.settlementIds.indexOf(settlementId);
+      if (position >= 0) return { anchor: a, position };
+    }
+    return undefined;
   }
 
   /** v0.5.3 (ADR 0001): registry enforced by this ledger (undefined: network templates only). */
@@ -1485,6 +1529,7 @@ export class UepLedger {
       lastReconcileAt: this.lastReconcileAt,
       height: this.blockHeight,
       assetRegistry: this.assetRegistryBinding(),
+      settlementAnchors: this.settlementAnchors.map((a) => ({ ...a, settlementIds: [...a.settlementIds], totals: { ...a.totals } })),
     };
   }
 
@@ -1624,6 +1669,20 @@ export class UepLedger {
       });
     } catch (e) {
       fail("PENDING", (e as Error).message);
+    }
+    // v0.5.3: settlement anchors re-checked (hash chain, indexes, no settlement anchored twice).
+    {
+      const anchors = (data as { settlementAnchors?: unknown }).settlementAnchors;
+      const problem = anchorChainProblem(anchors);
+      if (problem) fail("SETTLEMENT_ANCHOR", problem);
+      const lastAnchor = (anchors as SettlementAnchor[])[(anchors as SettlementAnchor[]).length - 1];
+      if (lastAnchor && lastAnchor.height > (data as { height: number }).height) fail("SETTLEMENT_ANCHOR", "anchor height above the snapshot height");
+      l.settlementAnchors = (anchors as SettlementAnchor[]).map((a) => ({ ...a, settlementIds: [...a.settlementIds], totals: { ...a.totals } }));
+      for (const a of l.settlementAnchors) {
+        const set = l.anchoredSettlements.get(a.marketplaceId) ?? new Set<string>();
+        for (const id of a.settlementIds) set.add(id);
+        l.anchoredSettlements.set(a.marketplaceId, set);
+      }
     }
     // v0.5.3 (ADR 0001): the registry bound by the snapshot must be the trusted one (or an earlier version of its chain).
     {

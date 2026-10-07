@@ -12,6 +12,14 @@ Value conservation is not globally assumed across all layers.
 
 If no bridge is used, then the Marketplace and ledger operate as separate conservation domains. The project must explicitly model that boundary.
 
+## What is implemented (v0.5.3): settlement anchors
+
+- `src/settlement/anchor.ts` and `UepLedger.anchorSettlements()` / `settlementAnchorOf()`; `DigitalServicesMarketplace.anchorSettlements(ledger)`.
+- The ledger verifies each receipt itself: receipt hash, `providerNet + marketplaceFee = providerAmount`, refund at least the unpaid gross, amounts in u64, treasury id, no duplicate in the batch and no settlement id anchored before (also after restore).
+- Each anchor carries the RFC 9162 root over the receipt hashes, per-asset totals, the settlement ids, the ledger height and the previous anchor hash. Anchors are part of snapshot format 8 and are re-checked on restore.
+- Tests: `src/settlement/settlement-anchor.test.ts`.
+- Not implemented: moving ledger notes for a Marketplace settlement (the Marketplace balances are not ledger notes), and re-execution of Marketplace authorization rules by the ledger. Those are the remaining steps of the atom model below.
+
 ## Why the bridge matters
 
 The project currently documents the Marketplace and the ledger as separate layers. That is a sound design boundary, but it creates a risk of partial settlement if a bridge is not clearly defined.

@@ -19,7 +19,7 @@ const KEYS = { snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey:
 
 /** The format 6 form of a format 7 snapshot (no height, Unix-ms lastReconcileAt, windowMs), signed again. */
 function asFormat6(s: UepLedgerSnapshot): UepLedgerSnapshot {
-  const { snapshotHash: _h, signatures: _s, height: _height, assetRegistry: _reg, ...p } = s as UepLedgerSnapshot & Record<string, unknown>;
+  const { snapshotHash: _h, signatures: _s, height: _height, assetRegistry: _reg, settlementAnchors: _anc, ...p } = s as UepLedgerSnapshot & Record<string, unknown>;
   const { windowHeights, ...policy } = p.policy as unknown as Record<string, unknown>;
   const v6 = { ...p, formatVersion: 6, lastReconcileAt: 1_790_000_000_000, policy: { ...policy, windowMs: (windowHeights as number) * 5000 } };
   return signSnapshot(v6 as never, [SNAPSHOT_KEY.privateKey]);

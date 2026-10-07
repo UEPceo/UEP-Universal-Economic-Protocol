@@ -81,17 +81,18 @@ const step6to7: SnapshotMigrationStep = {
 const step7to8: SnapshotMigrationStep = {
   from: 7,
   to: 8,
-  title: "asset registry binding (ADR 0001)",
+  title: "asset registry binding (ADR 0001) and settlement anchors",
   derivation: [
     "assetRegistry = null: format 7 ledgers enforced only the network asset templates; a restore may adopt a trusted registry (trust.assetRegistry), and every note, mint and transaction asset is then checked against it",
+    "settlementAnchors = []: no Marketplace settlement was anchored in consensus state before v0.5.3",
     "every other field is unchanged",
   ],
   fixtures: ["v7-v0.5.0-evidence-time.json", "v7-v0.5.2-7173d37.json"],
   migrate(p) {
     const name = "MIGRATION_7_8";
     if (p.formatVersion !== 7) fail(name, "expected formatVersion 7");
-    if ("assetRegistry" in p) fail(name, "format 7 has no assetRegistry field");
-    return { ...p, formatVersion: 8, assetRegistry: null };
+    if ("assetRegistry" in p || "settlementAnchors" in p) fail(name, "format 7 has no assetRegistry or settlementAnchors field");
+    return { ...p, formatVersion: 8, assetRegistry: null, settlementAnchors: [] };
   },
 };
 

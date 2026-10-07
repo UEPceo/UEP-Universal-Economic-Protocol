@@ -109,8 +109,18 @@ Research labs (`src/lab`, `src/agent`, the service/API lab in `src/service`, `ue
 The Marketplace is a business application. UEP core is an economic state-transition
 reference implementation. Keeping the boundary explicit prevents the public release
 from implying that a marketplace order automatically becomes a consensus-finalized
-protocol transaction. Marketplace balances are business-layer accounting; there is no
-verified bridge from the ledger yet.
+protocol transaction. Marketplace balances are business-layer accounting.
+
+**Settlement anchors (v0.5.3).** Settled orders and category holds are anchored into the
+ledger (consensus) state: `marketplace.anchorSettlements(ledger)` hands the new settlement
+receipts to `UepLedger.anchorSettlements()`, which re-checks every receipt (hash,
+escrow conservation, treasury binding, no settlement anchored twice), computes the RFC 9162
+batch root and per-asset totals, appends a hash-chained anchor at the current height, commits
+it in the signed snapshot (format 8) and re-checks the chain on restore. A holder of a receipt
+can prove inclusion against the anchored root (`verifyReceiptInclusion`). What remains outside
+consensus: the anchor does not move ledger value (Marketplace balances are not ledger notes),
+and the ledger does not re-execute Marketplace authorization or dispute rules. See
+[`SETTLEMENT-BRIDGE.md`](./SETTLEMENT-BRIDGE.md).
 
 ## 4. Layer details
 

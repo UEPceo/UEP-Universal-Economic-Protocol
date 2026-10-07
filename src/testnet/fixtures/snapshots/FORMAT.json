@@ -21,6 +21,7 @@
     "policy",
     "prevSnapshotHash",
     "sequence",
+    "settlementAnchors",
     "state",
     "txs"
   ],
