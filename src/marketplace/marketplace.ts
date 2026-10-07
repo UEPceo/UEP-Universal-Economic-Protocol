@@ -6,7 +6,7 @@
  * and delegates marketplace fee accounting to MarketplaceTreasury.
  * Production payment/custody remains external until a real payment rail is wired.
  */
-import { testOnlyOption } from "../core/test-only.ts";
+import { isProductionEnvironment, testOnlyOption } from "../core/test-only.ts";
 import { createHash } from "node:crypto";
 import { MarketplaceReputation, type SellerReputation } from "./reputation.ts";
 import { contentHash, verifyContentHash } from "../service/content-hash.ts";
@@ -355,11 +355,18 @@ export type MarketplaceConfig = {
    */
   minReservationDepositByAsset?: Record<string, bigint>;
   /**
-   * v0.4.7: when true, creditAccount() requires the administrator's "credit"
-   * signature over { asset, amount, creditId } and each creditId is accepted
-   * once. Default false (testnet funding rail, as before).
+   * v0.4.7: creditAccount() requires the administrator's "credit" signature
+   * over { asset, amount, creditId } and each creditId is accepted once.
+   * v0.5.3: default true (fail closed). `false` is refused
+   * (CREDIT_POLICY_INVALID); unsigned credits exist only behind the test-only
+   * `testOnlyUnsignedCredits` option or the testkit helper.
    */
   requireSignedCredits?: boolean;
+  /**
+   * v0.5.3 TEST-ONLY: accept creditAccount() without an administrator
+   * signature (tests and offline simulations). Rejected under NODE_ENV=production.
+   */
+  testOnlyUnsignedCredits?: boolean;
   /**
    * v0.5.0 (ADR 0002 rule 6): attester sets with their per-asset open-value
    * caps. Listings may bind to one of them with a per-contract cap. Default:
@@ -508,8 +515,13 @@ export class DigitalServicesMarketplace {
   readonly assetRegistryNetworkId?: string;
   /** v0.4.7: per-asset reservation deposit floors. */
   private readonly minReservationDepositByAsset = new Map<string, bigint>();
-  /** v0.4.7: creditAccount() requires an administrator signature. */
-  readonly requireSignedCredits: boolean;
+  /** v0.4.7: creditAccount() requires an administrator signature (v0.5.3: always, unless a test-only override is set). */
+  get requireSignedCredits(): boolean {
+    return !this.#unsignedCredits;
+  }
+  #unsignedCredits = false;
+  /** NODE_ENV=production at construction (configuration time; never read inside a transition). */
+  readonly #productionConfigured: boolean = isProductionEnvironment();
   private readonly usedCreditIds = new Set<string>();
   private readonly identities = new Map<string, RegisteredIdentity>();
   private readonly identityKeys = new Map<string, KeyObject>();
@@ -591,7 +603,10 @@ export class DigitalServicesMarketplace {
       if (!isWellFormedMarketplaceAsset(asset) || typeof min !== "bigint" || min < MIN_RESERVATION_DEPOSIT) throw new Error("INVALID_RESERVATION_LIMIT");
       this.minReservationDepositByAsset.set(asset, min);
     }
-    this.requireSignedCredits = config.requireSignedCredits === true;
+    if (config.requireSignedCredits !== undefined && config.requireSignedCredits !== true) {
+      throw new Error("CREDIT_POLICY_INVALID: creditAccount() always requires an administrator signature since v0.5.3; unsigned credits are test-only (testOnlyUnsignedCredits)");
+    }
+    this.#unsignedCredits = testOnlyOption("testOnlyUnsignedCredits", config.testOnlyUnsignedCredits);
     this.maxUnfundedReservationsPerListing = config.maxUnfundedReservationsPerListing ?? DEFAULT_MAX_UNFUNDED_RESERVATIONS_PER_LISTING;
     if (!Number.isSafeInteger(this.maxUnfundedReservationsPerListing) || this.maxUnfundedReservationsPerListing < 1) throw new Error("INVALID_RESERVATION_LIMIT");
     this.settlementEngine = new SettlementEngine({ treasury: this.treasury, paymaster: this.paymaster, height: () => this.now() });
@@ -728,6 +743,16 @@ export class DigitalServicesMarketplace {
     this.accounts.add(asset, identityId, amount);
     this.add(this.credited, asset, amount);
     return this.availableBalance(asset, identityId);
+  }
+
+  /**
+   * v0.5.3 TEST-ONLY: switch this instance to unsigned credits (used by the
+   * testkit when a test marketplace has no administrator key it can sign
+   * with). Rejected under NODE_ENV=production; one-way.
+   */
+  testOnlyAllowUnsignedCredits(): void {
+    if (this.#productionConfigured) throw new Error("TEST_ONLY_OPTION_IN_PRODUCTION: testOnlyAllowUnsignedCredits is a test-only switch and is rejected under NODE_ENV=production");
+    this.#unsignedCredits = true;
   }
 
   /** Spendable marketplace balance (provider earnings, refunds and credits). */
@@ -1621,6 +1646,13 @@ export class DigitalServicesMarketplace {
       credit: (accountId, asset, amount) => { this.accounts.add(asset, accountId, amount); },
       recordFee: (asset, amount) => this.add(this.feesCollected, asset, amount),
       recordGas: (asset, amount) => this.add(this.gasCollected, asset, amount),
+      // v0.5.3: exact inverses, used by the engine to roll back a failed commit.
+      undo: (step, i) => {
+        if (step.kind === "closeEscrow") this.held.add(step.asset, i.payerId, step.amount);
+        else if (step.kind === "credit") this.accounts.add(step.asset, step.accountId, -step.amount);
+        else if (step.kind === "recordFee") this.add(this.feesCollected, step.asset, -step.amount);
+        else this.add(this.gasCollected, step.asset, -step.amount);
+      },
     };
   }
 
@@ -1675,6 +1707,15 @@ export class DigitalServicesMarketplace {
       credit: (accountId, asset, amount) => { self.accounts.add(asset, accountId, amount); },
       recordFee: (asset, amount) => self.add(self.feesCollected, asset, amount),
       recordGas: () => { throw new Error("CATEGORY_GAS_UNSUPPORTED"); },
+      // v0.5.3: exact inverses, used by the engine to roll back a failed commit.
+      undo: (step) => {
+        if (step.kind === "closeEscrow") {
+          self.addCategoryHeld(h.asset, step.amount);
+          h.state = "OPEN";
+        } else if (step.kind === "credit") self.accounts.add(step.asset, step.accountId, -step.amount);
+        else if (step.kind === "recordFee") self.add(self.feesCollected, step.asset, -step.amount);
+        else throw new Error("CATEGORY_GAS_UNSUPPORTED");
+      },
     });
     return Object.freeze({
       module,

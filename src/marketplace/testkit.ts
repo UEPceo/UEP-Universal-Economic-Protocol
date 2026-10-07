@@ -36,8 +36,35 @@ export function enrollIdentity(m: DigitalServicesMarketplace, identityId: string
     m.registerIdentity(identityId, identity.publicKeyHex);
     ids.set(identityId, identity);
   }
-  if (credit && credit.amount > 0n) m.creditAccount(identityId, credit.asset, credit.amount);
+  if (credit && credit.amount > 0n) testCredit(m, identityId, credit.asset, credit.amount);
   return identity;
+}
+
+let autoCredit = 0;
+
+/**
+ * v0.5.3: credit for tests. Since v0.5.3 creditAccount() requires an
+ * administrator signature by default. When the marketplace's administrator is
+ * a test authority (createTestAuthority), the credit is signed by it with a
+ * fresh creditId; otherwise the test marketplace is explicitly switched to
+ * unsigned test credits (testOnlyAllowUnsignedCredits, refused in production).
+ */
+export function testCredit(m: DigitalServicesMarketplace, identityId: string, asset: string, amount: bigint): bigint {
+  if (m.requireSignedCredits) {
+    const adminKey = m.authorityPublicKeys().admin;
+    const authority = m.adminIdentity && adminKey ? authorities.get(`${m.adminIdentity}|${adminKey}`) : undefined;
+    if (authority) {
+      const creditId = `testkit-credit-${++autoCredit}`;
+      try {
+        return m.creditAccount(identityId, asset, amount, { creditId, auth: act(m, m.adminIdentity!, "credit", identityId, { asset, amount, creditId }, authority) });
+      } catch (err) {
+        // A test may configure an adminAuthorizer that refuses the administrator.
+        if (!/ADMIN_NOT_AUTHORIZED/.test((err as Error).message)) throw err;
+      }
+    }
+    m.testOnlyAllowUnsignedCredits();
+  }
+  return m.creditAccount(identityId, asset, amount);
 }
 
 /**
@@ -55,7 +82,7 @@ export function enrollAccountIdentity(m: DigitalServicesMarketplace, secrets: { 
     m.registerIdentity(identityId, identity.publicKeyHex);
     ids.set(identityId, identity);
   }
-  if (credit && credit.amount > 0n) m.creditAccount(identityId, credit.asset, credit.amount);
+  if (credit && credit.amount > 0n) testCredit(m, identityId, credit.asset, credit.amount);
   return identity;
 }
 
@@ -107,7 +134,7 @@ export function reserveAs(
   const asset = m.getListing(input.listingId).asset;
   const identity = enrollIdentity(m, input.buyerId);
   const credit = opts.credit ?? 1_000_000n;
-  if (credit > 0n && m.availableBalance(asset, input.buyerId) < credit) m.creditAccount(input.buyerId, asset, credit - m.availableBalance(asset, input.buyerId));
+  if (credit > 0n && m.availableBalance(asset, input.buyerId) < credit) testCredit(m, input.buyerId, asset, credit - m.availableBalance(asset, input.buyerId));
   const idempotencyKey = input.idempotencyKey ?? `auto-${++autoKey}`;
   const signature = signReservation({ marketplaceId: m.marketplaceId, listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId }, identity.privateKey);
   const order = m.reserve({ ...input, idempotencyKey, signature });

@@ -13,7 +13,7 @@ const chain=new ProducedHeight();
 const sim={t:0};
 const producer=new HeightProducer({ledger:chain,clock:()=>sim.t});
 const step=(ms)=>{while(ms>0){const d=Math.min(ms,producer.blockTimeMs); sim.t+=d; ms-=d; producer.tick();}};
-const m=new DigitalServicesMarketplace({height:heightOf(chain)});
+const m=new DigitalServicesMarketplace({height:heightOf(chain),testOnlyUnsignedCredits:true});
 const start=performance.now();
 const listings=[];
 let listingFailures=0;

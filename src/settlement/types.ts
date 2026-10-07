@@ -44,9 +44,26 @@ export type SettlementPlan = {
 };
 
 /**
+ * One balance move the engine applied through a SettlementLedgerPort. The
+ * engine journals every applied step and, if a later step (or the treasury /
+ * paymaster commit) throws, hands them back to `undo` in reverse order.
+ */
+export type SettlementStep =
+  | { kind: "closeEscrow"; asset: string; amount: bigint }
+  | { kind: "credit"; accountId: string; asset: string; amount: bigint }
+  | { kind: "recordFee"; asset: string; amount: bigint }
+  | { kind: "recordGas"; asset: string; amount: bigint };
+
+/**
  * Balance moves the engine needs from the owner of the escrow. The
  * Marketplace implements it over its own balance maps (orders: `held`;
  * categories: `categoryHeld`). The engine never touches balances otherwise.
+ *
+ * v0.5.3 (atomic commit): every forward move must have an exact inverse in
+ * `undo`. A forward move that throws must leave the port unchanged (it is not
+ * journaled). `undo` must not throw for a step the port applied; if it does,
+ * the engine halts (SETTLEMENT_ENGINE_HALTED) instead of continuing on a
+ * state it cannot vouch for.
  */
 export interface SettlementLedgerPort {
   /** Escrow currently available for this instruction (must be >= escrowAmount). */
@@ -59,6 +76,8 @@ export interface SettlementLedgerPort {
   recordFee(asset: string, amount: bigint): void;
   /** Record gas captured for the paymaster. */
   recordGas(asset: string, amount: bigint): void;
+  /** Exact inverse of one applied step (rollback of a failed execute). */
+  undo(step: SettlementStep, instruction: PayoutInstruction): void;
 }
 
 /** Receipt of one executed settlement; `receiptHash` commits to every other field. */

@@ -10,7 +10,7 @@ import { DigitalServicesMarketplace, MAX_IDENTITY_ID_LENGTH, MIN_RESERVATION_DEP
 import { MarketplacePaymaster } from "./paymaster.ts";
 import { MarketplaceTreasury, MIN_MARKETPLACE_FEE, calculateMarketplaceFee } from "./economy.ts";
 import { createMarketplaceIdentity, signReservation } from "./identity.ts";
-import { act, cancel, createTestAuthority, creditAs, deliver, disputeAs, enrollIdentity, expire, fund, publishAs, refundAs, reserveAs, resolveAs, settle } from "./testkit.ts";
+import { act, cancel, createTestAuthority, creditAs, deliver, disputeAs, enrollIdentity, expire, fund, publishAs, refundAs, reserveAs, resolveAs, settle, testCredit } from "./testkit.ts";
 
 const T0 = 1_700_000_000_000;
 const MIN = 60 * 1000;
@@ -45,7 +45,7 @@ test("balance keying: every (asset, identity) pair holds an independent balance"
   let n = 1n;
   for (const id of ids) enrollIdentity(m, id);
   for (const a of assets) for (const id of ids) {
-    m.creditAccount(id, a, n);
+    testCredit(m, id, a, n);
     expected.set(JSON.stringify([a, id]), n);
     n++;
   }
@@ -95,7 +95,7 @@ test("asset ids: malformed asset ids are rejected for listings and credits", () 
     assert.throws(() => m.creditAccount("buyer", bad, 1n), /ASSET_ID_INVALID/, json(bad));
     assert.throws(() => publishAs(m, { providerId: "prov", title: `T ${bad.length}`, description: "x", category: "COMPUTE", asset: bad, unitPrice: 1n, capacity: 1n }), /ASSET_ID_INVALID/, json(bad));
   }
-  assert.ok(m.creditAccount("buyer", "x".repeat(64), 1n));
+  assert.ok(testCredit(m, "buyer", "x".repeat(64), 1n));
 });
 
 test("asset ids: with assetRegistryNetworkId only registered ledger assets are accepted", () => {
@@ -104,7 +104,7 @@ test("asset ids: with assetRegistryNetworkId only registered ledger assets are a
   assert.throws(() => m.creditAccount("buyer", "EUR", 1n), /ASSET_NOT_REGISTERED/);
   assert.throws(() => m.creditAccount("buyer", "asset:test", 1n), /ASSET_NOT_REGISTERED/);
   assert.throws(() => publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "uep-global/eur", unitPrice: 1n, capacity: 1n }), /ASSET_NOT_REGISTERED/);
-  assert.equal(m.creditAccount("buyer", "uep-test/teur", 5n), 5n);
+  assert.equal(testCredit(m, "buyer", "uep-test/teur", 5n), 5n);
   assert.ok(publishAs(m, { providerId: "prov", title: "T", description: "x", category: "COMPUTE", asset: "uep-test/tbtc", unitPrice: 1n, capacity: 1n }));
   assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, assetRegistryNetworkId: "" }), /ASSET_REGISTRY_NETWORK_INVALID/);
 });
@@ -165,10 +165,27 @@ test("credits: with requireSignedCredits only administrator-signed, single-use c
   assert.throws(() => m.creditAccount("buyer", "uep-test/teur", 5n, { creditId: "c-3", auth: signedFor5 }), /ACTOR_SIGNATURE_INVALID/);
   assert.equal(m.availableBalance("EUR", "buyer"), 10n);
   assertConserved(m, ["EUR"]);
-  // Default: the testnet funding rail is unchanged.
+  // v0.5.3: signed credits are the default (fail closed); `false` is refused;
+  // unsigned credits only behind the test-only option, never in production.
   const plain = setup().m;
   enrollIdentity(plain, "buyer");
-  assert.equal(plain.creditAccount("buyer", "EUR", 7n), 7n);
+  assert.equal(plain.requireSignedCredits, true);
+  assert.throws(() => plain.creditAccount("buyer", "EUR", 7n), /CREDIT_AUTHORIZATION_REQUIRED/);
+  assert.throws(() => new DigitalServicesMarketplace({ testOnlyLocalHeight: true, requireSignedCredits: false }), /CREDIT_POLICY_INVALID/);
+  const testOnly = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, testOnlyUnsignedCredits: true });
+  enrollIdentity(testOnly, "buyer");
+  assert.equal(testOnly.requireSignedCredits, false);
+  assert.equal(testOnly.creditAccount("buyer", "EUR", 7n), 7n);
+  const prev = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    assert.throws(() => new DigitalServicesMarketplace({ testOnlyUnsignedCredits: true, height: () => 1 }), /TEST_ONLY_OPTION_IN_PRODUCTION/);
+    const prodMarket = new DigitalServicesMarketplace({ height: () => 1 });
+    assert.throws(() => prodMarket.testOnlyAllowUnsignedCredits(), /TEST_ONLY_OPTION_IN_PRODUCTION/);
+  } finally {
+    if (prev === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prev;
+  }
+  assert.throws(() => plain.creditAccount("buyer", "EUR", 7n), /CREDIT_AUTHORIZATION_REQUIRED/);
 });
 
 // ---------------------------------------------------------------- lifecycle

@@ -49,6 +49,8 @@ export type TreasuryEntry = {
 
 /** v0.5.2: capability for the drip budget, issued once (to the Marketplace). */
 export type TreasuryDripCapability = { readonly kind: "treasury-drip-capability" };
+/** v0.5.3: capability (issued once, to the settlement engine) to roll back a fee allocation of a failed settlement. */
+export type TreasuryRollbackCapability = { readonly kind: "treasury-settlement-rollback-capability" };
 
 export type TreasuryBalance = Record<TreasuryBucket, bigint>;
 
@@ -133,6 +135,7 @@ export class MarketplaceTreasury {
   private readonly dripBudget = new Map<string, bigint>();
   private readonly dripAllocationRefs = new Set<string>();
   private dripCapability?: TreasuryDripCapability;
+  private rollbackCapability?: TreasuryRollbackCapability;
 
   constructor(opts?: {
     treasuryId?: string;
@@ -215,6 +218,33 @@ export class MarketplaceTreasury {
 
     this.settledOrders.add(orderId);
     return quote;
+  }
+
+  /** v0.5.3: issue the settlement rollback capability (once; the settlement engine takes it at construction). */
+  issueSettlementRollbackCapability(): TreasuryRollbackCapability {
+    if (this.rollbackCapability) throw new Error("TREASURY_CAPABILITY_ALREADY_ISSUED");
+    this.rollbackCapability = Object.freeze({ kind: "treasury-settlement-rollback-capability" as const });
+    return this.rollbackCapability;
+  }
+
+  /**
+   * v0.5.3: undo settleMarketplaceFee(orderId) while the settlement that
+   * allocated it is being rolled back (same execute call). Removes exactly the
+   * bucket entries of that allocation and the settled flag, so a retry of the
+   * same settlement id is accepted again.
+   */
+  revertMarketplaceFee(cap: TreasuryRollbackCapability, orderId: string): void {
+    if (!this.rollbackCapability || cap !== this.rollbackCapability) throw new Error("TREASURY_CAPABILITY_INVALID");
+    if (!this.settledOrders.has(orderId)) throw new Error("FEE_NOT_SETTLED");
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      const e = this.entries[i]!;
+      if (e.orderId !== orderId || e.reason !== "SETTLED_MARKETPLACE_FEE") continue;
+      const b = this.balance(e.asset);
+      if (b[e.bucket] < e.amount) throw new Error("TREASURY_ROLLBACK_UNDERFLOW");
+      b[e.bucket] -= e.amount;
+      this.entries.splice(i, 1);
+    }
+    this.settledOrders.delete(orderId);
   }
 
   /** v0.5.2: true once the Marketplace fee of `orderId` was allocated (settleMarketplaceFee would throw). */

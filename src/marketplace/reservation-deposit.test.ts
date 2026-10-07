@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { DigitalServicesMarketplace } from "./marketplace.ts";
 import { MarketplacePaymaster } from "./paymaster.ts";
 import { createMarketplaceIdentity, signCancellation, signReservation } from "./identity.ts";
-import { cancel, cancelAsBuyer, createTestAuthority, deliver, enrollIdentity, expire, fund, getOrder, publishAs, reserveAs, settle } from "./testkit.ts";
+import { cancel, cancelAsBuyer, createTestAuthority, deliver, enrollIdentity, expire, fund, getOrder, publishAs, reserveAs, settle, testCredit } from "./testkit.ts";
 
 const T0 = 1_700_000_000_000;
 
@@ -55,11 +55,11 @@ test("A10: no reservation without funds for the deposit", () => {
   const { m, listing } = setup();
   enrollIdentity(m, "broke");
   assert.throws(() => reserveAs(m, { listingId: listing.listingId, buyerId: "broke", quantity: 1n }, { credit: 0n }), /INSUFFICIENT_FUNDS_FOR_DEPOSIT/);
-  m.creditAccount("broke", "EUR", 4n); // deposit for gross 500 is 5
+  testCredit(m, "broke", "EUR", 4n); // deposit for gross 500 is 5
   assert.throws(() => reserveAs(m, { listingId: listing.listingId, buyerId: "broke", quantity: 1n }, { credit: 0n }), /INSUFFICIENT_FUNDS_FOR_DEPOSIT/);
   assert.equal(m.getListing(listing.listingId).available, 100n);
   assert.equal(m.orderCount(), 0);
-  m.creditAccount("broke", "EUR", 1n);
+  testCredit(m, "broke", "EUR", 1n);
   const o = reserveAs(m, { listingId: listing.listingId, buyerId: "broke", quantity: 1n }, { credit: 0n });
   assert.equal(o.reservationDeposit, 5n);
   assert.equal(m.availableBalance("EUR", "broke"), 0n);

@@ -4,7 +4,7 @@
  * marketplace testkit. Not used by production code paths.
  */
 import type { KeyObject } from "node:crypto";
-import { act, enrollIdentity, iotAuthorization, readAuth } from "../marketplace/testkit.ts";
+import { act, enrollIdentity, iotAuthorization, readAuth, testCredit } from "../marketplace/testkit.ts";
 import { createIoTMachineIdentity, iotMachineTerms, iotTelemetryDeliveryHash, type IoTM2MService, type IoTMachine, type IoTTelemetry } from "./iot-m2m.ts";
 
 const machineKeys = new WeakMap<IoTM2MService, Map<string, KeyObject>>();
@@ -39,7 +39,7 @@ export function requestAs(iot: IoTM2MService, input: { buyerId: string; listingI
   const m = iot.marketplace;
   enrollIdentity(m, input.buyerId);
   const asset = m.getListing(input.listingId).asset;
-  if (credit > 0n && m.availableBalance(asset, input.buyerId) < credit) m.creditAccount(input.buyerId, asset, credit - m.availableBalance(asset, input.buyerId));
+  if (credit > 0n && m.availableBalance(asset, input.buyerId) < credit) testCredit(m, input.buyerId, asset, credit - m.availableBalance(asset, input.buyerId));
   const idempotencyKey = input.idempotencyKey ?? `iot-auto-${++autoRequest}`;
   return iot.requestService({ ...input, idempotencyKey, authorization: iotAuthorization(m, { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey }) });
 }

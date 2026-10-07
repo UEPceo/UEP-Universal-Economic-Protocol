@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
-import { act, enrollIdentity } from "../marketplace/testkit.ts";
+import { act, enrollIdentity, testCredit } from "../marketplace/testkit.ts";
 import { createTestAuthority } from "../marketplace/testkit.ts";
 import { SettlementIndex } from "./settlement-index.ts";
 import { SwapCategory, swapHashlock, swapIntentId } from "./swap.ts";
@@ -236,7 +236,7 @@ test("dispute quorum resolves swap; drip claims from settlement index", () => {
   const buyer = enrollIdentity(m, "db", { asset: EUR, amount: 20_000n });
   const maker = enrollIdentity(m, "dm", { asset: ENERGY, amount: 20_000n });
   // Fund maker with EUR for bond too
-  m.creditAccount(maker.identityId, EUR, 5_000n);
+  testCredit(m, maker.identityId, EUR, 5_000n);
 
   const index = new SettlementIndex();
   const swapPort = m.issueCategoryEscrowPort("swap");

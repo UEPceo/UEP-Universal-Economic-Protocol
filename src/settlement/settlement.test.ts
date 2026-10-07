@@ -23,6 +23,12 @@ function memPort(escrow: { amount: bigint }, accounts: Map<string, bigint>, fees
     },
     recordFee: (_asset, amount) => { fees.n += amount; },
     recordGas: (_asset, amount) => { gas.n += amount; },
+    undo: (step) => {
+      if (step.kind === "closeEscrow") escrow.amount += step.amount;
+      else if (step.kind === "credit") accounts.set(step.accountId, (accounts.get(step.accountId) ?? 0n) - step.amount);
+      else if (step.kind === "recordFee") fees.n -= step.amount;
+      else gas.n -= step.amount;
+    },
   };
 }
 
@@ -124,6 +130,7 @@ test("re-entrant execute is refused", () => {
     credit: () => {},
     recordFee: () => {},
     recordGas: () => {},
+    undo: () => {},
   };
   e.execute(instruction, port);
   assert.equal(nested, true);
