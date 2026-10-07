@@ -128,6 +128,12 @@ export const ALLOWLIST = [
     reason: "Configuration-time guard: rejects testOnly* options under NODE_ENV=production. Called from constructors and factories when such an option is passed, never from a transition (constructors are not transitions; checked at run time by the poisoned-clock suite).",
   },
   {
+    file: "src/marketplace/multi-asset.test.ts",
+    rule: "process-state",
+    match: ["process.env.NODE_ENV"],
+    reason: "Test-only: sets NODE_ENV=production temporarily to check that test-only credit overrides are refused in production; restored in finally.",
+  },
+  {
     file: "src/testnet/key-derived-accounts.test.ts",
     rule: "net-import",
     reason: "Test-only node:fs read of a committed golden snapshot fixture (v2 account ids); static repository data, not live data.",
