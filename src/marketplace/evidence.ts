@@ -18,6 +18,16 @@
  *    relies on identities being costly. If funding fails because a cap is
  *    full, the Marketplace closes the reservation without fault and returns
  *    the buyer's deposit.
+ *  - per buyer inside a set (v0.5.3): one buyer's funded open value may not
+ *    exceed `buyerCapBps` of the set cap (default 2500 = 25%). Hitting the
+ *    buyer quota is the buyer's own limit, not a no-fault close.
+ *  - provider bond (v0.5.3): a listing bound to evidence must lock a
+ *    `sellerBond` in the listing asset of at least `providerBondBps` of the
+ *    per-provider subcap (default 1000 = 10%), taken from the provider's
+ *    balance at publication and returned when the listing is delisted and
+ *    has no open evidence-bound order. Every extra identity that wants a
+ *    share of a set therefore locks capital in the traded asset. No token,
+ *    no registration fee.
  *
  * Attester sets name their source (`sourceId`) and their attesters' public
  * keys. Keys are normalized (raw 64 lowercase hex; SPKI DER hex accepted) and
@@ -39,6 +49,10 @@ import { normalizeEd25519PublicKeyHex } from "../core/ed25519-point.ts";
 
 /** Default per-provider subcap inside an attester set: 25% of the set cap (basis points). */
 export const DEFAULT_PROVIDER_CAP_BPS = 2_500;
+/** v0.5.3: default per-buyer quota inside an attester set: 25% of the set cap (basis points). */
+export const DEFAULT_BUYER_CAP_BPS = 2_500;
+/** v0.5.3: default minimum provider bond of an evidence-bound listing: 10% of the per-provider subcap (basis points). */
+export const DEFAULT_PROVIDER_BOND_BPS = 1_000;
 
 /**
  * Shape of an evidence statement (phase 2.3; not verified here). Adapters
@@ -74,6 +88,10 @@ export type AttesterSetPolicy = {
   valueCaps: Record<string, bigint>;
   /** Optional per-provider subcap, in basis points of each set cap (1 to 10000; default DEFAULT_PROVIDER_CAP_BPS = 25%). */
   providerCapBps?: number;
+  /** v0.5.3: optional per-buyer quota, in basis points of each set cap (1 to 10000; default DEFAULT_BUYER_CAP_BPS = 25%). */
+  buyerCapBps?: number;
+  /** v0.5.3: minimum provider bond, in basis points of the per-provider subcap (0 to 10000; default DEFAULT_PROVIDER_BOND_BPS = 10%). */
+  providerBondBps?: number;
 };
 
 /** Evidence terms of a listing, fixed at publication (part of the signed listing terms). */
@@ -99,6 +117,12 @@ export type EvidenceCapsView = {
   providerOpenValue(attesterSetId: string, asset: string, providerId: string): bigint;
   /** Per-provider subcap of one set for one asset. */
   providerCap(attesterSetId: string, asset: string): bigint;
+  /** v0.5.3: funded open value of one buyer inside one set, in one asset. */
+  buyerOpenValue(attesterSetId: string, asset: string, buyerId: string): bigint;
+  /** v0.5.3: per-buyer quota of one set for one asset. */
+  buyerCap(attesterSetId: string, asset: string): bigint;
+  /** v0.5.3: minimum provider bond of a listing bound to one set, in the listing asset. */
+  minProviderBond(attesterSetId: string, asset: string): bigint;
   /** Copy of a registered attester set. */
   attesterSet(attesterSetId: string): AttesterSetPolicy;
 };
@@ -127,13 +151,17 @@ export class EvidenceCaps {
       }
       const bps = set.providerCapBps ?? DEFAULT_PROVIDER_CAP_BPS;
       if (!Number.isSafeInteger(bps) || bps < 1 || bps > 10_000) throw new Error("EVIDENCE_ATTESTER_SET_INVALID: providerCapBps is 1 to 10000");
+      const buyerBps = set.buyerCapBps ?? DEFAULT_BUYER_CAP_BPS;
+      if (!Number.isSafeInteger(buyerBps) || buyerBps < 1 || buyerBps > 10_000) throw new Error("EVIDENCE_ATTESTER_SET_INVALID: buyerCapBps is 1 to 10000");
+      const bondBps = set.providerBondBps ?? DEFAULT_PROVIDER_BOND_BPS;
+      if (!Number.isSafeInteger(bondBps) || bondBps < 0 || bondBps > 10_000) throw new Error("EVIDENCE_ATTESTER_SET_INVALID: providerBondBps is 0 to 10000");
       const caps: Record<string, bigint> = {};
       for (const [asset, cap] of Object.entries(set.valueCaps ?? {})) {
         if (!asset || typeof cap !== "bigint" || cap <= 0n) throw new Error("EVIDENCE_ATTESTER_SET_INVALID: caps are positive bigints");
         caps[asset] = cap;
       }
       for (const k of keys as string[]) this.keyOwner.set(k, set.attesterSetId);
-      this.sets.set(set.attesterSetId, Object.freeze({ attesterSetId: set.attesterSetId, sourceId: set.sourceId, attesterKeys: Object.freeze([...(keys as string[])]) as string[], threshold: set.threshold, size: set.size, valueCaps: Object.freeze(caps), providerCapBps: bps }));
+      this.sets.set(set.attesterSetId, Object.freeze({ attesterSetId: set.attesterSetId, sourceId: set.sourceId, attesterKeys: Object.freeze([...(keys as string[])]) as string[], threshold: set.threshold, size: set.size, valueCaps: Object.freeze(caps), providerCapBps: bps, buyerCapBps: buyerBps, providerBondBps: bondBps }));
     }
   }
 
@@ -158,6 +186,20 @@ export class EvidenceCaps {
     return (cap * bps + 9_999n) / 10_000n;
   }
 
+  /** v0.5.3: per-buyer quota of one set for one asset: ceil(setCap x buyerCapBps / 10000). */
+  buyerCap(attesterSetId: string, asset: string): bigint {
+    const cap = this.setCap(attesterSetId, asset);
+    const bps = BigInt(this.sets.get(attesterSetId)!.buyerCapBps ?? DEFAULT_BUYER_CAP_BPS);
+    return (cap * bps + 9_999n) / 10_000n;
+  }
+
+  /** v0.5.3: minimum provider bond of a listing bound to the set: ceil(providerCap x providerBondBps / 10000). */
+  minProviderBond(attesterSetId: string, asset: string): bigint {
+    const sub = this.providerCap(attesterSetId, asset);
+    const bps = BigInt(this.sets.get(attesterSetId)!.providerBondBps ?? DEFAULT_PROVIDER_BOND_BPS);
+    return (sub * bps + 9_999n) / 10_000n;
+  }
+
   /** Validate a listing's evidence terms at publication. */
   assertListingPolicy(policy: ListingEvidencePolicy, asset: string): ListingEvidencePolicy {
     if (!policy || typeof policy !== "object" || typeof policy.attesterSetId !== "string" || typeof policy.maxValuePerContract !== "bigint" || policy.maxValuePerContract <= 0n) throw new Error("EVIDENCE_POLICY_INVALID");
@@ -177,14 +219,21 @@ export class EvidenceCaps {
     return this.exposure.get(tupleKey(attesterSetId, asset, "provider", providerId)) ?? 0n;
   }
 
+  /** v0.5.3: funded open value of one buyer inside one set, in one asset. */
+  buyerOpenValue(attesterSetId: string, asset: string, buyerId: string): bigint {
+    return this.exposure.get(tupleKey(attesterSetId, asset, "buyer", buyerId)) ?? 0n;
+  }
+
   /**
    * Deterministic lock check (no mutation): `value` (gross + gas of one order)
    * must fit the per-contract cap, the set's remaining cap for `asset` and the
    * provider's remaining subcap. Called at reservation (fail early) and again
    * when the order is funded.
    */
-  checkLock(policy: ListingEvidencePolicy, asset: string, value: bigint, providerId: string): void {
+  checkLock(policy: ListingEvidencePolicy, asset: string, value: bigint, providerId: string, buyerId?: string): void {
     if (value > policy.maxValuePerContract) throw new Error("EVIDENCE_CONTRACT_CAP_EXCEEDED");
+    // v0.5.3: the buyer's own quota first (a buyer limit, never a no-fault close).
+    if (buyerId !== undefined && this.buyerOpenValue(policy.attesterSetId, asset, buyerId) + value > this.buyerCap(policy.attesterSetId, asset)) throw new Error("EVIDENCE_BUYER_CAP_EXCEEDED");
     const cap = this.setCap(policy.attesterSetId, asset);
     if (this.openValue(policy.attesterSetId, asset) + value > cap) throw new Error("EVIDENCE_ATTESTER_SET_CAP_EXCEEDED");
     if (this.providerOpenValue(policy.attesterSetId, asset, providerId) + value > this.providerCap(policy.attesterSetId, asset)) throw new Error("EVIDENCE_PROVIDER_CAP_EXCEEDED");
@@ -198,17 +247,20 @@ export class EvidenceCaps {
   }
 
   /** Record the funded value of an order (checks again first). */
-  lock(policy: ListingEvidencePolicy, asset: string, value: bigint, providerId: string): void {
-    this.checkLock(policy, asset, value, providerId);
+  lock(policy: ListingEvidencePolicy, asset: string, value: bigint, providerId: string, buyerId?: string): void {
+    this.checkLock(policy, asset, value, providerId, buyerId);
     this.addExposure(tupleKey(policy.attesterSetId, asset), value);
     this.addExposure(tupleKey(policy.attesterSetId, asset, "provider", providerId), value);
+    if (buyerId !== undefined) this.addExposure(tupleKey(policy.attesterSetId, asset, "buyer", buyerId), value);
   }
 
   /** Release the open value of a closed order (exactly once per lock). */
-  release(attesterSetId: string, asset: string, value: bigint, providerId: string): void {
+  release(attesterSetId: string, asset: string, value: bigint, providerId: string, buyerId?: string): void {
     if (this.openValue(attesterSetId, asset) < value || this.providerOpenValue(attesterSetId, asset, providerId) < value) throw new Error("EVIDENCE_EXPOSURE_UNDERFLOW");
+    if (buyerId !== undefined && this.buyerOpenValue(attesterSetId, asset, buyerId) < value) throw new Error("EVIDENCE_EXPOSURE_UNDERFLOW");
     this.addExposure(tupleKey(attesterSetId, asset), -value);
     this.addExposure(tupleKey(attesterSetId, asset, "provider", providerId), -value);
+    if (buyerId !== undefined) this.addExposure(tupleKey(attesterSetId, asset, "buyer", buyerId), -value);
   }
 
   /**
@@ -227,6 +279,9 @@ export function evidenceCapsView(caps: EvidenceCaps): EvidenceCapsView {
     openValue: (attesterSetId: string, asset: string) => caps.openValue(attesterSetId, asset),
     providerOpenValue: (attesterSetId: string, asset: string, providerId: string) => caps.providerOpenValue(attesterSetId, asset, providerId),
     providerCap: (attesterSetId: string, asset: string) => caps.providerCap(attesterSetId, asset),
+    buyerOpenValue: (attesterSetId: string, asset: string, buyerId: string) => caps.buyerOpenValue(attesterSetId, asset, buyerId),
+    buyerCap: (attesterSetId: string, asset: string) => caps.buyerCap(attesterSetId, asset),
+    minProviderBond: (attesterSetId: string, asset: string) => caps.minProviderBond(attesterSetId, asset),
     attesterSet: (attesterSetId: string) => caps.attesterSet(attesterSetId),
   });
 }

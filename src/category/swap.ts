@@ -12,7 +12,7 @@ import type { ActorAuth } from "../marketplace/identity.ts";
 import type { CategoryEscrowPort } from "../marketplace/category-escrow.ts";
 import { HeightGuard, ReplayGuard } from "./signed.ts";
 import type { IndexWriter, SettlementIndex } from "./settlement-index.ts";
-import { newDisputeCapRegistry, type DisputeCap, type Disputable, type EscrowView } from "./disputable.ts";
+import { freezeLapsed, newDisputeCapRegistry, type DisputeCap, type Disputable, type EscrowView } from "./disputable.ts";
 import { assertOracleUnavailablePolicy, MAX_ORACLE_DEVIATION_PPM, runOracleCheck, type OracleCheckRecord, type OraclePolicyGate, type OracleUnavailablePolicy } from "../oracle/policy-gate.ts";
 import { assertHex32, assertNonNegInt, assertPositiveBigint, mulDivFloor, sha256Hex, swapHashlock } from "./relay-crypto.ts";
 
@@ -60,6 +60,10 @@ export interface OpenSwap {
   settledAt?: number;
   revealedPreimage?: string;
   frozenBy?: string;
+  /** v0.5.3: height at which the current freeze started (it lapses after MAX_FREEZE_HEIGHTS). */
+  frozenAt?: number;
+  /** v0.5.3: height at which a freeze lapsed (the refund path opened without a verdict). */
+  freezeLapsedAt?: number;
   /** v0.5.3: outcome of the opt-in oracle check at open (absent when the intent has no oracleBand). */
   oracleCheck?: OracleCheckRecord;
 }
@@ -175,6 +179,8 @@ export class SwapCategory implements Disputable {
     this.heights.check(height);
     const order = this.mustGet(intentId);
     if (order.state !== "DUAL_HOLD_LOCKED") throw new Error("SWAP_ALREADY_SETTLED");
+    // v0.5.3: a freeze older than MAX_FREEZE_HEIGHTS lapses and the refund path opens.
+    this.lapseIfExpired(order, height);
     if (order.frozenBy) throw new Error("SWAP_FROZEN");
     if (height <= order.intent.deadline) throw new Error("SWAP_NOT_EXPIRED");
     this.port.refundHold(`${intentId}:buyer`);
@@ -218,6 +224,28 @@ export class SwapCategory implements Disputable {
     if (o.state !== "DUAL_HOLD_LOCKED") throw new Error("SWAP_ORDER_STATE");
     if (o.frozenBy) throw new Error("SWAP_FROZEN");
     o.frozenBy = caseId;
+    o.frozenAt = this.port.height();
+  }
+
+  /**
+   * v0.5.3: end a freeze older than MAX_FREEZE_HEIGHTS (anyone may call it).
+   * The order stays open; expire() then refunds both holds after the deadline.
+   */
+  lapseFreeze(intentId: string): OpenSwap {
+    const height = this.port.height();
+    this.heights.check(height);
+    const o = this.mustGet(intentId);
+    if (o.state !== "DUAL_HOLD_LOCKED" || !o.frozenBy) throw new Error("SWAP_NOT_FROZEN");
+    if (!this.lapseIfExpired(o, height)) throw new Error("SWAP_FREEZE_NOT_LAPSED");
+    return structuredClone(o);
+  }
+
+  private lapseIfExpired(o: OpenSwap, height: number): boolean {
+    if (!o.frozenBy || !freezeLapsed(o.frozenAt, height)) return false;
+    o.frozenBy = undefined;
+    o.frozenAt = undefined;
+    o.freezeLapsedAt = height;
+    return true;
   }
 
   unfreeze(cap: DisputeCap, orderId: string, caseId: string): void {
@@ -225,6 +253,7 @@ export class SwapCategory implements Disputable {
     const o = this.mustGet(orderId);
     if (o.frozenBy !== caseId) throw new Error("SWAP_FREEZE_OWNER");
     o.frozenBy = undefined;
+    o.frozenAt = undefined;
   }
 
   apply(cap: DisputeCap, orderId: string, caseId: string, releaseBps: number): void {
@@ -236,6 +265,7 @@ export class SwapCategory implements Disputable {
     this.distribute(o, releaseBps, height);
     o.state = "DISPUTE_RESOLVED";
     o.frozenBy = undefined;
+    o.frozenAt = undefined;
     o.settledAt = height;
   }
 

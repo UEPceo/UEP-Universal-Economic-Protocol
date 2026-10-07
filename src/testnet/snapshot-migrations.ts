@@ -96,8 +96,34 @@ const step7to8: SnapshotMigrationStep = {
   },
 };
 
+const step8to9: SnapshotMigrationStep = {
+  from: 8,
+  to: 9,
+  title: "height-advance record (the 12-block catch-up cap as a state invariant)",
+  derivation: [
+    "ticks = { count: ceil(height / 12), maxBlocksPerTick: 12, mode: \"capped\" }: format 8 did not record producer ticks; the count is the smallest one consistent with the cap. Checkpoints of format 8 snapshots carry no tick count, so the per-tick growth check starts at the first format 9 snapshot",
+    "every other field is unchanged",
+  ],
+  fixtures: ["v8-v0.5.3.json"],
+  migrate(p) {
+    const name = "MIGRATION_8_9";
+    if (p.formatVersion !== 8) fail(name, "expected formatVersion 8");
+    if ("ticks" in p) fail(name, "format 8 has no ticks field");
+    const height = p.height;
+    if (typeof height !== "number" || !Number.isSafeInteger(height) || height < 0) fail(name, "height must be a non-negative integer");
+    const out: SnapshotPayloadRecord = {};
+    // Same key order as a native format 9 payload (ticks after height); the hash is over canonical JSON either way.
+    for (const [k, v] of Object.entries(p)) {
+      out[k] = v;
+      if (k === "height") out.ticks = { count: Math.ceil((height as number) / 12), maxBlocksPerTick: 12, mode: "capped" };
+    }
+    out.formatVersion = 9;
+    return out;
+  },
+};
+
 /** Registered steps, in order. Append only. */
-export const SNAPSHOT_MIGRATIONS: readonly SnapshotMigrationStep[] = Object.freeze([step6to7, step7to8]);
+export const SNAPSHOT_MIGRATIONS: readonly SnapshotMigrationStep[] = Object.freeze([step6to7, step7to8, step8to9]);
 
 /** Oldest format that can still be restored (through migration). */
 export const OLDEST_MIGRATABLE_SNAPSHOT_FORMAT = 6;

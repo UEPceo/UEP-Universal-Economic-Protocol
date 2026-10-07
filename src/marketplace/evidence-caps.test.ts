@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DigitalServicesMarketplace, type ServiceOrder } from "./marketplace.ts";
-import { DEFAULT_PROVIDER_CAP_BPS, EvidenceCaps } from "./evidence.ts";
+import { DEFAULT_BUYER_CAP_BPS, DEFAULT_PROVIDER_BOND_BPS, DEFAULT_PROVIDER_CAP_BPS, EvidenceCaps } from "./evidence.ts";
 import { Fr } from "../core/field.ts";
 import { deriveSpendKey } from "../core/spend-key.ts";
 import { isPrimeOrderEd25519Point, normalizeEd25519PublicKeyHex } from "../core/ed25519-point.ts";
@@ -18,8 +18,8 @@ import { listingTerms } from "./identity.ts";
 /** Deterministic, valid Ed25519 public keys (raw 64 hex); public data only. */
 const keyOf = (i: number) => deriveSpendKey(new Fr(BigInt(i)), new Fr(9n)).publicKeyHex.slice(-64);
 const KEYS = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(keyOf);
-// providerCapBps 10000: these tests look at the set cap alone; the per-provider subcap has its own test.
-const SET = { attesterSetId: "space-weather-2of3", sourceId: "https://example.org/space-weather/v1", attesterKeys: KEYS.slice(0, 3), threshold: 2, size: 3, valueCaps: { EUR: 1_000n }, providerCapBps: 10_000 };
+// providerCapBps / buyerCapBps 10000 and no bond: these tests look at the set cap alone; the subcaps and the bond have their own tests.
+const SET = { attesterSetId: "space-weather-2of3", sourceId: "https://example.org/space-weather/v1", attesterKeys: KEYS.slice(0, 3), threshold: 2, size: 3, valueCaps: { EUR: 1_000n }, providerCapBps: 10_000, buyerCapBps: 10_000, providerBondBps: 0 };
 const base = { providerId: "prov", description: "comms with force-majeure evidence", category: "API" as const, asset: "EUR", unitPrice: 100n, capacity: 100n };
 
 function setup() {
@@ -146,7 +146,7 @@ test("evidence caps: attester keys are normalized and must be prime-order Ed2551
 });
 
 test("evidence caps: one provider may hold at most its subcap (default 25%) of a set; a full cap closes the reservation without fault", () => {
-  const set = { ...SET, providerCapBps: undefined };
+  const set = { ...SET, providerCapBps: undefined, buyerCapBps: 10_000 };
   const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, evidence: { attesterSets: [set] } });
   assert.equal(DEFAULT_PROVIDER_CAP_BPS, 2_500);
   assert.equal(m.evidenceCaps.providerCap(SET.attesterSetId, "EUR"), 250n);
@@ -214,7 +214,7 @@ test("evidence caps: only funded value counts against the set cap; unfunded rese
 test("evidence caps: the Marketplace exposes a read-only view (no lock / release)", () => {
   const { m } = setup();
   const view = m.evidenceCaps as unknown as Record<string, unknown>;
-  assert.deepEqual(Object.keys(view).sort(), ["attesterSet", "openValue", "providerCap", "providerOpenValue"]);
+  assert.deepEqual(Object.keys(view).sort(), ["attesterSet", "buyerCap", "buyerOpenValue", "minProviderBond", "openValue", "providerCap", "providerOpenValue"]);
   // The caps instance itself is an ECMAScript private field: not reachable through the object.
   assert.equal((m as unknown as Record<string, unknown>).evidence, undefined);
   assert.ok(!Object.getOwnPropertyNames(m).some((k) => k.toLowerCase().includes("evidence") && k !== "evidenceCaps"));
@@ -260,4 +260,80 @@ test("category hooks are copied and frozen at attach: mutating the caller's obje
   assert.equal(settle(m, order.orderId, "buyer").orderId, order.orderId);
   assert.throws(() => m.attachCategoryService("DATA", { settlementGuard: "nope" as never }), /CATEGORY_HOOKS_INVALID/);
   assert.throws(() => m.attachCategoryService("STORAGE", null as never), /CATEGORY_HOOKS_INVALID/);
+});
+
+// v0.5.3: identities are free, so a share of an attester set costs capital in the traded asset:
+// each evidence-bound listing locks a provider bond, and one buyer may fill only its quota.
+const DEFAULT_SET = { ...SET, providerCapBps: undefined, buyerCapBps: undefined, providerBondBps: undefined };
+const bonded = (m: DigitalServicesMarketplace, providerId: string, title: string, bond: bigint | undefined, credit = 1_000n) => {
+  enrollIdentity(m, providerId, { asset: "EUR", amount: credit });
+  return publishAs(m, { ...base, providerId, title, sellerBond: bond, evidencePolicy: { attesterSetId: SET.attesterSetId, maxValuePerContract: 200n } });
+};
+
+test("evidence caps: an evidence-bound listing locks a provider bond in the listing asset, returned after delisting", () => {
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, evidence: { attesterSets: [DEFAULT_SET] } });
+  assert.equal(DEFAULT_PROVIDER_BOND_BPS, 1_000);
+  // subcap 250 (25% of 1000); minimum bond 10% of the subcap = 25 EUR.
+  assert.equal(m.evidenceCaps.minProviderBond(SET.attesterSetId, "EUR"), 25n);
+  assert.throws(() => bonded(m, "p0", "No bond", undefined), /EVIDENCE_PROVIDER_BOND_REQUIRED/);
+  assert.throws(() => bonded(m, "p1", "Small bond", 24n), /EVIDENCE_PROVIDER_BOND_REQUIRED/);
+  assert.throws(() => bonded(m, "p2", "Broke", 25n, 0n), /INSUFFICIENT_FUNDS_FOR_BOND/);
+  const balanceBefore = m.availableBalance("EUR", "p3") + 1_000n;
+  const listing = bonded(m, "p3", "Bonded relay", 25n);
+  assert.equal(m.listingBondLocked(listing.listingId), 25n);
+  assert.equal(m.availableBalance("EUR", "p3"), balanceBefore - 25n);
+  assert.equal(m.valueAccounting("EUR").listingBonds, 25n);
+  assert.equal(m.valueAccounting("EUR").conserved, true);
+  // A funded order keeps the bond locked after delisting; it returns when the order closes.
+  const o = reserveAs(m, { listingId: listing.listingId, buyerId: "b", quantity: 1n }, { credit: 10_000n });
+  fund(m, o.orderId, o.fundingDue);
+  m.delistListing(listing.listingId, act(m, "p3", "delist", listing.listingId));
+  assert.equal(m.listingBondLocked(listing.listingId), 25n);
+  deliver(m, o.orderId, "p3", Buffer.from("report"));
+  settle(m, o.orderId, "b");
+  assert.equal(m.listingBondLocked(listing.listingId), 0n);
+  assert.equal(m.valueAccounting("EUR").listingBonds, 0n);
+  assert.equal(m.valueAccounting("EUR").conserved, true);
+  // Without open orders, delisting returns the bond at once.
+  const other = bonded(m, "p4", "Short relay", 30n);
+  const p4 = m.availableBalance("EUR", "p4");
+  m.delistListing(other.listingId, act(m, "p4", "delist", other.listingId));
+  assert.equal(m.availableBalance("EUR", "p4"), p4 + 30n);
+  // Listings without evidence terms keep sellerBond as a declared term (unchanged).
+  const plain = publishAs(m, { ...base, providerId: "p5", title: "Plain", sellerBond: 50n });
+  assert.equal(m.listingBondLocked(plain.listingId), 0n);
+  for (const bps of [-1, 10_001, 0.5]) assert.throws(() => new EvidenceCaps({ attesterSets: [{ ...SET, providerBondBps: bps }] }), /providerBondBps/);
+});
+
+test("evidence caps: one buyer fills at most its quota of a set; Sybil providers each lock a bond", () => {
+  const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, evidence: { attesterSets: [DEFAULT_SET] } });
+  assert.equal(DEFAULT_BUYER_CAP_BPS, 2_500);
+  assert.equal(m.evidenceCaps.buyerCap(SET.attesterSetId, "EUR"), 250n);
+  // Four provider identities under one operator: each one locks its bond (4 x 25 EUR).
+  const sybils = ["s1", "s2", "s3", "s4"].map((p) => bonded(m, `mallory-${p}`, `Relay ${p}`, 25n));
+  assert.equal(m.valueAccounting("EUR").listingBonds, 100n);
+  // One buyer identity funds orders across them: stopped at its quota (250 of 1000), not the set cap.
+  const first = reserveAs(m, { listingId: sybils[0]!.listingId, buyerId: "mallory", quantity: 2n }, { credit: 200_000n });
+  fund(m, first.orderId, first.fundingDue);
+  assert.throws(() => reserveAs(m, { listingId: sybils[1]!.listingId, buyerId: "mallory", quantity: 1n }), /EVIDENCE_BUYER_CAP_EXCEEDED/);
+  assert.equal(m.evidenceCaps.buyerOpenValue(SET.attesterSetId, "EUR", "mallory"), 200n);
+  // Reserved before the quota was reached, funded after: refused as the buyer's own limit, not a
+  // no-fault close (the reservation stays open and the deposit stays locked).
+  const m2 = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, evidence: { attesterSets: [DEFAULT_SET] } });
+  const [a, b] = ["x1", "x2"].map((p) => bonded(m2, p, `Relay ${p}`, 25n));
+  const r1 = reserveAs(m2, { listingId: a!.listingId, buyerId: "mallory", quantity: 2n }, { credit: 200_000n });
+  const r2 = reserveAs(m2, { listingId: b!.listingId, buyerId: "mallory", quantity: 1n });
+  fund(m2, r1.orderId, r1.fundingDue);
+  const locked = m2.lockedDeposit("EUR", "mallory");
+  assert.throws(() => fund(m2, r2.orderId, r2.fundingDue), /EVIDENCE_BUYER_CAP_EXCEEDED/);
+  assert.equal(getStatus(m2, r2.orderId, "mallory"), "ACCEPTED");
+  assert.equal(m2.lockedDeposit("EUR", "mallory"), locked);
+  // Other buyers are not blocked; closing frees the quota once.
+  const h = reserveAs(m, { listingId: sybils[2]!.listingId, buyerId: "honest", quantity: 2n }, { credit: 10_000n });
+  fund(m, h.orderId, h.fundingDue);
+  deliver(m, first.orderId, "mallory-s1", Buffer.from("r"));
+  settle(m, first.orderId, "mallory");
+  assert.equal(m.evidenceCaps.buyerOpenValue(SET.attesterSetId, "EUR", "mallory"), 0n);
+  assert.equal(m.valueAccounting("EUR").conserved, true);
+  for (const bps of [0, 10_001, 2.5]) assert.throws(() => new EvidenceCaps({ attesterSets: [{ ...SET, buyerCapBps: bps }] }), /buyerCapBps/);
 });

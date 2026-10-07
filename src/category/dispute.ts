@@ -13,7 +13,7 @@ import { canonicalJson } from "../core/canonical-json.ts";
 import type { ActorAuth } from "../marketplace/identity.ts";
 import type { CategoryEscrowPort } from "../marketplace/category-escrow.ts";
 import { HeightGuard, ReplayGuard } from "./signed.ts";
-import type { Disputable, EscrowView } from "./disputable.ts";
+import { MAX_FREEZE_HEIGHTS, type Disputable, type EscrowView } from "./disputable.ts";
 import { assertHex32, assertNonNegInt, assertPositiveBigint, mulDivFloor, sha256Hex } from "./relay-crypto.ts";
 
 export interface DisputeConfig {
@@ -100,6 +100,8 @@ export interface DisputeCase {
   timeoutCompensation?: bigint;
   /** v0.5.3: the timeout resumed the order under its own rules instead of applying a split. */
   resumed?: boolean;
+  /** v0.5.3: the order's freeze had lapsed (MAX_FREEZE_HEIGHTS) before the timeout; only the bond was settled. */
+  freezeLapsed?: boolean;
   evidence: EvidenceItem[];
 }
 
@@ -143,6 +145,9 @@ export class DisputeCategory {
     const t = this.cfg.timeoutBondToRespondentBps;
     if (!Number.isSafeInteger(t) || t < 0 || t > 10_000) throw new Error("DISPUTE_TIMEOUT_BOND_BPS");
     if (typeof this.cfg.minBond !== "bigint" || this.cfg.minBond < 1n) throw new Error("DISPUTE_MIN_BOND");
+    // v0.5.3: a case must be able to time out before the category's freeze lapses.
+    const { evidenceHeights: ev, resolutionHeights: res } = this.cfg;
+    if (!Number.isSafeInteger(ev) || ev < 0 || !Number.isSafeInteger(res) || res < 1 || ev + res >= MAX_FREEZE_HEIGHTS) throw new Error(`DISPUTE_WINDOWS: evidenceHeights + resolutionHeights must be below MAX_FREEZE_HEIGHTS (${MAX_FREEZE_HEIGHTS})`);
     for (const [asset, min] of Object.entries(this.cfg.minBondByAsset)) {
       if (typeof min !== "bigint" || min < 1n) throw new Error(`DISPUTE_MIN_BOND:${asset}`);
     }
@@ -308,7 +313,11 @@ export class DisputeCategory {
     if (c.state !== "OPEN") throw new Error("DISPUTE_CLOSED");
     if (height <= c.resolutionDeadline) throw new Error("DISPUTE_NOT_TIMED_OUT");
     const att = this.attachedFor(c);
-    const outcome = att.cat.timeoutOutcome?.(c.orderId);
+    // v0.5.3: the category may have ended the freeze itself (MAX_FREEZE_HEIGHTS lapsed) and the order
+    // may already be refunded or settled; the case then only settles the bond.
+    const view = att.cat.escrowView(c.orderId);
+    const stillFrozen = view !== undefined && view.open && view.frozen;
+    const outcome = stillFrozen ? att.cat.timeoutOutcome?.(c.orderId) : undefined;
     const compensation = mulDivFloor(c.bondAmount, this.cfg.timeoutBondToRespondentBps, 10_000);
     const holdId = `${c.disputeId}:bond`;
     if (compensation > 0n) {
@@ -325,7 +334,9 @@ export class DisputeCategory {
     c.timeoutCompensation = compensation;
     c.frivolous = false;
     c.bondForfeited = false;
-    if (outcome === "resume") {
+    if (!stillFrozen) {
+      c.freezeLapsed = true;
+    } else if (outcome === "resume") {
       att.cat.unfreeze(att.cap, c.orderId, c.disputeId);
       c.resumed = true;
     } else {

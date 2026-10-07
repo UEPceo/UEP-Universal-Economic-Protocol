@@ -38,17 +38,23 @@ An attester set is `{ attesterSetId, sourceId, attesterKeys, threshold: k, size:
 
 **Provider subcap.** Inside a set, one provider's funded open value in an asset may not exceed `providerCapBps` of the set's cap for that asset (optional field of the set, in basis points, 1 to 10,000; default `DEFAULT_PROVIDER_CAP_BPS = 2_500`, i.e. 25%, rounded up). It stops a buyer with capital equal to the set cap from filling the whole set with orders on its own listing. A listing whose `maxValuePerContract` exceeds the provider subcap is refused at publication. The subcap binds a provider identity; it relies on identities being costly, like every per-identity limit of the Marketplace.
 
+**Provider bond (v0.5.3).** Identities are free, so a per-identity subcap alone does not make a share of a set costly. A listing bound to an attester set therefore locks a bond in the listing asset: `sellerBond` must be at least `providerBondBps` of the per-provider subcap (optional field of the set, 0 to 10,000; default `DEFAULT_PROVIDER_BOND_BPS = 1_000`, i.e. 10%, rounded up; `marketplace.evidenceCaps.minProviderBond(set, asset)`). The bond is taken from the provider's Marketplace balance at publication (`EVIDENCE_PROVIDER_BOND_REQUIRED`, `INSUFFICIENT_FUNDS_FOR_BOND`), shows in `valueAccounting(asset).listingBonds`, and returns to the provider when the listing is delisted and no funded evidence-bound order of it is open (`listingBondLocked(listingId)`). Every extra provider identity that wants a share of a set locks capital in the traded asset. There is no token and no registration fee. Listings without evidence terms keep `sellerBond` as a declared term only.
+
+**Buyer quota (v0.5.3).** One buyer's funded open value in a set may not exceed `buyerCapBps` of the set's cap (1 to 10,000; default `DEFAULT_BUYER_CAP_BPS = 2_500`, i.e. 25%, rounded up). The quota is checked at `reserve()` and taken at `fundOrder()` (`EVIDENCE_BUYER_CAP_EXCEEDED`). Reaching it is the buyer's own limit: funding is refused, but the reservation is **not** closed without fault, so a buyer cannot use its own quota to get a deposit back.
+
 **Refused funding returns the deposit.** If `fundOrder()` fails because the set cap or the provider subcap is full, the buyer did nothing wrong: the reservation is closed without fault (`CANCELLED`, `closeReason: "EVIDENCE_CAP_FULL"`), the reservation deposit is returned to the buyer, and the call fails with the cap error so the client knows. Phase 2.3 adds a cap per source and a per-attester aggregate cap across all sets an attester belongs to.
 
 The open value of a set is the sum of gross amount + gas of its **funded** orders: HELD, DELIVERED or DISPUTED. It is taken when the buyer funds the order and goes down exactly once when the order is settled or refunded. Unfunded reservations (ACCEPTED) take nothing, so reservations that are cancelled in the grace period or expire cannot fill a set's cap at no cost.
 
-`marketplace.evidenceCaps` is a read-only view: `openValue(attesterSetId, asset)`, `providerOpenValue(attesterSetId, asset, providerId)`, `providerCap(attesterSetId, asset)` and `attesterSet(attesterSetId)`. Locking and releasing are internal to the Marketplace (an ECMAScript private field, not reachable from outside the instance).
+`marketplace.evidenceCaps` is a read-only view: `openValue(attesterSetId, asset)`, `providerOpenValue(attesterSetId, asset, providerId)`, `providerCap(attesterSetId, asset)`, `buyerOpenValue(attesterSetId, asset, buyerId)`, `buyerCap(attesterSetId, asset)`, `minProviderBond(attesterSetId, asset)` and `attesterSet(attesterSetId)`. Locking and releasing are internal to the Marketplace (an ECMAScript private field, not reachable from outside the instance).
 
 Errors:
 
 - `EVIDENCE_CONTRACT_CAP_EXCEEDED`: one order would lock or release more than `maxValuePerContract`.
 - `EVIDENCE_ATTESTER_SET_CAP_EXCEEDED`: the set's funded open value would exceed its cap (at funding; at reservation when the set is already full).
 - `EVIDENCE_PROVIDER_CAP_EXCEEDED`: the provider's funded open value in the set would exceed its subcap.
+- `EVIDENCE_BUYER_CAP_EXCEEDED`: the buyer's funded open value in the set would exceed its quota (not a no-fault close).
+- `EVIDENCE_PROVIDER_BOND_REQUIRED`, `INSUFFICIENT_FUNDS_FOR_BOND`: an evidence-bound listing without its minimum bond, or a provider without the balance to lock it.
 - `EVIDENCE_ATTESTER_SET_DUPLICATE`: an attester key already belongs to another set.
 - `EVIDENCE_ATTESTER_SET_UNKNOWN`, `EVIDENCE_ATTESTER_SET_CAP_UNDEFINED`, `EVIDENCE_POLICY_INVALID`, `EVIDENCE_ATTESTER_SET_INVALID`: configuration errors at construction or publication.
 

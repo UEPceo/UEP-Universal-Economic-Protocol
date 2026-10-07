@@ -16,6 +16,8 @@ const S1 = generateEd25519KeyPair();
 const FAUCET = generateEd25519KeyPair();
 const TRUST = { authorities: [S1.publicKeyHex], faucetPublicKeys: [FAUCET.publicKeyHex] };
 const identity = async () => identityFromMnemonic(await generateMnemonic(128));
+/** These tests advance more than 12 blocks per call: test-unbounded ledgers, restored with the test-only option. */
+const U = { testOnlyUnboundedHeightAdvance: true } as const;
 const ledger = () => new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [S1.privateKey], faucetSigningKey: FAUCET.privateKey, testOnlyUnboundedHeightAdvance: true });
 
 function resign(snap: UepLedgerSnapshot): UepLedgerSnapshot {
@@ -69,29 +71,29 @@ test("height: carried by the signed snapshot (format 7) and checked on restore",
   l.reconcilePending();
   l.advanceHeight(8);
   const snap = l.snapshot();
-  assert.equal(SNAPSHOT_FORMAT_VERSION, 8);
-  assert.equal(snap.formatVersion, 8);
+  assert.equal(SNAPSHOT_FORMAT_VERSION, 9);
+  assert.equal(snap.formatVersion, 9);
   assert.equal(snap.height, 50);
   assert.equal(snap.lastReconcileAt, 42);
   assert.equal(snap.policy.windowHeights, 12);
   assert.equal((snap.policy as Record<string, unknown>).windowMs, undefined);
-  const restored = UepLedger.restore(structuredClone(snap), TRUST);
+  const restored = UepLedger.restore(structuredClone(snap), TRUST, {}, U);
   assert.equal(restored.height, 50);
   assert.equal(restored.lastReconcileAt, 42);
   assert.equal(restored.policy.config.windowHeights, 12);
   // The height is signed: changing it without re-signing breaks the hash.
   const tampered = structuredClone(snap) as UepLedgerSnapshot;
   tampered.height = 51;
-  assert.throws(() => UepLedger.restore(tampered, TRUST), /INVALID_SNAPSHOT_HASH/);
+  assert.throws(() => UepLedger.restore(tampered, TRUST, {}, U), /INVALID_SNAPSHOT_HASH/);
   for (const [height, last] of [[-1, 0], [1.5, 0], [10, 11], [Number.NaN, 0]] as const) {
     const bad = structuredClone(snap) as UepLedgerSnapshot & { height: number; lastReconcileAt: number };
     bad.height = height;
     bad.lastReconcileAt = last;
-    assert.throws(() => UepLedger.restore(resign(bad), TRUST), /INVALID_SNAPSHOT_HEIGHT/, `${height}/${last}`);
+    assert.throws(() => UepLedger.restore(resign(bad), TRUST, {}, U), /INVALID_SNAPSHOT_HEIGHT/, `${height}/${last}`);
   }
   const missing = structuredClone(snap) as Record<string, unknown>;
   delete missing.height;
-  assert.throws(() => UepLedger.restore(resign(missing as UepLedgerSnapshot), TRUST), /INVALID_SNAPSHOT_HEIGHT/);
+  assert.throws(() => UepLedger.restore(resign(missing as UepLedgerSnapshot), TRUST, {}, U), /INVALID_SNAPSHOT_HEIGHT/);
 });
 
 test("height: the policy rate window is measured in heights (default 12 = 60 s)", async () => {
@@ -131,13 +133,13 @@ test("height: a restore never lowers the height unless the operator forces it, a
   // The checkpoint carries the height; the older snapshot conflicts with it anyway, so check the floor directly.
   assert.equal(checkpointOf(s2).height, 110);
   // A ledger at 110 replaced by a restore of the snapshot at height 10: refused.
-  assert.throws(() => UepLedger.restore(structuredClone(s1), TRUST, {}, { replaces: l }), /INVALID_SNAPSHOT_HEIGHT_REGRESSION/);
-  assert.throws(() => UepLedger.restore(structuredClone(s1), TRUST, {}, { minHeight: 11 }), /INVALID_SNAPSHOT_HEIGHT_REGRESSION/);
-  assert.throws(() => UepLedger.restore(structuredClone(s1), TRUST, {}, { minHeight: -1 }), /INVALID_SNAPSHOT_HEIGHT/);
-  assert.throws(() => UepLedger.restore(structuredClone(s1), { ...TRUST, checkpoint: { ...checkpointOf(s1), height: 110 } }), /INVALID_SNAPSHOT_HEIGHT_REGRESSION/);
+  assert.throws(() => UepLedger.restore(structuredClone(s1), TRUST, {}, { ...U, replaces: l }), /INVALID_SNAPSHOT_HEIGHT_REGRESSION/);
+  assert.throws(() => UepLedger.restore(structuredClone(s1), TRUST, {}, { ...U, minHeight: 11 }), /INVALID_SNAPSHOT_HEIGHT_REGRESSION/);
+  assert.throws(() => UepLedger.restore(structuredClone(s1), TRUST, {}, { ...U, minHeight: -1 }), /INVALID_SNAPSHOT_HEIGHT/);
+  assert.throws(() => UepLedger.restore(structuredClone(s1), { ...TRUST, checkpoint: { ...checkpointOf(s1), height: 110 } }, {}, U), /INVALID_SNAPSHOT_HEIGHT_REGRESSION/);
   assert.equal(l.isRetired, false); // a refused restore retires nothing
   // Forced rollback (explicit operator override).
-  const rolled = UepLedger.restore(structuredClone(s1), TRUST, {}, { replaces: l, allowHeightRegression: true });
+  const rolled = UepLedger.restore(structuredClone(s1), TRUST, {}, { ...U, replaces: l, allowHeightRegression: true });
   assert.equal(rolled.height, 10);
   assert.equal(l.isRetired, true);
   assert.throws(() => l.advanceHeight(1), /LEDGER_RETIRED/);
@@ -145,11 +147,11 @@ test("height: a restore never lowers the height unless the operator forces it, a
   const fresh = ledger();
   fresh.faucet(a.accountId, EUR, 1n);
   const snap = fresh.snapshot();
-  const next = UepLedger.restore(structuredClone(snap), TRUST, {}, { replaces: fresh });
+  const next = UepLedger.restore(structuredClone(snap), TRUST, {}, { ...U, replaces: fresh });
   assert.equal(next.height, fresh.height);
   assert.ok(fresh.isRetired && !next.isRetired);
   assert.equal(next.advanceHeight(1), 1);
   // restoreChain applies the floor to the last link.
-  assert.throws(() => UepLedger.restoreChain([structuredClone(s1)], TRUST, {}, { minHeight: 50 }), /INVALID_SNAPSHOT_HEIGHT_REGRESSION/);
-  assert.equal(UepLedger.restoreChain([structuredClone(s1), structuredClone(s2)], TRUST, {}, { minHeight: 110 }).height, 110);
+  assert.throws(() => UepLedger.restoreChain([structuredClone(s1)], TRUST, {}, { ...U, minHeight: 50 }), /INVALID_SNAPSHOT_HEIGHT_REGRESSION/);
+  assert.equal(UepLedger.restoreChain([structuredClone(s1), structuredClone(s2)], TRUST, {}, { ...U, minHeight: 110 }).height, 110);
 });

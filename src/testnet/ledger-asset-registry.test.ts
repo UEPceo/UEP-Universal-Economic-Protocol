@@ -37,7 +37,7 @@ function registry(assets: AssetRecord[], over: Record<string, Partial<AssetDefin
 }
 const load = (chain: ReturnType<typeof registry>[]) => AssetRegistry.load(chain, { keys: [GOV.publicKeyHex] });
 const ledger = (assetRegistry?: AssetRegistry) =>
-  new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, assetRegistry, testOnlyUnboundedHeightAdvance: true });
+  new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, assetRegistry });
 const trust = (assetRegistry?: AssetRegistry): SnapshotTrust => ({ authorities: [SNAP.publicKeyHex], faucetPublicKeys: [FAUCET.publicKeyHex], ...(assetRegistry ? { assetRegistry } : {}) });
 const code = (r: object) => ("error" in r ? (r as { error: { code: string } }).error.code : "OK");
 
@@ -87,7 +87,7 @@ test("registry: snapshot binding is checked on restore", async () => {
   const l = ledger(reg);
   l.faucet(a.accountId, EUR, 50n);
   const snap = l.snapshot();
-  assert.equal(snap.formatVersion, 8);
+  assert.equal(snap.formatVersion, 9);
   assert.throws(() => UepLedger.restore(snap, trust()), /INVALID_SNAPSHOT_ASSET_REGISTRY/);
   const foreign = load([registry([...TESTNET_ASSETS])]);
   assert.throws(() => UepLedger.restore(snap, trust(foreign)), /not in the trusted registry chain/);

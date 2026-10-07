@@ -23,7 +23,8 @@ via the settlement engine).
 | A wrong key (`KEY_RELEASE_FAULT`) or no key by the deadline pays `faultBondSlashBps` (default 20 %) of the provider bond to the buyer | V52-02 | `relay.ts slashForFault` | V52-02 ×2 |
 | A dispute timeout pays `timeoutBondToRespondentBps` (default 20 %) of the claimant's bond to the respondent (freeze compensation); 0 restores v0.5.2 | V52-03 (mitigation) | `dispute.ts timeout` | V52-03 |
 | Per-asset dispute bond floor `minBondByAsset` (falls back to `minBond`) | — | `dispute.ts minBondFor` | per-asset bond minimum |
-| Swap prices can be checked against the oracle gate for governed pairs | V52-04 follow-up | `swap.ts` | `oracle-wiring.test.ts` |
+| Swap prices can be checked against the oracle gate when the buyer signs an `oracleBand` | V52-04 follow-up | `swap.ts` | `oracle-wiring.test.ts`, `oracle-liveness.test.ts` |
+| **Maximum freeze duration** `MAX_FREEZE_HEIGHTS` (241,920 heights, 14 days at 5 s): an older freeze lapses and the order's own refund / timeout path opens (swap `expire`, relay `expire` / `finalize`, `lapseFreeze()`); a relay frozen over its key deadline is refunded without a provider fault; the fraud window gets back at most the cap; a late dispute timeout only settles the bond; `evidenceHeights + resolutionHeights` must stay below the cap | — | `disputable.ts`, `swap.ts`, `relay.ts`, `dispute.ts` | `freeze-cap.test.ts` |
 
 Ported module tests (relay fraud / slashing, dispute quorum, swap and drip
 negatives, deterministic fuzz with conservation and wind-down liveness) are in

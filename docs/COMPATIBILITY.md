@@ -33,7 +33,9 @@ The labs (`src/lab`, `uep-core`, the research circuits) are experimental and not
 | 4 | v0.4.4 | Refused |
 | 5 | v0.4.5 – v0.4.7 | Refused; fixture `v5-v0.4.7-9922cdb.json` checks the refusal and its reason |
 | 6 | the Poseidon protocol hash release and v0.5.0 (both the pre-release asset ids and the namespaced ids) | **Migrated** 6 → 7; fixtures `v6-main-020e6ce.json` (old asset ids `asset:test:*`) and `v6-v0.5.0-8d774d3.json` |
-| 7 | this release | Current; fixture `v7-v0.5.0-evidence-time.json` |
+| 7 | v0.5.1 – v0.5.2 | **Migrated** 7 → 8; fixtures `v7-v0.5.0-evidence-time.json`, `v7-v0.5.2-7173d37.json` |
+| 8 | `v0.5.3-fixes` branch before the height-advance record | **Migrated** 8 → 9; fixture `v8-v0.5.3.json` |
+| 9 | this release | Current; fixture `v9-v0.5.3.json` |
 
 ### Restore order
 
@@ -57,7 +59,14 @@ Each derivation is pure and needs no clock and no keys:
 | `policy.assetTier`, `policy.assetLimits` keys | old asset ids replaced by `<namespace>/<symbol>` (the namespaced entry wins if both exist) | Section 5 |
 | transactions, mints, notes, state and roots | unchanged | Signed and hashed bytes. A transaction's `createdAt` (Unix ms in format 6) stays as historical metadata and no rule reads it. |
 
-### Adding format 8
+### Step 8 → 9 (height-advance record)
+
+| Field | Format 9 value | Reason |
+|---|---|---|
+| `ticks` | `{ count: ceil(height / 12), maxBlocksPerTick: 12, mode: "capped" }` | Format 8 did not record producer ticks. This is the smallest count consistent with the 12-block cap. Checkpoints of format 8 snapshots carry no tick count, so the per-tick growth check across a chain link starts at the first format 9 snapshot. |
+| everything else | unchanged | |
+
+### Adding a format (example: format 8)
 
 1. Bump `SNAPSHOT_FORMAT_VERSION` to 8 in `src/testnet/ledger.ts` and change the payload.
 2. Append one step `{ from: 7, to: 8, title, derivation, fixtures: ["v7-…json"], migrate }` to `SNAPSHOT_MIGRATIONS`. It must be pure, it must not touch signed bytes, and it must document every derivation. Earlier steps are never edited: 6 → 7 → 8 chains on its own.
@@ -110,7 +119,8 @@ For each fixture, `snapshot-fixtures.test.ts` checks:
 | One payment that would need notes of both encodings of one asset | One transaction carries a single asset encoding. | `preparePayment()` uses notes of one encoding (namespaced first). Make two payments, or consolidate. |
 | Sending to a v2 account id that has never spent (`prepareSpend`, `preparePayment`, `faucet`) | A v2 id carries only its version byte, so 1 in 256 legacy ids looks like one; the ledger cannot tell a v2 id from a legacy id until the key behind it has been revealed. The call fails with `ADDRESS_VERSION`. | Ask the recipient for its v3 address (same key, `encodeAddress(accountIdFromSpendKey(key))`). A v2 account that holds notes becomes a valid recipient after its first spend. |
 | A restored ledger restarted with a lower height (`restore()` of an older snapshot) | A rollback would rewind every window. The restore fails with `INVALID_SNAPSHOT_HEIGHT_REGRESSION` when the snapshot is below the replaced ledger, `minHeight` or the trusted checkpoint. | Restore the latest snapshot, or pass `allowHeightRegression: true` and rebuild the Marketplace (its open orders are lost). |
-| `ledger.advanceHeight(n)` with `n > 12` | One call seals at most 12 blocks (`HEIGHT_ADVANCE_CAP`). | Call it repeatedly, or build test ledgers with `testOnlyUnboundedHeightAdvance: true`. |
+| `ledger.advanceHeight(n)` with `n > 12` | One call seals at most 12 blocks (`HEIGHT_ADVANCE_CAP`). Since format 9 this is also a state invariant: the snapshot records the tick count and `restore()` rejects a height above `ticks x 12` or a growth of more than 12 per tick across a chain link (`INVALID_SNAPSHOT_HEIGHT_CAP`). The cap bounds blocks per tick; it is **not** a rate limit or a security barrier against the operator: a caller that loops can still move every window forward quickly. | Call it once per producer tick, or build test ledgers with `testOnlyUnboundedHeightAdvance: true` (their snapshots restore only with the same test-only restore option). |
+| A snapshot of a `testOnlyUnboundedHeightAdvance` ledger | Marked `ticks.mode = "test-unbounded"`; it does not satisfy the cap. | Restore it with `{ testOnlyUnboundedHeightAdvance: true }` (refused under `NODE_ENV=production`). |
 | `listenUepHttpApi()` serving a Marketplace on an injected height source without `heightProducer` | The height would never move (`HEIGHT_PRODUCER_REQUIRED`). | Pass `heightProducer: new HeightProducer(ledger)`, or use `testOnlyLocalHeight` in tests. |
 | A paymaster and a Marketplace given two different height functions (for example two `() => ledger.height` closures) | Since v0.5.1 the clocks are compared by source, not only by unit (`CLOCK_CONFIG_CONFLICT`). | Pass the same function to both, e.g. `const height = heightOf(ledger)`; `heightOf()` returns the same function for the same target. |
 | Attester sets that share a key, or keys that are not valid Ed25519 points | One set per key until phase 2.3; keys are validated (`docs/EVIDENCE.md`). | Give each set its own attester keys. |

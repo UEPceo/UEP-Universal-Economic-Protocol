@@ -1,5 +1,5 @@
 {
-  "formatVersion": 8,
+  "formatVersion": 9,
   "payloadKeys": [
     "allowFaucet",
     "assetRegistry",
@@ -23,6 +23,7 @@
     "sequence",
     "settlementAnchors",
     "state",
+    "ticks",
     "txs"
   ],
   "policyKeys": [

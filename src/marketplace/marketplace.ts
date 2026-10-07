@@ -425,6 +425,8 @@ export type ValueAccounting = {
   treasuryTransfers: bigint;
   /** v0.5.2: drip subsidies paid out of the treasury into node accounts. */
   subsidiesPaid: bigint;
+  /** v0.5.3: provider bonds locked by evidence-bound listings. */
+  listingBonds: bigint;
   /**
    * credited === available + lockedDeposits + held + categoryHeld + marketplaceFees
    *             + gasCaptured + treasuryTransfers - subsidiesPaid
@@ -576,6 +578,12 @@ export class DigitalServicesMarketplace {
   private readonly categoryHeldTotals = new Map<string, bigint>();
   private readonly treasuryTransfers = new Map<string, bigint>();
   private readonly subsidiesPaid = new Map<string, bigint>();
+  /** v0.5.3: provider bonds locked by evidence-bound listings (listing id -> amount in the listing asset). */
+  private readonly listingBonds = new Map<string, bigint>();
+  /** v0.5.3: per-asset total of listingBonds (for valueAccounting). */
+  private readonly listingBondTotals = new Map<string, bigint>();
+  /** v0.5.3: funded evidence-bound orders still open per listing (the bond stays locked while > 0). */
+  private readonly openBondedOrders = new Map<string, number>();
   private readonly issuedCategoryPorts = new Set<CategoryModuleName>();
   private subsidyPortIssued = false;
   private dripCapability?: TreasuryDripCapability;
@@ -902,8 +910,9 @@ export class DigitalServicesMarketplace {
     const categoryHeld = this.categoryHeldTotals.get(asset) ?? 0n;
     const treasuryTransfers = this.treasuryTransfers.get(asset) ?? 0n;
     const subsidiesPaid = this.subsidiesPaid.get(asset) ?? 0n;
-    const conserved = credited === available + lockedDeposits + held + categoryHeld + marketplaceFees + gasCaptured + treasuryTransfers - subsidiesPaid;
-    return { asset, credited, available, lockedDeposits, held, marketplaceFees, gasCaptured, categoryHeld, treasuryTransfers, subsidiesPaid, conserved };
+    const listingBonds = this.listingBondTotals.get(asset) ?? 0n;
+    const conserved = credited === available + lockedDeposits + held + categoryHeld + listingBonds + marketplaceFees + gasCaptured + treasuryTransfers - subsidiesPaid;
+    return { asset, credited, available, lockedDeposits, held, marketplaceFees, gasCaptured, categoryHeld, treasuryTransfers, subsidiesPaid, listingBonds, conserved };
   }
 
   /**
@@ -952,6 +961,15 @@ export class DigitalServicesMarketplace {
         }
       }
     }
+    // v0.5.3: an evidence-bound listing locks a provider bond in the listing asset (Sybil cost of a
+    // share of the attester set cap: capital in the traded asset, no token, no fee).
+    const sellerBond = input.sellerBond ?? 0n;
+    if (typeof sellerBond !== "bigint" || sellerBond < 0n) throw new Error("INVALID_LISTING_ECONOMICS");
+    if (evidencePolicy) {
+      const minBond = this.#evidence.minProviderBond(evidencePolicy.attesterSetId, input.asset);
+      if (sellerBond < minBond) throw new Error(`EVIDENCE_PROVIDER_BOND_REQUIRED: an evidence-bound listing locks a sellerBond of at least ${minBond} ${input.asset}`);
+      if (this.availableBalance(input.asset, input.providerId) < sellerBond) throw new Error("INSUFFICIENT_FUNDS_FOR_BOND");
+    }
     const listingId = input.listingId ?? makeId("lst", `${input.providerId}|${input.title}|${input.asset}`, ++this.sequence);
     if (this.listings.has(listingId)) throw new Error("LISTING_ALREADY_EXISTS");
     recent.push(now);
@@ -969,6 +987,11 @@ export class DigitalServicesMarketplace {
     // v0.5.1: and no term can be added later (e.g. an evidencePolicy on a listing published without one).
     Object.preventExtensions(listing);
     this.listings.set(listingId, listing);
+    if (evidencePolicy && sellerBond > 0n) {
+      this.accounts.add(listing.asset, listing.providerId, -sellerBond);
+      this.listingBonds.set(listingId, sellerBond);
+      this.add(this.listingBondTotals, listing.asset, sellerBond);
+    }
     this.fingerprintIndex.set(fingerprint, listingId);
     const simIndex = this.similarityIndex.get(simKey) ?? new Map<string, Set<string>>();
     for (const token of tokens.slice(0, similarityPrefixLength(tokens.length))) {
@@ -989,7 +1012,10 @@ export class DigitalServicesMarketplace {
    * listing id). No new reservations; orders already reserved keep running
    * under their own terms and windows. The provider may publish the same
    * terms again afterwards (a delisted listing does not block its
-   * fingerprint), e.g. without an oracle reference.
+   * fingerprint), e.g. without an oracle reference. The provider bond of an
+   * evidence-bound listing returns to the provider now if no funded
+   * evidence-bound order of the listing is open, otherwise when the last one
+   * closes.
    */
   delistListing(listingId: string, auth: ActorAuth): ServiceListing {
     const listing = this.listings.get(listingId);
@@ -997,7 +1023,22 @@ export class DigitalServicesMarketplace {
     const actor = this.authenticateActor(auth, "delist", listingId);
     if (actor !== listing.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     listing.active = false;
+    this.maybeReturnListingBond(listing);
     return copyListing(listing);
+  }
+
+  /** v0.5.3: provider bond still locked by a listing (0n when none or already returned). */
+  listingBondLocked(listingId: string): bigint {
+    return this.listingBonds.get(listingId) ?? 0n;
+  }
+
+  /** v0.5.3: return the bond of a delisted listing once no funded evidence-bound order of it is open. */
+  private maybeReturnListingBond(listing: ServiceListing): void {
+    const bond = this.listingBonds.get(listing.listingId);
+    if (!bond || listing.active || (this.openBondedOrders.get(listing.listingId) ?? 0) > 0) return;
+    this.listingBonds.delete(listing.listingId);
+    this.add(this.listingBondTotals, listing.asset, -bond);
+    this.accounts.add(listing.asset, listing.providerId, bond);
   }
 
   getListing(listingId: string): ServiceListing {
@@ -1066,7 +1107,7 @@ export class DigitalServicesMarketplace {
     // only checked here (fail early) and taken when the order is funded, so unfunded
     // reservations cannot fill it.
     const evidenceValue = grossAmount + gasFee;
-    if (listing.evidencePolicy) this.#evidence.checkLock(listing.evidencePolicy, listing.asset, evidenceValue, listing.providerId);
+    if (listing.evidencePolicy) this.#evidence.checkLock(listing.evidencePolicy, listing.asset, evidenceValue, listing.providerId, input.buyerId);
     // v0.5.3: an oracle-bound listing is re-checked at the reservation height. Out of band: no
     // reservation. Oracle unavailable: the signed onOracleUnavailable decides; the outcome and the
     // quote hash are stored on the order. Funds already in flight never depend on the oracle.
@@ -1166,7 +1207,7 @@ export class DigitalServicesMarketplace {
     const evidenceValue = order.grossAmount + (order.gasFee ?? 0n);
     if (evidencePolicy) {
       try {
-        this.#evidence.checkLock(evidencePolicy, order.asset, evidenceValue, order.providerId);
+        this.#evidence.checkLock(evidencePolicy, order.asset, evidenceValue, order.providerId, order.buyerId);
       } catch (e) {
         // A full set or provider cap is a system reason, not the buyer's fault: the
         // reservation closes without fault and the deposit is returned (nothing else moved).
@@ -1176,8 +1217,9 @@ export class DigitalServicesMarketplace {
         order.closeReason = "EVIDENCE_CAP_FULL";
         throw new Error(`${code}: funding refused because the evidence cap is full; the reservation was closed without fault and the deposit returned`);
       }
-      this.#evidence.lock(evidencePolicy, order.asset, evidenceValue, order.providerId);
+      this.#evidence.lock(evidencePolicy, order.asset, evidenceValue, order.providerId, order.buyerId);
       order.evidenceLocked = evidenceValue;
+      this.openBondedOrders.set(order.listingId, (this.openBondedOrders.get(order.listingId) ?? 0) + 1);
     }
     this.accounts.add(order.asset, order.buyerId, -amount);
     this.locked.add(order.asset, order.buyerId, -order.depositLocked);
@@ -1998,8 +2040,12 @@ export class DigitalServicesMarketplace {
   private releaseEvidence(order: ServiceOrder): void {
     if (!order.evidenceLocked) return;
     const policy = this.listing(order.listingId).evidencePolicy;
-    if (policy) this.#evidence.release(policy.attesterSetId, order.asset, order.evidenceLocked, order.providerId);
+    if (policy) this.#evidence.release(policy.attesterSetId, order.asset, order.evidenceLocked, order.providerId, order.buyerId);
     order.evidenceLocked = 0n;
+    const open = (this.openBondedOrders.get(order.listingId) ?? 0) - 1;
+    if (open > 0) this.openBondedOrders.set(order.listingId, open);
+    else this.openBondedOrders.delete(order.listingId);
+    this.maybeReturnListingBond(this.listing(order.listingId));
   }
 
   private add(map: Map<string, bigint>, k: string, delta: bigint): void {

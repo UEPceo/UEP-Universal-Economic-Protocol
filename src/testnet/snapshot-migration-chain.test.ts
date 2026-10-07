@@ -19,7 +19,7 @@ const KEYS = { snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey:
 
 /** The format 6 form of a format 7 snapshot (no height, Unix-ms lastReconcileAt, windowMs), signed again. */
 function asFormat6(s: UepLedgerSnapshot): UepLedgerSnapshot {
-  const { snapshotHash: _h, signatures: _s, height: _height, assetRegistry: _reg, settlementAnchors: _anc, ...p } = s as UepLedgerSnapshot & Record<string, unknown>;
+  const { snapshotHash: _h, signatures: _s, height: _height, assetRegistry: _reg, settlementAnchors: _anc, ticks: _ticks, ...p } = s as UepLedgerSnapshot & Record<string, unknown>;
   const { windowHeights, ...policy } = p.policy as unknown as Record<string, unknown>;
   const v6 = { ...p, formatVersion: 6, lastReconcileAt: 1_790_000_000_000, policy: { ...policy, windowMs: (windowHeights as number) * 5000 } };
   return signSnapshot(v6 as never, [SNAPSHOT_KEY.privateKey]);
@@ -33,19 +33,19 @@ test("a mixed 6 -> 7 snapshot chain restores and keeps its links", async () => {
   assert.equal(s6.formatVersion, 6);
 
   const upgraded = UepLedger.restore(s6, TRUST, KEYS);
-  assert.deepEqual(upgraded.restoredFrom, { formatVersion: 6, migrationSteps: ["6->7", "7->8"] });
+  assert.deepEqual(upgraded.restoredFrom, { formatVersion: 6, migrationSteps: ["6->7", "7->8", "8->9"] });
   assert.equal(upgraded.height, 0);
   assert.equal(upgraded.lastReconcileHeight, 0);
   upgraded.advanceHeight(3);
   upgraded.faucet(upgraded.addressOf(alice.accountId), "asset:test:eur", 1_000n); // legacy id, resolved to uep-test/teur
   const s7 = upgraded.snapshot();
-  assert.equal(s7.formatVersion, 8);
+  assert.equal(s7.formatVersion, 9);
   assert.equal(s7.prevSnapshotHash, snapshotHash(s6));
   assert.equal(s7.sequence, s6.sequence + 1);
 
   const verifier = UepLedger.restoreChain([s6, s7], TRUST);
   assert.equal(verifier.height, 3);
-  assert.equal(verifier.restoredFrom?.formatVersion, 8);
+  assert.equal(verifier.restoredFrom?.formatVersion, 9);
   assert.equal(verifier.balanceOfAsset(alice.accountId, "uep-test/teur"), 51_000n);
   assert.equal(verifier.balanceOfAsset(alice.accountId, "asset:test:eur"), 51_000n);
   assert.equal(verifier.lastCheckpoint().snapshotHash, s7.snapshotHash);

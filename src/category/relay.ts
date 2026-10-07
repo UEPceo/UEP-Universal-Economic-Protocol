@@ -14,7 +14,7 @@ import type { ActorAuth } from "../marketplace/identity.ts";
 import type { CategoryEscrowPort } from "../marketplace/category-escrow.ts";
 import { HeightGuard, ReplayGuard } from "./signed.ts";
 import type { IndexWriter, SettlementIndex } from "./settlement-index.ts";
-import { newDisputeCapRegistry, type DisputeCap, type Disputable, type EscrowView } from "./disputable.ts";
+import { MAX_FREEZE_HEIGHTS, freezeLapsed, newDisputeCapRegistry, type DisputeCap, type Disputable, type EscrowView } from "./disputable.ts";
 import {
   assertHex32,
   assertNonNegInt,
@@ -111,6 +111,10 @@ export interface RelayOrder {
   frozenBy?: string;
   /** v0.5.3: height at which the current freeze started (fraud window is extended on unfreeze). */
   frozenAt?: number;
+  /** v0.5.3: height at which a freeze lapsed (MAX_FREEZE_HEIGHTS; the order's own paths opened without a verdict). */
+  freezeLapsedAt?: number;
+  /** v0.5.3: set when a lapsed freeze covered the key deadline: expire() then refunds without a fault. */
+  lapsedOverKeyDeadline?: boolean;
 }
 
 export interface ProviderCounters {
@@ -378,6 +382,7 @@ export class RelayCategory implements Disputable {
     this.heights.check(height);
     const o = this.mustGet(orderId);
     if (o.state !== "KEY_RELEASED") throw new Error("RELAY_ORDER_STATE");
+    this.lapseIfExpired(o, height);
     if (o.frozenBy) throw new Error("RELAY_FROZEN");
     if (height <= (o.fraudWindowEndsAt ?? Number.POSITIVE_INFINITY)) throw new Error("RELAY_FRAUD_WINDOW_OPEN");
     this.settleHappy(o, height);
@@ -389,12 +394,18 @@ export class RelayCategory implements Disputable {
     this.heights.check(height);
     const o = this.mustGet(orderId);
     if (o.state !== "FUNDED") throw new Error("RELAY_ORDER_STATE");
+    this.lapseIfExpired(o, height);
     if (o.frozenBy) throw new Error("RELAY_FROZEN");
     if (height <= o.offer.keyDeadline) throw new Error("RELAY_NOT_EXPIRED");
     this.port.refundHold(`${o.orderId}:price`);
-    this.slashForFault(o);
+    if (o.lapsedOverKeyDeadline) {
+      // v0.5.3: the freeze blocked publishKey until the deadline passed: no provider fault.
+      this.port.refundHold(`${o.orderId}:bond`);
+    } else {
+      this.slashForFault(o);
+      this.counter(o.offer.providerId).expired += 1;
+    }
     o.state = "EXPIRED_REFUNDED";
-    this.counter(o.offer.providerId).expired += 1;
     return structuredClone(o);
   }
 
@@ -479,13 +490,38 @@ export class RelayCategory implements Disputable {
     o.frozenAt = this.port.height();
   }
 
+  /**
+   * v0.5.3: end a freeze older than MAX_FREEZE_HEIGHTS (anyone may call it).
+   * The fraud window gets back at most MAX_FREEZE_HEIGHTS; expire() refunds
+   * without a fault if the freeze covered the key deadline; finalize() and
+   * fraud proofs follow their own rules afterwards.
+   */
+  lapseFreeze(orderId: string): RelayOrder {
+    const height = this.port.height();
+    this.heights.check(height);
+    const o = this.mustGet(orderId);
+    if ((o.state !== "FUNDED" && o.state !== "KEY_RELEASED") || !o.frozenBy) throw new Error("RELAY_NOT_FROZEN");
+    if (!this.lapseIfExpired(o, height)) throw new Error("RELAY_FREEZE_NOT_LAPSED");
+    return structuredClone(o);
+  }
+
+  private lapseIfExpired(o: RelayOrder, height: number): boolean {
+    if (!o.frozenBy || !freezeLapsed(o.frozenAt, height)) return false;
+    if (o.state === "KEY_RELEASED" && o.fraudWindowEndsAt !== undefined) o.fraudWindowEndsAt += MAX_FREEZE_HEIGHTS;
+    if (o.state === "FUNDED" && o.frozenAt! <= o.offer.keyDeadline && o.offer.keyDeadline < height) o.lapsedOverKeyDeadline = true;
+    o.frozenBy = undefined;
+    o.frozenAt = undefined;
+    o.freezeLapsedAt = height;
+    return true;
+  }
+
   unfreeze(cap: DisputeCap, orderId: string, caseId: string): void {
     this.caps.check(cap);
     const o = this.mustGet(orderId);
     if (o.frozenBy !== caseId) throw new Error("RELAY_FREEZE_OWNER");
     // The fraud window did not run while frozen: give the parties the frozen time back.
     if (o.state === "KEY_RELEASED" && o.fraudWindowEndsAt !== undefined && o.frozenAt !== undefined) {
-      o.fraudWindowEndsAt += Math.max(0, this.port.height() - o.frozenAt);
+      o.fraudWindowEndsAt += Math.min(MAX_FREEZE_HEIGHTS, Math.max(0, this.port.height() - o.frozenAt));
     }
     o.frozenBy = undefined;
     o.frozenAt = undefined;

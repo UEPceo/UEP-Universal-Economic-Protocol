@@ -115,7 +115,7 @@ function ak(account: Fr, asset: Fr): AccountKey {
  * `assetRegistry` = { networkId, version, hash } of the
  * signed asset manifest the ledger enforces, or null for a template-only ledger.
  */
-export const SNAPSHOT_FORMAT_VERSION = 8;
+export const SNAPSHOT_FORMAT_VERSION = 9;
 /** Default bound of the pending (offline / conflict) queue. */
 export const DEFAULT_MAX_PENDING_TRANSACTIONS = 1024;
 /** Upper limit accepted for `maxPendingTransactions`. */
@@ -194,7 +194,23 @@ export type SnapshotCheckpoint = {
   mintChainHash: string;
   /** v0.5.1: block height of the checkpointed snapshot; a restore against it may not go lower (see RestoreOptions). */
   height?: number;
+  /** v0.5.3 (format 9): producer ticks of the checkpointed snapshot; a later snapshot may add at most MAX_BLOCKS_PER_TICK heights per tick. */
+  tickCount?: number;
 };
+
+/**
+ * v0.5.3 (format 9): height-advance record. The 12-block catch-up cap is a
+ * state invariant, not only a guard in advanceHeight(): every call that seals
+ * blocks counts one tick, and a "capped" ledger satisfies
+ * height <= tickCount x maxBlocksPerTick (maxBlocksPerTick = MAX_BLOCKS_PER_TICK).
+ * restore() re-checks it, and across a chain link (or against a checkpoint)
+ * the height may grow by at most maxBlocksPerTick per added tick. A ledger
+ * built with testOnlyUnboundedHeightAdvance writes mode "test-unbounded"; such
+ * a snapshot restores only with the same test-only restore option.
+ * The cap bounds blocks per tick; it is not a rate limit against an operator
+ * who calls the producer in a loop (docs/COMPATIBILITY.md).
+ */
+export type HeightAdvanceRecord = { count: number; maxBlocksPerTick: number; mode: "capped" | "test-unbounded" };
 
 /**
  * v0.5.1 restore options (ADR 0002, height never goes backwards):
@@ -211,6 +227,8 @@ export type RestoreOptions = {
   replaces?: { readonly height: number; retire?: () => void };
   minHeight?: number;
   allowHeightRegression?: boolean;
+  /** v0.5.3 TEST-ONLY: accept a snapshot written by a testOnlyUnboundedHeightAdvance ledger (mode "test-unbounded"). */
+  testOnlyUnboundedHeightAdvance?: boolean;
 };
 
 export type UepLedgerSnapshotPayload = ReturnType<UepLedger["snapshotPayload"]>;
@@ -256,6 +274,7 @@ export function checkpointOf(snap: UepLedgerSnapshot): SnapshotCheckpoint {
     mintCount: snap.mints.length,
     mintChainHash: mintChainHash(snap.mints, snap.mints.length),
     ...(Number.isSafeInteger((snap as { height?: unknown }).height) ? { height: snap.height } : {}),
+    ...(Number.isSafeInteger((snap as { ticks?: { count?: unknown } }).ticks?.count) ? { tickCount: (snap as { ticks: HeightAdvanceRecord }).ticks.count } : {}),
   };
 }
 
@@ -426,6 +445,8 @@ export class UepLedger {
    * clock or a header timestamp.
    */
   private blockHeight = 0;
+  /** v0.5.3 (format 9): advanceHeight() calls that sealed at least one block. */
+  private tickCount = 0;
   /**
    * v0.5.1: snapshot format this ledger was restored from and the migration
    * steps applied (empty for a current-format snapshot or a new ledger).
@@ -642,8 +663,15 @@ export class UepLedger {
     // v0.5.1: at most MAX_BLOCKS_PER_TICK per call outside test mode (an operator fast-forward
     // moves every window at once; it is bounded per call and the producer then waits for real time).
     if (blocks > MAX_BLOCKS_PER_TICK && !this.unboundedHeightAdvance) throw new Error(`HEIGHT_ADVANCE_CAP: at most ${MAX_BLOCKS_PER_TICK} blocks per call (testOnlyUnboundedHeightAdvance lifts it in tests)`);
+    if (blocks === 0) return this.blockHeight;
     this.blockHeight += blocks;
+    this.tickCount++;
     return this.blockHeight;
+  }
+
+  /** v0.5.3 (format 9): the height-advance record written to snapshots (see HeightAdvanceRecord). */
+  heightAdvanceRecord(): HeightAdvanceRecord {
+    return { count: this.tickCount, maxBlocksPerTick: MAX_BLOCKS_PER_TICK, mode: this.unboundedHeightAdvance ? "test-unbounded" : "capped" };
   }
 
   /** v0.5.1: true once a restore with `replaces: this` took over (advanceHeight then throws LEDGER_RETIRED). */
@@ -1660,6 +1688,7 @@ export class UepLedger {
       noteCounter: this.noteCounter.toString(),
       lastReconcileAt: this.lastReconcileAt,
       height: this.blockHeight,
+      ticks: this.heightAdvanceRecord(),
       assetRegistry: this.assetRegistryBinding(),
       settlementAnchors: this.settlementAnchors.map((a) => ({ ...a, settlementIds: [...a.settlementIds], totals: { ...a.totals } })),
     };
@@ -1799,6 +1828,7 @@ export class UepLedger {
         snapshotSigningKeys: [],
         faucetSigningKey: null,
         maxPendingTransactions: data.maxPendingTransactions,
+        ...((data as { ticks?: { mode?: unknown } }).ticks?.mode === "test-unbounded" && opts.testOnlyUnboundedHeightAdvance === true ? { testOnlyUnboundedHeightAdvance: true } : {}),
         assetRegistry: trust.assetRegistry,
       });
     } catch (e) {
@@ -1848,6 +1878,25 @@ export class UepLedger {
     if (!Number.isSafeInteger(data.height) || data.height < 0 || !Number.isSafeInteger(data.lastReconcileAt) || data.lastReconcileAt < 0 || data.lastReconcileAt > data.height) fail("HEIGHT", "height must be a non-negative integer, at or above lastReconcileAt");
     l.lastReconcileAt = data.lastReconcileAt;
     l.blockHeight = data.height;
+    // v0.5.3 (format 9): the 12-block cap is a state invariant (see HeightAdvanceRecord).
+    {
+      const t = (data as { ticks?: Partial<HeightAdvanceRecord> }).ticks;
+      if (!t || typeof t !== "object" || !Number.isSafeInteger(t.count) || (t.count as number) < 0 || (t.mode !== "capped" && t.mode !== "test-unbounded")) fail("HEIGHT_CAP", "malformed height-advance record");
+      const ticks = t as HeightAdvanceRecord;
+      if (ticks.mode === "test-unbounded") {
+        if (opts.testOnlyUnboundedHeightAdvance !== true) fail("HEIGHT_CAP", "the snapshot was written by a ledger without the 12-block cap (test-only); restore it with testOnlyUnboundedHeightAdvance");
+        testOnlyOption("testOnlyUnboundedHeightAdvance", true);
+      } else {
+        if (ticks.maxBlocksPerTick !== MAX_BLOCKS_PER_TICK) fail("HEIGHT_CAP", `maxBlocksPerTick must be ${MAX_BLOCKS_PER_TICK}`);
+        if (data.height > ticks.count * MAX_BLOCKS_PER_TICK) fail("HEIGHT_CAP", `height ${data.height} exceeds ${ticks.count} ticks x ${MAX_BLOCKS_PER_TICK} blocks`);
+        const cp = trust.checkpoint;
+        if (cp && Number.isSafeInteger(cp.tickCount) && Number.isSafeInteger(cp.height)) {
+          if (ticks.count < (cp.tickCount as number)) fail("HEIGHT_CAP", "tick count below the checkpoint's");
+          if (data.height - (cp.height as number) > (ticks.count - (cp.tickCount as number)) * MAX_BLOCKS_PER_TICK) fail("HEIGHT_CAP", `the height grew by more than ${MAX_BLOCKS_PER_TICK} blocks per tick since the checkpoint`);
+        }
+      }
+      l.tickCount = ticks.count;
+    }
     // v0.5.1: the height never goes backwards unless the operator forces a rollback.
     if (opts.allowHeightRegression !== true) {
       const floors: Array<[string, unknown]> = [["checkpoint", trust.checkpoint?.height], ["minHeight", opts.minHeight], ["replaced ledger", opts.replaces?.height]];
@@ -2032,7 +2081,7 @@ export class UepLedger {
       const linkTrust: SnapshotTrust = prev ? { ...trust, previousSnapshotHash: snapshotHash(prev), checkpoint: checkpointOf(prev) } : trust;
       if (prev && snap?.sequence !== prev.sequence + 1) throw new Error("INVALID_SNAPSHOT_CHAIN: sequence gap or reorder");
       const last = i === snapshots.length - 1;
-      restored = UepLedger.restore(snap, linkTrust, last ? keys : {}, last ? opts : { allowHeightRegression: opts.allowHeightRegression });
+      restored = UepLedger.restore(snap, linkTrust, last ? keys : {}, last ? opts : { allowHeightRegression: opts.allowHeightRegression, testOnlyUnboundedHeightAdvance: opts.testOnlyUnboundedHeightAdvance });
       prev = snap;
     }
     return restored!;

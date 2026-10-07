@@ -3,6 +3,20 @@
  * Verdicts are releaseBps: 10000 = RELEASE, 0 = REFUND_BUYER, between = SPLIT.
  * Escrow amounts are bigint.
  */
+/**
+ * v0.5.3: maximum duration of a dispute freeze, in heights (241_920 = 14 days
+ * at the reference block time). A freeze older than this lapses: the order's
+ * own refund / timeout path opens again (swap expire, relay expire or
+ * finalize), whatever happened to the dispute. A dispute engine must be able
+ * to time out before that (evidence + resolution heights <= this cap).
+ */
+export const MAX_FREEZE_HEIGHTS = 241_920;
+
+/** v0.5.3: true once a freeze started at `frozenAt` is older than MAX_FREEZE_HEIGHTS at `height`. */
+export function freezeLapsed(frozenAt: number | undefined, height: number): boolean {
+  return frozenAt !== undefined && height - frozenAt > MAX_FREEZE_HEIGHTS;
+}
+
 export interface DisputeCap {
   readonly kind: "dispute-cap";
 }

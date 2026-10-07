@@ -19,7 +19,7 @@ const ADMIN = createTestAuthority("admin-1");
 const SNAP = generateEd25519KeyPair();
 const ANCHOR = generateEd25519KeyPair();
 const MKT = "uep-marketplace-testnet";
-const ledger = () => new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: null, testOnlyUnboundedHeightAdvance: true, settlementAnchorAuthorities: { [MKT]: [ANCHOR.publicKeyHex] } });
+const ledger = () => new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: null, settlementAnchorAuthorities: { [MKT]: [ANCHOR.publicKeyHex] } });
 /** Direct ledger call signed with the Marketplace anchor key (what Marketplace.anchorSettlements does). */
 function authed(l: UepLedger, input: { marketplaceId: string; treasuryId: string; receipts: SettlementReceipt[] }) {
   const prev = l.settlementAnchors[l.settlementAnchors.length - 1];
