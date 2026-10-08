@@ -1441,7 +1441,10 @@ export class UepLedger {
    * interleave inside one process; this guard also refuses re-entry (a spend
    * submitted from inside another spend's checks). Adapters that await an
    * asynchronous verifier first must serialize through SpendSerializer
-   * (src/testnet/spend-serializer.ts). Multi-process deployments need a shared
+   * (src/testnet/spend-serializer.ts); services put the bounded
+   * LedgerSubmitQueue (src/service/ledger-submit-queue.ts: FIFO, maxDepth,
+   * queue-wait timeout, LEDGER_BUSY with retryAfterSeconds, HTTP 503 +
+   * Retry-After) in front of the ledger. Multi-process deployments need a shared
    * transactional store; that is outside this reference implementation.
    */
   submit(tx: UepTransaction, secrets?: IdentitySecrets): SubmitResult {

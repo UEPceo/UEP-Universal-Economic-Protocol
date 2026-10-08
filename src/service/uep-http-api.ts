@@ -8,8 +8,10 @@ import type { UepServiceApi } from "./uep-service-api.ts";
 import { HeightProducer } from "./height-producer.ts";
 import { heightOf } from "../core/height.ts";
 import { UEP_API_VERSION, httpStatusOf, type ApiRequestMeta } from "./uep-api-types.ts";
+import { ledgerBusyHttpStatus, type LedgerSubmitQueue } from "./ledger-submit-queue.ts";
+import { deserializeTx, serializeTx } from "../core/transaction.ts";
 
-export const UEP_HTTP_API_VERSION = "1.3.0";
+export const UEP_HTTP_API_VERSION = "1.4.0";
 
 export type EconomicReadModel = {
   tip: () => { stateRoot: string; height: number; treasury?: string };
@@ -57,6 +59,14 @@ export type HttpApiOptions = {
    * Anything else, including `Origin: null`, is 403 OBJECTS_ORIGIN_NOT_ALLOWED.
    */
   objectsAllowedOrigins?: string[];
+  /**
+   * v0.5.3: bounded submit queue in front of the node's ledger
+   * (src/service/ledger-submit-queue.ts). Enables POST /v1/ledger/transactions
+   * (body `{ tx }` with a serialized transaction, or `{ txs }` for an atomic
+   * batch). A full queue or a queue-wait timeout answers 503 with
+   * `Retry-After` (error code LEDGER_BUSY); the route is absent without it.
+   */
+  ledgerQueue?: LedgerSubmitQueue;
 };
 
 /**
@@ -198,11 +208,12 @@ function objectsAuthorized(opts: HttpApiOptions, host: string, req: IncomingMess
   return LOOPBACK_HOSTS.has(normalizeHostName(host));
 }
 
-function send(res: ServerResponse, status: number, body: unknown): void {
+function send(res: ServerResponse, status: number, body: unknown, extraHeaders: Record<string, string> = {}): void {
   const raw = JSON.stringify(body, (_key, value) => typeof value === "bigint" ? value.toString() : value);
   res.writeHead(status, {
     "content-type": "application/json",
     "x-uep-api": UEP_HTTP_API_VERSION,
+    ...extraHeaders,
   });
   res.end(raw);
 }
@@ -404,7 +415,36 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
       if (req.method === "POST" && path === "/v1/spends") {
         const body = JSON.parse((await readBody(req)).toString() || "{}");
         const result = await opts.api.submitSpend(body);
-        send(res, result.ok ? 202 : 400, result);
+        const busy = ledgerBusyHttpStatus(result);
+        if (busy) send(res, busy.status, result, { "retry-after": String(busy.retryAfterSeconds) });
+        else send(res, result.ok ? 202 : 400, result);
+        return;
+      }
+      if (req.method === "POST" && path === "/v1/ledger/transactions" && opts.ledgerQueue) {
+        // Answer before reading a large body when the queue is already full (backpressure).
+        if (opts.ledgerQueue.depth >= opts.ledgerQueue.maxDepth) {
+          const retry = opts.ledgerQueue.retryAfterSeconds();
+          send(res, 503, { ok: false, error: { code: "LEDGER_BUSY", reason: "QUEUE_FULL", message: "The submit queue is full; retry later.", retryAfterSeconds: retry } }, { "retry-after": String(retry) });
+          return;
+        }
+        const body = JSON.parse((await readBody(req, 1024 * 1024)).toString() || "{}");
+        let result: unknown;
+        try {
+          result = Array.isArray(body.txs)
+            ? await opts.ledgerQueue.submitBatch(body.txs.map(deserializeTx))
+            : await opts.ledgerQueue.submit(deserializeTx(body.tx));
+        } catch {
+          send(res, 400, { ok: false, error: { code: "INVALID_REQUEST", message: "body must be { tx } or { txs } with serialized transactions" } });
+          return;
+        }
+        const busy = ledgerBusyHttpStatus(result);
+        if (busy) {
+          send(res, busy.status, { ok: false, ...(result as object) }, { "retry-after": String(busy.retryAfterSeconds) });
+          return;
+        }
+        const r = result as { tx?: Parameters<typeof serializeTx>[0]; txs?: Parameters<typeof serializeTx>[0][]; error?: unknown };
+        if (r.error) send(res, 400, { ok: false, error: r.error });
+        else send(res, 202, { ok: true, data: r.txs ? { txIds: r.txs.map((t) => t.txId.toHex()) } : { txId: r.tx!.txId.toHex() } });
         return;
       }
       if (req.method === "POST" && path === "/v1/compute/jobs") {

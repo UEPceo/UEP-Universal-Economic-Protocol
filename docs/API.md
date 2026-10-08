@@ -50,6 +50,7 @@ The oracle, settlement-anchor and listing changes of 0.5.3 are described in `CHA
 ## Ledger
 
 - `SubmitError` code `LEDGER_BUSY`; adapter helper `SpendSerializer` (`src/testnet/spend-serializer.ts`).
+- v0.5.3: `LedgerSubmitQueue` (`src/service/ledger-submit-queue.ts`): bounded FIFO in front of a ledger (`maxDepth` default 256, `timeoutMs` default 30 000). A full queue or a queue-wait timeout resolves with `{ error: { code: "LEDGER_BUSY", reason: "QUEUE_FULL" | "QUEUE_TIMEOUT", retryAfterSeconds } }`; `stats()`, `close()`. HTTP 1.4.0: `POST /v1/ledger/transactions` (`{ tx }` or `{ txs }`, serialized with `serializeTx`) when `ledgerQueue` is passed to `createUepHttpApi` / `listenUepHttpApi`; 202 `{ txId }` / `{ txIds }`, 400 on rejection, 503 with `Retry-After` on `LEDGER_BUSY`.
 
 # v0.5.1
 

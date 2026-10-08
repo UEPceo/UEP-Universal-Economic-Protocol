@@ -219,6 +219,6 @@ Values below 10^11 are heights and values at or above it are Unix ms (`LEGACY_MS
 
 ## 7. HTTP API versioning
 
-- `UEP_HTTP_API_VERSION = "1.3.0"`. 1.3.0 adds `GET /v1/marketplace/height` (`{ height, unit, referenceBlockTimeMs }`), the value clients sign as `x-uep-issued-at`. It also accepts the legacy Unix-ms header form.
+- `UEP_HTTP_API_VERSION = "1.4.0"`. 1.4.0 (v0.5.3) adds `POST /v1/ledger/transactions` when a `ledgerQueue` is attached (bounded FIFO submit queue; 503 with `Retry-After` and error code `LEDGER_BUSY` when the queue is full or a submission timed out in the queue) and maps `LEDGER_BUSY` on `POST /v1/spends` to 503 with `Retry-After`; existing routes are unchanged. 1.3.0 adds `GET /v1/marketplace/height` (`{ height, unit, referenceBlockTimeMs }`), the value clients sign as `x-uep-issued-at`. It also accepts the legacy Unix-ms header form.
 - Fields are only added within a major version. A removed field, or a changed meaning without a shim, is a major version.
 - Every HTTP response carries the version in the `x-uep-api` header.

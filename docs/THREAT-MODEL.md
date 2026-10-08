@@ -143,7 +143,7 @@ reproducible negative test whenever practical.
 
 ## v0.5.2 settlement / categories / oracle
 
-- Concurrent double-spend of one note: process-local re-entrancy guard (`LEDGER_BUSY`) and `SpendSerializer` for async adapters. Multi-process deployments need a transactional store (out of scope).
+- Concurrent double-spend of one note: process-local re-entrancy guard (`LEDGER_BUSY`) and `SpendSerializer` for async adapters. Load: services submit through the bounded `LedgerSubmitQueue` (FIFO, `maxDepth`, queue-wait timeout); when it is full or a submission timed out, the answer is `LEDGER_BUSY` with `retryAfterSeconds` (HTTP 503 + `Retry-After`), not an unbounded backlog. Multi-process deployments need a transactional store (out of scope).
 - Sybil reservation of listing slots: per-identity unfunded cap per listing (default 3) plus existing deposits and global caps. Sybil identities remain a residual risk without costly identity.
 - Cancel vs accept race: optimistic `order.version` / `ORDER_STATE_CONFLICT`.
 - Paymaster create/cancel drain: sponsorship captured only on settle.
