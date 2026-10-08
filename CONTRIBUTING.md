@@ -47,7 +47,7 @@ CI runs `npm run test:core` (lint, snapshot compatibility, donation-address chec
 - [`docs/MODULES.md`](./docs/MODULES.md): every module with its status (implemented (testnet), experimental (lab), planned), the version it appeared in, its test command and its documentation.
 - Each module directory has a short `README.md` (`src/core`, `src/testnet`, `src/marketplace`, `src/settlement`, `src/category`, `src/oracle`, `src/service`, `src/lab`, `src/agent`).
 - [`docs/adr/`](./docs/adr/): architecture decisions (asset model, determinism, compatibility, multi-input transactions).
-- [`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md) and [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md): what was externally assessed (up to v0.4.6) and what was only reviewed internally since then. Independent reviews of the v0.4.7 – v0.5.x changes are among the most useful contributions.
+- [`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md) and [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md): review status per version. External reviews of later versions have taken place; their reports are not yet published in this repository and will be added (with version and remediation status) as they are incorporated. The last externally reviewed threshold with a published report in this repository is v0.4.6. Independent reviews of the v0.4.7 – v0.5.x changes are among the most useful contributions.
 
 ## Project rules a change must keep
 

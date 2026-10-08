@@ -2,7 +2,7 @@
 
 ## 0.5.3 — branch `v0.5.3-fixes` (not released)
 
-Package version `0.5.3`. From 0.5.3 on, versions are numeric semver only (`MAJOR.MINOR.PATCH`, release tag `vMAJOR.MINOR.PATCH`); `npm run check:version` enforces it. Earlier entries keep their historical `-public-iot-m2m` names. Fixes and wiring on top of 0.5.2. **Not externally assessed**: the last externally assessed version with a published remediation document is v0.4.6 ([`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md)); the changes since then, with their tests and status, are listed in [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md). No native token, no common currency, no runtime dependencies; protocol fee 0.1 %, Marketplace fee 3 %; time is block height.
+Package version `0.5.3`. From 0.5.3 on, versions are numeric semver only (`MAJOR.MINOR.PATCH`, release tag `vMAJOR.MINOR.PATCH`); `npm run check:version` enforces it. Earlier entries keep their historical `-public-iot-m2m` names. Fixes and wiring on top of 0.5.2. **Review status:** External reviews of later versions have taken place; their reports are not yet published in this repository and will be added (with version and remediation status) as they are incorporated. The last externally reviewed threshold with a published report in this repository is v0.4.6. ([`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md)); the changes since then, with their tests and status, are listed in [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md). No native token, no common currency, no runtime dependencies; protocol fee 0.1 %, Marketplace fee 3 %; time is block height.
 
 ### Ledger and assets
 
@@ -60,7 +60,7 @@ Package version `0.5.3`. From 0.5.3 on, versions are numeric semver only (`MAJOR
 
 ### Documentation
 
-- `docs/SECURITY-COVERAGE.md` and this CHANGELOG reconciled (v0.4.6 is the last externally assessed threshold); new `docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`.
+- `docs/SECURITY-COVERAGE.md` and this CHANGELOG reconciled (v0.4.6 is the last externally reviewed threshold with a published report in this repository; reports of later reviews are added as they are incorporated); new `docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`.
 - New `docs/MODULES.md` and a `README.md` in each module directory; README "Modules at a glance".
 - `docs/AUDIT-FIXES.md` and `docs/SETTLEMENT-AUDIT-REPORT.md` were integration notes, not audits: moved to `docs/history/` with honest titles; the old paths are redirect stubs.
 - CONTRIBUTING (project rules, good first contributions, reviewing) and a good-first-issue template.

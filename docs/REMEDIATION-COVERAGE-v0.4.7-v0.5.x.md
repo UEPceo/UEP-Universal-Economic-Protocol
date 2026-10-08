@@ -3,8 +3,11 @@
 > **What this document is.** A self-assessment by the project: the security-relevant
 > changes made after v0.4.6, the tests that cover each one and its status. It is
 > **not** an external assessment, a certification or a remediation report matching an
-> independent review. The last externally assessed version with a published
-> remediation document is **v0.4.6** ([`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](../PUBLIC-SECURITY-REMEDIATION-v0.4.6.md)).
+> independent review. External reviews of later versions have taken place; their
+> reports are not yet published in this repository and will be added (with version
+> and remediation status) as they are incorporated. The last externally reviewed
+> threshold with a published report in this repository is **v0.4.6**
+> ([`PUBLIC-SECURITY-REMEDIATION-v0.4.6.md`](../PUBLIC-SECURITY-REMEDIATION-v0.4.6.md)).
 > Review status per version: [`SECURITY-COVERAGE.md`](./SECURITY-COVERAGE.md).
 > Nothing here means the code is ready for production use.
 
@@ -14,7 +17,7 @@ Status labels:
 - **Partial**: a mitigation exists, a documented part of the property is not met.
 - **Open / documented limit**: not addressed; the limit is written down where the feature is described.
 
-Findings from non-public reviews are summarised by property only. Details that are not public stay non-public.
+Findings from reviews whose reports are not yet published in this repository are summarised by property only; details stay unpublished until the report is incorporated.
 
 ## How to check this document
 
@@ -129,7 +132,7 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 
 ## Documented limits (not addressed)
 
-- No independent assessment of v0.4.7 – v0.5.3 has been published; the fixes above were not re-assessed by a third party.
+- External reviews of later versions have taken place; their reports are not yet published in this repository and will be added (with version and remediation status) as they are incorporated. The last externally reviewed threshold with a published report in this repository is v0.4.6.
 - ZK: development keys only (no ceremony); see the zk-spend row above.
 - Consensus and networking exist only as labs on one machine; `scripts/lab-known-issues.json` is empty on this branch, but the multi-process labs remain local experiments.
 - External review starting point: [`EXTERNAL-AUDIT-PACKAGE.md`](./EXTERNAL-AUDIT-PACKAGE.md).

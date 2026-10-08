@@ -5,9 +5,12 @@
 > Status labels follow the README legend: **Implemented (testnet)** = local,
 > single-node, in-process testnet only; **Experimental (lab)**; **Planned**; **Research**.
 > Nothing in this repository is a live network or a production system. There is no
-> native token and no common currency. The latest external assessment covers v0.4.6;
-> later changes come from internal reviews (see [`SECURITY-COVERAGE.md`](./SECURITY-COVERAGE.md)
-> and [`REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md)).
+> native token and no common currency. External reviews of later versions have taken
+> place; their reports are not yet published in this repository and will be added (with
+> version and remediation status) as they are incorporated. The last externally reviewed
+> threshold with a published report in this repository is v0.4.6 (see
+> [`SECURITY-COVERAGE.md`](./SECURITY-COVERAGE.md) and
+> [`REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md)).
 
 ## Module map
 

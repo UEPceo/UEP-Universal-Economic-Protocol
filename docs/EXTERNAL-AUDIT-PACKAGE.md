@@ -6,8 +6,10 @@
 > residuals the project accepts, and the status of earlier self-assessment and
 > research findings. It is written by the project. It is not a review result, a
 > certification or a statement that any property holds beyond what the named tests
-> show. The last version with an independent assessment and a published remediation
-> document is **v0.4.6** ([`SECURITY-COVERAGE.md`](./SECURITY-COVERAGE.md)).
+> show. External reviews of later versions have taken place; their reports are not
+> yet published in this repository and will be added (with version and remediation
+> status) as they are incorporated. The last externally reviewed threshold with a
+> published report in this repository is **v0.4.6** ([`SECURITY-COVERAGE.md`](./SECURITY-COVERAGE.md)).
 
 Contact for the review and for private reports: **uep.dev@proton.me** (or GitHub
 private vulnerability reporting, see [`SECURITY.md`](../SECURITY.md)).
@@ -205,7 +207,7 @@ should not report as new unless the stated bound does not hold.
 The self-assessment record is
 [`REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md)
 (per change: tests and status). Review status per version:
-[`SECURITY-COVERAGE.md`](./SECURITY-COVERAGE.md). Findings from non-public reports
+[`SECURITY-COVERAGE.md`](./SECURITY-COVERAGE.md). Findings from reports not yet published in this repository
 are summarised by property only.
 
 | Source | Topic (neutral) | Status on this branch |
