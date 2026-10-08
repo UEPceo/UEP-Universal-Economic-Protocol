@@ -69,6 +69,7 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 |---|---|---|
 | Single settlement executor behind Marketplace payouts; conservation check; re-entrancy refusal | `src/settlement/settlement.test.ts` | Implemented (testnet), tested |
 | Marketplace retention policy: closed orders pruned to tombstones after a height-based window, expiring reservation idempotency (`notAfterHeight`), bounded rate-limit maps, replay protection kept | `src/marketplace/retention.test.ts` | Implemented (testnet), tested |
+| HPKE (RFC 9180 base mode, X25519 / HKDF-SHA256 / ChaCha20-Poly1305, node:crypto) for end-to-end relay payload encryption; RFC 9180 A.2.1 vectors | `src/core/hpke.test.ts` | Implemented (testnet), tested |
 | Height authority: a running producer is the only one that advances height (direct calls refused, one producer per ledger, no HTTP route); operator control of the process documented as residual | `src/service/height-producer.test.ts` ("height authority") | Implemented (testnet), tested; residual documented |
 | Ledger on a worker thread (`LedgerWorkerHost`): service event loop not blocked by Poseidon / SMT work; measured in `docs/PERFORMANCE.md` | `src/service/ledger-worker-host.test.ts` | Implemented (testnet), tested; Wasm Poseidon not built (residual) |
 | Ledger O(1) txId / committed-nullifier indexes, rebuilt on restore | `src/testnet/history-index.test.ts` | Implemented (testnet), tested |
@@ -142,5 +143,5 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 - External review starting point: [`EXTERNAL-AUDIT-PACKAGE.md`](./EXTERNAL-AUDIT-PACKAGE.md).
 - Arbiters, oracle sources and the snapshot authority are configured keys: Sybil resistance, arbiter appeal and rotation, and oracle consensus are not implemented.
 - IoT telemetry is signed by the device key; physical attestation is out of scope.
-- Relay payload digests are visible to relayers (no HPKE).
+- Relay: chunk digests and sizes are visible to relayers; v0.5.3 adds end-to-end HPKE sealing of the payload (RFC 9180; client-side, recipient X25519 keys distributed out of band).
 - Height is only as trustworthy as the height source.

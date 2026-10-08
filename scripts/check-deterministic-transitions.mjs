@@ -110,6 +110,12 @@ export const ALLOWLIST = [
     reason: "Test-only node:fs read of a committed, frozen v0.5.0 asset registry manifest (src/core/fixtures); static repository data, not live data.",
   },
   {
+    file: "src/core/hpke.ts",
+    rule: "randomness",
+    match: ["import { createCipheriv, createDecipheriv, createHmac, createPrivateKey, createPublicKey, diffieHellman, randomBytes, timingSafeEqual }", "hpkeDeriveKeyPair(testOnlyEphemeralIkm ?? randomBytes(32))"],
+    reason: "HPKE sender setup draws the ephemeral X25519 key (RFC 9180 SetupBaseS); called by the relay sender's client tooling, never by a transition.",
+  },
+  {
     file: "src/core/ed25519.ts",
     rule: "randomness",
     match: ['import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync,', 'generateKeyPairSync("ed25519")'],

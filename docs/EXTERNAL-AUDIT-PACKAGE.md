@@ -171,7 +171,7 @@ should not report as new unless the stated bound does not hold.
 - Arbiter liveness is assumed; the maximum freeze (`MAX_FREEZE_HEIGHTS`, 14 days at
   5 s) guarantees a refund or timeout path afterwards.
 - Category commitments stay SHA-256 (HTLC compatibility, no circuit consumer).
-- Relay payload digests are visible to relayers (no HPKE).
+- Relay: chunk digests and sizes are visible to relayers; since v0.5.3 the payload can be sealed end to end with HPKE (RFC 9180, `src/core/hpke.ts`); sealing is client-side and recipient X25519 keys are distributed out of band.
 
 **Ledger, compatibility and identity**
 

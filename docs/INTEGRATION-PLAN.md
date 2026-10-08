@@ -142,7 +142,7 @@ TypeScript 5.7 / 7.0 dev dependency that the repository does not use.
 | Paymaster drain | The sponsorship is a hold captured only on a settled payout and released on cancel / expiry / refund (already the case); a create/cancel loop test is added. |
 | Relay all-or-nothing | `custodyBps` (default 2 000): once the provider publishes the committed key, 20 % of the price is the custody tranche and is paid unless fraud is proven; disputes and timeouts apply `releaseBps` to the 80 % delivery tranche only. |
 | IoT synthetic telemetry | Deferred to the Evidence system (multi-attester sets). No hardware attestation is simulated. |
-| HPKE for relay payloads | Deferred (later phase); payload digests remain visible to relayers. |
+| HPKE for relay payloads | v0.5.3: RFC 9180 base mode (X25519 / HKDF-SHA256 / ChaCha20-Poly1305, node:crypto) in `src/core/hpke.ts` with the RFC test vectors; relay payloads sealed end to end (`sealRelayPayload`). Chunk digests and sizes remain visible to relayers. |
 
 ## 6. Tests
 

@@ -151,4 +151,4 @@ reproducible negative test whenever practical.
 - Paymaster create/cancel drain: sponsorship captured only on settle.
 - Relay custody without delivery: 20 % custody / 80 % delivery split after key publication.
 - Oracle misuse on the spend path: architectural boundary (no imports from core/testnet; oracle holds no balances). Stale / replay / paused sources fail closed.
-- Deferred: IoT hardware attestation (Evidence phase); HPKE for relay payloads.
+- Deferred: IoT hardware attestation (Evidence phase). Relay payloads: v0.5.3 adds end-to-end HPKE sealing (RFC 9180) to the recipient's X25519 key, so the published fair-exchange key only reveals ciphertext; chunk digests, sizes and timing stay visible to relayers, sealing is client-side, and recipient keys are distributed out of band.

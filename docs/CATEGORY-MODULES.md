@@ -50,8 +50,16 @@ prototype and never moves testnet ledger value.
   heights (~7 days); v0.5.3 only makes the freeze cost something on timeout.
 - **IoT attestation**: device readings are signed by the device key only; there is no
   hardware attestation (TPM / secure element) and no remote-attestation chain.
-- **Encryption**: relay uses ChaCha20 under an HKDF key with a published key after
-  payment; there is no HPKE / recipient-key encryption, so the content is readable by
-  anyone who sees the published key.
+- **Encryption**: relay wraps chunks with ChaCha20 under an HKDF key that is published
+  after payment (the fair-exchange key; fraud proofs need it public). v0.5.3: the sender
+  seals the payload end to end to the recipient's X25519 key with HPKE (RFC 9180 base
+  mode, DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305;
+  `sealRelayPayload()` / `openRelayPayload()` in `src/core/hpke.ts`, RFC 9180 test
+  vectors in `src/core/hpke.test.ts`), so the published key reveals only HPKE
+  ciphertext. Chunks are sealed in order with index and count in the AAD; the info binds
+  network and recipient id. Limits: sealing is client-side (the relay module cannot
+  check that a blob is sealed), fraud proofs cover the committed sealed blob (not the
+  inner plaintext), and recipient X25519 keys are distributed out of band (not yet
+  bound to the Marketplace identity). Sizes and chunk counts stay visible.
 - Capabilities are in-process objects (not a security boundary between processes).
 - The drip budget is an administrator-signed allowance on `DISTRIBUTABLE_PROFIT`.

@@ -195,5 +195,5 @@ Subsidy claims bound to the settlement index written by swap / relay; at most 50
 - **What remains for alignment with the core:** see [`LABS.md`](./LABS.md) point 7.
 
 ## 17. Planned / research
-- **Planned:** IoT multi-attester evidence; HPKE for relay payloads; arbiter appeal / stake; circuit-friendly account ids (see [`ROADMAP.md`](../ROADMAP.md)).
+- **Planned:** IoT multi-attester evidence; binding relay recipient X25519 keys to Marketplace identities (HPKE sealing itself is in v0.5.3); arbiter appeal / stake; circuit-friendly account ids (see [`ROADMAP.md`](../ROADMAP.md)).
 - **Research:** multi-node public network, delay-tolerant and interplanetary settlement. Nothing operational.
