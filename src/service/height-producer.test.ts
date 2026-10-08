@@ -219,10 +219,12 @@ describe("height producer", () => {
     assert.equal(producer.tick(), 0);
     assert.equal(producer.running, false);
     assert.deepEqual(events.filter((e) => e.kind === "stopped").length, 1);
-    // rebind() moves it to the restored ledger, anchored now.
+    // rebind() moves it to the restored ledger, anchored now. v0.5.3: one producer per ledger: the
+    // second one holds the height authority until it stops (HEIGHT_AUTHORITY_TAKEN before that).
     producer.rebind(restored);
-    assert.equal(producer.tick(), 0);
     mono += B;
+    assert.throws(() => producer.tick(), /HEIGHT_AUTHORITY_TAKEN/);
+    after.stop();
     assert.equal(producer.tick(), 1);
     assert.equal(restored.height, 12);
   });
@@ -325,5 +327,52 @@ describe("height producer", () => {
     assert.throws(() => new DigitalServicesMarketplace(), /HEIGHT_SOURCE_REQUIRED/);
     assert.throws(() => new DigitalServicesMarketplace({ height: () => 0, testOnlyLocalHeight: true }), /CLOCK_CONFIG_CONFLICT/);
     assert.equal(new DigitalServicesMarketplace({ testOnlyLocalHeight: true }).clock(), 0);
+  });
+});
+
+describe("height authority (v0.5.3)", () => {
+  it("a running producer holds the height authority: direct advances are refused, a second producer cannot start, stop() releases it", () => {
+    const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, faucetSigningKey: null });
+    let mono = 0;
+    const producer = new HeightProducer({ ledger, testOnlyClock: () => mono, log: () => {} }).start();
+    try {
+      assert.equal(producer.holdsHeightAuthority, true);
+      assert.throws(() => ledger.advanceHeight(12), /HEIGHT_AUTHORITY_REQUIRED/);
+      assert.throws(() => new HeightProducer({ ledger, testOnlyClock: () => mono, log: () => {} }).start(), /HEIGHT_AUTHORITY_TAKEN/);
+      // Calling tick() in a loop does not accelerate: real time bounds the height.
+      for (let i = 0; i < 1_000; i++) producer.tick();
+      assert.equal(ledger.height, 0);
+      mono += 3 * B;
+      for (let i = 0; i < 1_000; i++) producer.tick();
+      assert.equal(ledger.height, 3);
+    } finally {
+      producer.stop();
+    }
+    assert.equal(producer.holdsHeightAuthority, false);
+    assert.equal(ledger.advanceHeight(1), 4, "without a running producer the earlier behaviour applies");
+    // A non-exclusive producer leaves the ledger open (explicit opt-out, e.g. simulations).
+    const loose = new HeightProducer({ ledger, testOnlyClock: () => mono, log: () => {}, exclusive: false }).start();
+    assert.equal(ledger.advanceHeight(1), 5);
+    loose.stop();
+  });
+
+  it("ProducedHeight has the same authority; no HTTP route advances height", async () => {
+    const chain = new ProducedHeight();
+    let mono = 0;
+    const m = new DigitalServicesMarketplace({ height: heightOf(chain) });
+    const api = new UepServiceApi({ storageProviders: new Map([["memory", new MemoryStorageProvider()]]), marketplace: m });
+    const producer = new HeightProducer({ ledger: chain, testOnlyClock: () => mono, log: () => {} });
+    const { server, port } = await listenUepHttpApi({ api, heightProducer: producer });
+    try {
+      assert.throws(() => chain.advanceHeight(1), /HEIGHT_AUTHORITY_REQUIRED/);
+      for (const [method, path] of [["POST", "/v1/marketplace/height"], ["PUT", "/v1/marketplace/height"], ["POST", "/v1/height"], ["POST", "/v1/ledger/height"]] as const) {
+        const r = await fetch(`http://127.0.0.1:${port}${path}`, { method, body: JSON.stringify({ blocks: 12 }) });
+        assert.ok(r.status >= 400, `${method} ${path} -> ${r.status}`);
+      }
+      assert.equal(chain.height, 0);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+    assert.equal(chain.advanceHeight(1), 1, "released when the server (and its producer) stopped");
   });
 });

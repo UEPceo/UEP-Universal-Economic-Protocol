@@ -69,6 +69,7 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 |---|---|---|
 | Single settlement executor behind Marketplace payouts; conservation check; re-entrancy refusal | `src/settlement/settlement.test.ts` | Implemented (testnet), tested |
 | Marketplace retention policy: closed orders pruned to tombstones after a height-based window, expiring reservation idempotency (`notAfterHeight`), bounded rate-limit maps, replay protection kept | `src/marketplace/retention.test.ts` | Implemented (testnet), tested |
+| Height authority: a running producer is the only one that advances height (direct calls refused, one producer per ledger, no HTTP route); operator control of the process documented as residual | `src/service/height-producer.test.ts` ("height authority") | Implemented (testnet), tested; residual documented |
 | Ledger on a worker thread (`LedgerWorkerHost`): service event loop not blocked by Poseidon / SMT work; measured in `docs/PERFORMANCE.md` | `src/service/ledger-worker-host.test.ts` | Implemented (testnet), tested; Wasm Poseidon not built (residual) |
 | Ledger O(1) txId / committed-nullifier indexes, rebuilt on restore | `src/testnet/history-index.test.ts` | Implemented (testnet), tested |
 | Concurrent double-spend guard (`LEDGER_BUSY`, `SpendSerializer`); v0.5.3: bounded FIFO `LedgerSubmitQueue` with queue-wait timeout and backpressure (HTTP 503 + `Retry-After`) | `src/testnet/concurrent-spend.test.ts`, `src/service/ledger-submit-queue.test.ts` | Implemented (testnet), tested |

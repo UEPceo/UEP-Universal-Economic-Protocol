@@ -43,18 +43,30 @@
  *    (`UepLedger.restore(..., { replaces })`) stops at its next tick.
  *
  * Trust: the single-node operator is the time authority. The producer
- * makes the honest path safe; it cannot stop the operator from calling
- * `advanceHeight()` on the ledger object (bounded to 12 blocks per call
- * outside test mode). See docs/THREAT-MODEL.md.
+ * makes the honest path safe. v0.5.3: while it runs it holds the target's
+ * height authority (`exclusive`, default true), so direct
+ * `advanceHeight()` calls on the ledger are refused
+ * (HEIGHT_AUTHORITY_REQUIRED) and a second producer cannot start
+ * (HEIGHT_AUTHORITY_TAKEN); no HTTP route advances height. An operator who
+ * controls the process can still build a ledger without a producer and
+ * advance it (bounded to 12 blocks per call outside test mode): a
+ * documented residual until heights come from distributed consensus. See
+ * docs/THREAT-MODEL.md.
  */
-import { MAX_BLOCKS_PER_TICK, REFERENCE_BLOCK_TIME_MS, assertHeight } from "../core/height.ts";
+import { HeightAuthorityGuard, MAX_BLOCKS_PER_TICK, REFERENCE_BLOCK_TIME_MS, assertHeight, type HeightAuthority } from "../core/height.ts";
 import { isProductionEnvironment, testOnlyOption } from "../core/test-only.ts";
 
 /** Shortest block time the producer accepts (the reference block time). */
 export const MIN_BLOCK_SPACING_MS = REFERENCE_BLOCK_TIME_MS;
 export { MAX_BLOCKS_PER_TICK };
 
-export type HeightProducerTarget = { readonly height: number; advanceHeight(blocks?: number): number };
+export type HeightProducerTarget = {
+  readonly height: number;
+  advanceHeight(blocks?: number, authority?: HeightAuthority): number;
+  /** v0.5.3 (optional): exclusive height authority (UepLedger, ProducedHeight). */
+  claimHeightAuthority?(holder?: string): HeightAuthority;
+  releaseHeightAuthority?(authority: HeightAuthority): void;
+};
 
 export type HeightProducerEvent =
   | { kind: "catch-up-capped"; due: number; sealed: number; dropped: number; height: number }
@@ -85,6 +97,12 @@ export type HeightProducerConfig = {
   onBlocks?: (event: { height: number; sealed: number }) => void;
   /** Log sink for capped catch-ups, wall-clock jumps and stops (default console.warn). */
   log?: (event: HeightProducerEvent) => void;
+  /**
+   * v0.5.3: claim the target's height authority at the first tick / start()
+   * and keep it until stop(), so nobody else can advance the height while the
+   * producer runs (default true; targets without the capability are driven as before).
+   */
+  exclusive?: boolean;
 };
 
 export type HeightProducerStatus = {
@@ -125,6 +143,8 @@ export class HeightProducer {
   private dropped = 0;
   private jumps = 0;
   private timer?: ReturnType<typeof setInterval>;
+  private readonly exclusive: boolean;
+  private authority: HeightAuthority | undefined;
 
   constructor(config: HeightProducerConfig) {
     if (!config || !config.ledger || typeof config.ledger.advanceHeight !== "function") throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: a ledger with advanceHeight() is required");
@@ -137,6 +157,7 @@ export class HeightProducer {
     if (!Number.isFinite(tolerance) || tolerance <= 0) throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: wallClockJumpToleranceMs is positive");
     this.blockTimeMs = blockTimeMs;
     this.maxBlocksPerTick = cap;
+    this.exclusive = config.exclusive ?? true;
     this.jumpToleranceMs = tolerance;
     this.ledger = config.ledger;
     if (config.clock !== undefined && config.testOnlyClock !== undefined) throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: pass clock or testOnlyClock, not both");
@@ -202,7 +223,8 @@ export class HeightProducer {
     const sealed = Math.min(due, this.maxBlocksPerTick);
     let height: number;
     try {
-      height = this.ledger.advanceHeight(sealed);
+      this.claimAuthority();
+      height = this.ledger.advanceHeight(sealed, this.authority);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (message.startsWith("LEDGER_RETIRED")) {
@@ -230,17 +252,40 @@ export class HeightProducer {
    */
   rebind(target: HeightProducerTarget): this {
     if (!target || typeof target.advanceHeight !== "function") throw new Error("HEIGHT_PRODUCER_CONFIG_INVALID: a ledger with advanceHeight() is required");
+    this.releaseAuthority();
     this.ledger = target;
     this.anchorMs = this.readClock();
     this.anchorHeight = assertHeight(target.height);
     this.lastMono = this.anchorMs;
     this.lastWall = this.readWall();
+    if (this.timer) this.claimAuthority();
     return this;
+  }
+
+  /** v0.5.3: take the target's height authority (exclusive mode, target with the capability). */
+  private claimAuthority(): void {
+    if (!this.exclusive || this.authority || typeof this.ledger.claimHeightAuthority !== "function") return;
+    this.authority = this.ledger.claimHeightAuthority("height-producer");
+  }
+
+  private releaseAuthority(): void {
+    const a = this.authority;
+    this.authority = undefined;
+    if (a && typeof this.ledger.releaseHeightAuthority === "function") {
+      try { this.ledger.releaseHeightAuthority(a); } catch { /* already released or retired */ }
+    }
+  }
+
+  /** v0.5.3: true while this producer holds the target's height authority. */
+  get holdsHeightAuthority(): boolean {
+    return this.authority !== undefined;
   }
 
   /** Start sealing on a timer (unref'ed, so it never keeps the process alive). */
   start(): this {
     if (this.timer) return this;
+    // v0.5.3: refuse to start while someone else holds the height authority (HEIGHT_AUTHORITY_TAKEN).
+    this.claimAuthority();
     this.lastErrorMessage = undefined;
     this.timer = setInterval(() => {
       try { this.tick(); } catch (e) { this.lastErrorMessage = e instanceof Error ? e.message : String(e); this.log({ kind: "stopped", reason: this.lastErrorMessage }); this.stop(); }
@@ -252,6 +297,7 @@ export class HeightProducer {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.releaseAuthority();
   }
 
   get running(): boolean {
@@ -279,13 +325,21 @@ export class HeightProducer {
 export class ProducedHeight implements HeightProducerTarget {
   private value = 0;
   private readonly unbounded: boolean;
+  private readonly authorityGuard = new HeightAuthorityGuard();
   constructor(opts: { testOnlyUnboundedHeightAdvance?: boolean } = {}) {
     this.unbounded = testOnlyOption("testOnlyUnboundedHeightAdvance", opts.testOnlyUnboundedHeightAdvance);
   }
   get height(): number {
     return this.value;
   }
-  advanceHeight(blocks = 1): number {
+  claimHeightAuthority(holder = "height-producer"): HeightAuthority {
+    return this.authorityGuard.claim(holder);
+  }
+  releaseHeightAuthority(authority: HeightAuthority): void {
+    this.authorityGuard.release(authority);
+  }
+  advanceHeight(blocks = 1, authority?: HeightAuthority): number {
+    this.authorityGuard.check(authority);
     if (!Number.isSafeInteger(blocks) || blocks < 0 || !Number.isSafeInteger(this.value + blocks)) throw new Error("HEIGHT_ADVANCE_INVALID");
     if (blocks > MAX_BLOCKS_PER_TICK && !this.unbounded) throw new Error(`HEIGHT_ADVANCE_CAP: at most ${MAX_BLOCKS_PER_TICK} blocks per call`);
     this.value += blocks;

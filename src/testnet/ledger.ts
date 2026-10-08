@@ -29,7 +29,7 @@ import type { KeyObject } from "node:crypto";
 import { generateEd25519KeyPair, publicKeyHexOf, sha256Hex, signEd25519, stableStringify, toPrivateKey, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
 import { NoteCommitmentTree } from "../core/note-tree.ts";
 import { testOnlyOption } from "../core/test-only.ts";
-import { MAX_BLOCKS_PER_TICK } from "../core/height.ts";
+import { HeightAuthorityGuard, MAX_BLOCKS_PER_TICK, type HeightAuthority } from "../core/height.ts";
 import { isKeyDerivedAccountId, isV2AccountIdForm, senderAuthFailure, signSenderAuth, spendKeyMatchesAccount } from "../core/spend-key.ts";
 import { encodeAccountAddress, parseAccountAddress } from "../core/address.ts";
 
@@ -470,6 +470,8 @@ export class UepLedger {
    * replaced (restore assigns a new array), so the replay check in submit()
    * and reconcilePending() no longer scan the whole history.
    */
+  /** v0.5.3: height authority (process-local; not snapshot state). */
+  private readonly heightAuthority = new HeightAuthorityGuard();
   private txIndexOf: UepTransaction[] | undefined;
   private txIndexCount = 0;
   private readonly txIdIndex = new Set<string>();
@@ -712,8 +714,22 @@ export class UepLedger {
    * example once per 5 s target block time. Transitions committed between two
    * calls belong to the same height. It never reads a clock itself.
    */
-  advanceHeight(blocks = 1): number {
+  /** v0.5.3: claim the height authority (HeightProducer.start() does); advanceHeight() then needs it. */
+  claimHeightAuthority(holder = "height-producer"): HeightAuthority {
+    return this.heightAuthority.claim(holder);
+  }
+
+  releaseHeightAuthority(authority: HeightAuthority): void {
+    this.heightAuthority.release(authority);
+  }
+
+  get heightAuthorityClaimed(): boolean {
+    return this.heightAuthority.claimed;
+  }
+
+  advanceHeight(blocks = 1, authority?: HeightAuthority): number {
     if (this.retired) throw new Error("LEDGER_RETIRED: this ledger was replaced by a restore; bind the producer to the restored ledger");
+    this.heightAuthority.check(authority);
     if (!Number.isSafeInteger(blocks) || blocks < 0 || !Number.isSafeInteger(this.blockHeight + blocks)) throw new Error("HEIGHT_ADVANCE_INVALID");
     // v0.5.1: at most MAX_BLOCKS_PER_TICK per call outside test mode (an operator fast-forward
     // moves every window at once; it is bounded per call and the producer then waits for real time).

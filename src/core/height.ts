@@ -33,6 +33,43 @@ export const HEIGHTS_PER_DAY = (24 * 60 * 60 * 1000) / REFERENCE_BLOCK_TIME_MS;
  */
 export const MAX_BLOCKS_PER_TICK = 12;
 
+/**
+ * v0.5.3 (external review 2026-10-08): height authority. A height target
+ * (UepLedger, ProducedHeight) hands out at most one authority object; while
+ * it is claimed, advanceHeight() works only with it (HEIGHT_AUTHORITY_REQUIRED
+ * otherwise). The HeightProducer claims it when it starts, so a running node
+ * advances height only at real-time pace (minimum block spacing 5 s, at most
+ * 12 blocks per tick). Without a claim the earlier behaviour applies (tests,
+ * scripts). This is a process-local guard: an operator who controls the
+ * process can still build a ledger without a producer; that residual remains
+ * until heights come from distributed consensus (docs/THREAT-MODEL.md).
+ */
+export type HeightAuthority = Readonly<{ kind: "uep-height-authority"; holder: string }>;
+
+export class HeightAuthorityGuard {
+  #current: HeightAuthority | undefined;
+
+  claim(holder: string): HeightAuthority {
+    if (this.#current) throw new Error(`HEIGHT_AUTHORITY_TAKEN: the height authority is held by ${this.#current.holder}`);
+    const a: HeightAuthority = Object.freeze({ kind: "uep-height-authority", holder: String(holder) });
+    this.#current = a;
+    return a;
+  }
+
+  release(a: HeightAuthority): void {
+    if (!this.#current || a !== this.#current) throw new Error("HEIGHT_AUTHORITY_INVALID");
+    this.#current = undefined;
+  }
+
+  check(a: HeightAuthority | undefined): void {
+    if (this.#current && a !== this.#current) throw new Error(`HEIGHT_AUTHORITY_REQUIRED: height is advanced by ${this.#current.holder}; direct advanceHeight() calls are refused while it runs`);
+  }
+
+  get claimed(): boolean {
+    return this.#current !== undefined;
+  }
+}
+
 /** Returns the current block height (a non-negative safe integer). */
 export type HeightSource = () => number;
 
