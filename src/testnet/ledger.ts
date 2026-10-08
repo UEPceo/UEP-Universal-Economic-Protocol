@@ -463,6 +463,17 @@ export class UepLedger {
   /** v0.5.1: v2 ids proven by a committed public-key spend (derived from txs; see acceptsRecipient). */
   private readonly provenV2 = new Set<string>();
   private provenV2Scanned = 0;
+  /**
+   * v0.5.3 (external review 2026-10-08): O(1) indexes over the committed
+   * history: txIds and nullifiers of `txs`. Derived data (not in the
+   * snapshot): built incrementally from `txs` and rebuilt when the array is
+   * replaced (restore assigns a new array), so the replay check in submit()
+   * and reconcilePending() no longer scan the whole history.
+   */
+  private txIndexOf: UepTransaction[] | undefined;
+  private txIndexCount = 0;
+  private readonly txIdIndex = new Set<string>();
+  private readonly committedNullifierIndex = new Set<string>();
   pending: UepTransaction[] = [];
   noteCounter = 0n;
   /** Height of the last reconcilePending() (v0.5.1; a wall-clock ms value before format 7, reset to 0 by the 6 -> 7 migration). */
@@ -791,6 +802,33 @@ export class UepLedger {
    * legacy H(secret, salt) id with the v2 byte can never get that proof.
    * Derived from committed transactions only, so every replica agrees.
    */
+  /** Bring the txId / nullifier indexes up to date with `txs` (amortized O(1) per committed transaction). */
+  private syncTxIndex(): void {
+    if (this.txIndexOf !== this.txs || this.txIndexCount > this.txs.length) {
+      this.txIndexOf = this.txs;
+      this.txIndexCount = 0;
+      this.txIdIndex.clear();
+      this.committedNullifierIndex.clear();
+    }
+    for (; this.txIndexCount < this.txs.length; this.txIndexCount++) {
+      const t = this.txs[this.txIndexCount]!;
+      this.txIdIndex.add(t.txId.toHex());
+      for (const nf of txNullifiers(t)) this.committedNullifierIndex.add(nf.toHex());
+    }
+  }
+
+  /** v0.5.3: true when a committed transaction has this id (indexed). */
+  hasCommittedTx(txId: Fr): boolean {
+    this.syncTxIndex();
+    return this.txIdIndex.has(txId.toHex());
+  }
+
+  /** v0.5.3: true when a committed transaction consumed this nullifier (indexed). */
+  hasCommittedNullifier(nf: Fr): boolean {
+    this.syncTxIndex();
+    return this.committedNullifierIndex.has(nf.toHex());
+  }
+
   acceptsRecipient(id: Fr): boolean {
     if (isKeyDerivedAccountId(id)) return true;
     if (!isV2AccountIdForm(id)) return false;
@@ -1576,7 +1614,7 @@ export class UepLedger {
       return { error: { code: "POLICY", message: `${policyVerdict.code}: ${policyVerdict.message}` } };
     }
     }
-    if (this.txs.some((t) => t.txId.eq(tx.txId))) {
+    if (this.hasCommittedTx(tx.txId)) {
       return { error: { code: "REPLAY", message: "Transaction already present (idempotent reject)." } };
     }
     const shape = multiInputShapeError(tx);
@@ -1772,7 +1810,7 @@ export class UepLedger {
     if (multiInputShapeError(tx)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending multi-input transaction malformed." } };
     const recomputed = txCommitmentOf(tx);
     if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) return { error: { code: "AMOUNT_MISMATCH", message: "Pending transaction commitment invalid." } };
-    if (txNullifiers(tx).some((nf) => this.nullifiers.contains(nf)) || this.txs.some((x) => x.txId.eq(tx.txId))) return { error: { code: "REPLAY", message: "Pending transaction already committed." } };
+    if (txNullifiers(tx).some((nf) => this.nullifiers.contains(nf)) || this.hasCommittedTx(tx.txId)) return { error: { code: "REPLAY", message: "Pending transaction already committed." } };
     const ins = tx.inputNotes?.map(deserializeNote) ?? [];
     const outs = tx.outputNotes?.map(deserializeNote) ?? [];
     if (ins.length !== tx.inputCommitments.length || outs.length !== tx.outputCommitments.length) return { error: { code: "NOTE_OPENING", message: "Pending transaction notes are missing." } };
@@ -1818,11 +1856,10 @@ export class UepLedger {
     //   - structurally valid ones STAY queued in phase LOCAL_VALID (never SETTLED
     //     without a state transition), flagged `inConflict` when several queued
     //     spends share a nullifier. They must be applied through submit().
-    const committedNullifiers = new Set(this.txs.flatMap((t) => txNullifiers(t).map((nf) => nf.toHex())));
     const rejected: Array<{ txId: string; code: SubmitError["code"]; message: string }> = [];
     const validCandidates: UepTransaction[] = [];
     for (const candidate of this.pending) {
-      if (txNullifiers(candidate).some((nf) => committedNullifiers.has(nf.toHex()))) {
+      if (txNullifiers(candidate).some((nf) => this.hasCommittedNullifier(nf))) {
         rejected.push({ txId: candidate.txId.toHex(), code: "REPLAY", message: "Nullifier already committed locally." });
         continue;
       }
@@ -2230,8 +2267,10 @@ export class UepLedger {
     // 4. Nullifier tree and seen set equal exactly the committed nullifiers.
     if (!rebuiltNullifiers.root().eq(new NullifierSet(SparseMerkleTree.fromJSON(data.nullifiers.tree)).root())) fail("NULLIFIER_ROOT");
     const seen = new Set(data.nullifiers.seen);
-    const committedNfs = l.txs.flatMap((t) => txNullifiers(t).map((nf) => nf.toHex()));
-    if (seen.size !== data.nullifiers.seen.length || seen.size !== committedNfs.length || committedNfs.some((nf) => !seen.has(nf))) fail("NULLIFIER_SEEN");
+    // v0.5.3: the txId / nullifier indexes are rebuilt from the restored history here (one pass).
+    l.syncTxIndex();
+    const committedCount = l.txs.reduce((n, t) => n + txNullifiers(t).length, 0);
+    if (seen.size !== data.nullifiers.seen.length || seen.size !== committedCount || l.committedNullifierIndex.size !== committedCount || [...l.committedNullifierIndex].some((nf) => !seen.has(nf))) fail("NULLIFIER_SEEN");
     l.nullifiers = rebuiltNullifiers;
 
     // 5. A note is spent iff it was consumed by a committed transaction.
