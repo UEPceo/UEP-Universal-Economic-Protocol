@@ -71,7 +71,7 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); ledger snapshot format 9 (formats 6–8 migrated), Marketplace snapshot format 4 (formats 1–3 migrated) ([compatibility policy](docs/COMPATIBILITY.md)) |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
-| CI | Blocking: `npm run test:core` on Node.js 22.x and 24.x, and `npm run test:lab` (labs not listed in `scripts/lab-known-issues.json`). Non-blocking: the lab files with known issues |
+| CI | Blocking: `npm run test:core` on Node.js 22.x and 24.x, `npm run test:lab` (labs not listed in `scripts/lab-known-issues.json`) and the TypeScript type check (`tsc --noEmit`, TypeScript 5.9.3, installed in CI only). Non-blocking: the lab files with known issues |
 | Network | Local, single-node, in-process **testnet only** |
 | External review | External reviews of later versions have taken place; their reports are not yet published in this repository and will be added (with version and remediation status) as they are incorporated. The last externally reviewed threshold with a published report in this repository is **v0.4.6**: [`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md), [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md); starting point for an independent review of v0.5.3: [`docs/EXTERNAL-AUDIT-PACKAGE.md`](./docs/EXTERNAL-AUDIT-PACKAGE.md) |
 
@@ -375,7 +375,7 @@ npm run test:all
 
 Per-suite counts for this version: [CHANGELOG 0.5.3](./CHANGELOG.md).
 
-Steps 1–5 need no network access and take a few minutes, depending on the machine (the protocol suite alone takes about a minute, because Poseidon runs in TypeScript). Steps 6–8 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs steps 1–6 (`npm run test:core`) on Node.js 22.x and 24.x and steps 7–8 in a separate `labs` job; both are blocking. The lab files with known issues (`scripts/lab-known-issues.json`) run in a separate non-blocking job and do not change the badge. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
+Steps 1–5 need no network access and take a few minutes, depending on the machine (the protocol suite alone takes about a minute, because Poseidon runs in TypeScript). Steps 6–8 download Rust crates on the first build and take longer. No private keys are needed: the lab clusters generate throwaway keys for each run. CI runs steps 1–6 (`npm run test:core`) on Node.js 22.x and 24.x and steps 7–8 in a separate `labs` job, plus a TypeScript type check (`tsc --noEmit`); all three are blocking. The lab files with known issues (`scripts/lab-known-issues.json`) run in a separate non-blocking job and do not change the badge. Expected results: [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md).
 
 ### Minimal reproducible verification
 

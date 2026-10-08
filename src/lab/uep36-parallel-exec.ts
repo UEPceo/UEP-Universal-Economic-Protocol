@@ -19,6 +19,10 @@ import type { SmtEconomicState } from "./uep37-smt-economic-state.ts";
 /** Any state with sequential/scheduled apply semantics (local SHA or SMT). */
 export type SchedulableState = LocalEconomicState | SmtEconomicState;
 
+/** Observable equality through LocalEconomicState.observableEquals (the method the lab has always called). */
+const observableEqual = (a: SchedulableState, b: SchedulableState): boolean =>
+  (a as LocalEconomicState).observableEquals(b as LocalEconomicState);
+
 export type BatchBody = {
   batchId: string;
   txs: BatchTx[];
@@ -81,7 +85,7 @@ export function parallelSafeScheduleApply(
     sequentialHeight,
     scheduledHeight,
     rootsMatch: sequentialRoot === scheduledRoot,
-    fullStateEqual: seq.observableEquals(scheduled),
+    fullStateEqual: observableEqual(seq, scheduled),
     waveCount: waves.length,
     txCount: txs.length,
   };
@@ -91,7 +95,7 @@ export function fullStateRootsEqual(
   a: SchedulableState,
   b: SchedulableState,
 ): boolean {
-  return a.observableEquals(b);
+  return observableEqual(a, b);
 }
 
 export function executeOrderedBatches(
@@ -141,6 +145,6 @@ export function sameTxsDifferentValidSchedules(
     rootB,
     heightA: a.sequence,
     heightB: b.sequence,
-    equal: a.observableEquals(b),
+    equal: observableEqual(a, b),
   };
 }

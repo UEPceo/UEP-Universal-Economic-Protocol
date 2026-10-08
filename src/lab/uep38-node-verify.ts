@@ -10,6 +10,8 @@ import {
   type SpendProofArtifact,
 } from "./uep38-zk-state-transition.ts";
 
+export type { SpendProofArtifact };
+
 export type NodeVerifyResult =
   | { ok: true; newRoot: string }
   | { ok: false; reason: string };

@@ -197,3 +197,15 @@ Individual lab tests that are still skipped, each with a note in the test:
 
 - two tests that pin the SHA-256 of a prebuilt `uep-zk` binary; the binary is
   built from source and its hash depends on the toolchain and platform.
+
+## Rust dependency advisories
+
+The lab crates in `uep-core/` lock `tracing-subscriber` 0.2.25, pulled in only by
+`ark-relations` 0.3.0 (the pinned arkworks 0.3 API) through its `std` feature.
+GitHub reports advisory GHSA-xwfj-jgwm-7wp5 (ANSI escape sequences in logged user
+input, low severity; fixed in 0.3.20). The fix exists only in the 0.3 line, which
+`ark-relations` 0.3 does not accept, so the lock files cannot move to it without
+migrating the circuits to a newer arkworks API. The crate is compiled with no
+features (`cargo tree -e features` shows `tracing-subscriber v0.2.25 []`), so the
+formatting layer that the advisory concerns is not built. The lab crates are not
+part of the testnet and are not used to accept value.

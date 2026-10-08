@@ -38,7 +38,7 @@ function busyMarket() {
   const height = { h: 100 };
   const m = setup(height);
   enrollIdentity(m, "prov", { asset: EUR, amount: 100_000n });
-  const listing = publishAs(m, { providerId: "prov", title: "svc", description: "d", category: "compute", asset: EUR, unitPrice: 100n, capacity: 100n });
+  const listing = publishAs(m, { providerId: "prov", title: "svc", description: "d", category: "COMPUTE", asset: EUR, unitPrice: 100n, capacity: 100n });
   const settled = reserveAs(m, { listingId: listing.listingId, buyerId: "b1", quantity: 2n });
   fund(m, settled.orderId, settled.fundingDue);
   deliver(m, settled.orderId, "prov", Buffer.from("done"));

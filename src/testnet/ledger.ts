@@ -1962,7 +1962,7 @@ export class UepLedger {
    * A restored ledger can only sign snapshots or mint if `keys` are passed.
    */
   static restore(data: UepLedgerSnapshot, trust: SnapshotTrust, keys: LedgerSigningKeys = {}, opts: RestoreOptions = {}): UepLedger {
-    const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
+    const fail: (code: string, detail?: string) => never = (code, detail) => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
     if (!data || typeof data !== "object") fail("SHAPE");
     // v0.5.1 (docs/COMPATIBILITY.md): older formats are migrated step by step
     // (snapshot-migrations.ts) after their signatures and chain links are

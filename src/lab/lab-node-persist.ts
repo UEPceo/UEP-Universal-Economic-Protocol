@@ -44,7 +44,8 @@ export function loadLabNodeState(dir: string): LabNodeDiskState | null {
   const file = path.join(dir, "lab-node-state.json");
   if (!fs.existsSync(file)) return null;
   const st = JSON.parse(fs.readFileSync(file, "utf8")) as LabNodeDiskState;
-  if (st.version !== 1 && st.version !== 2) {
+  const version: number = st.version; // files on disk may carry version 1
+  if (version !== 1 && version !== 2) {
     throw new Error("SNAPSHOT_VERSION_UNSUPPORTED");
   }
   return st;

@@ -76,7 +76,7 @@ describe("dispute liveness", () => {
         holdId: holdTx.holdId!,
         obligationId,
         outcome: "CLIENT_WINS",
-      }),
+      } as unknown as Parameters<typeof buildHoldResolveTx>[0]),
     ]);
     assert.equal(r.ok, false);
   });
@@ -93,7 +93,7 @@ describe("dispute liveness", () => {
         holdId: holdTx.holdId!,
         obligationId,
         outcome: "CLIENT_WINS",
-      }),
+      } as unknown as Parameters<typeof buildHoldResolveTx>[0]),
     ]);
     assert.equal(r.ok, false);
     assert.equal(st.obligations.get(obligationId)?.status, "CLIENT_WINS");

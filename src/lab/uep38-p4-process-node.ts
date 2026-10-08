@@ -47,7 +47,7 @@ import {
 
 /** v0.5.3: `view` is the view the leader proposes in (absent = view 0, earlier proposals). */
 type P4ProposalExtra = ProposalPayload & { amount: string; zkSpend: string; view?: number };
-type P4Vote = { nodeId: string; digest: string; signature: string };
+type P4Vote = { nodeId: string; digest: string; signature: string; spendCertSig?: string };
 function p4VoteBody(digest: string, height: number, epoch = 1, view = 0): string {
   return `UEP-38.21-P4-VOTE|${LAB_PROFILE.networkId}|${epoch}|${view}|${height}|${digest}`;
 }
@@ -596,7 +596,7 @@ export class P4ProcessRuntime {
     const oldRoot = this.state.stateRoot();
     const art = proveWithoutApply(this.state, this.ids, amount);
     if (!art.ok) throw new Error("PROVE_FAIL");
-    const payload: P4ProposalExtra = {
+    const payload: P4ProposalExtra & { spendId: string; senderAuth: ReturnType<typeof signSenderAuth> } = {
       batchId: `p4p-${height}`,
       view: this.view,
       txDigest: art.newRootProof,

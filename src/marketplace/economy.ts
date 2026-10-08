@@ -73,6 +73,9 @@ export type TreasuryWithdrawal = {
   authorizationRef: string;
 };
 
+/** What a treasury authorization verifier receives: the withdrawal request (keyed by `withdrawalId`). */
+export type TreasuryWithdrawalAuthorization = Omit<TreasuryWithdrawal, "timestamp" | "id"> & { withdrawalId: string };
+
 /** Minimum Marketplace fee for any positive settled amount when the fee rate is non-zero (UEP-A16). */
 export const MIN_MARKETPLACE_FEE = 1n;
 
@@ -124,7 +127,7 @@ export class MarketplaceTreasury {
   readonly withdrawals: TreasuryWithdrawal[] = [];
   private readonly settledOrders = new Set<string>();
   private readonly withdrawnRefs = new Set<string>();
-  private readonly authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
+  private readonly authorizationVerifier?: (input: TreasuryWithdrawalAuthorization) => boolean;
   /** v0.4.7: per-asset Marketplace fee floor (asset -> minimum, each >= MIN_MARKETPLACE_FEE). */
   private readonly minFeeByAsset = new Map<string, bigint>();
   /** v0.5.1: default entry stamp (a height; the Marketplace passes its own). */
@@ -141,7 +144,7 @@ export class MarketplaceTreasury {
     treasuryId?: string;
     feeBps?: number;
     allocationBps?: Record<TreasuryBucket, number>;
-    authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
+    authorizationVerifier?: (input: TreasuryWithdrawalAuthorization) => boolean;
     /** v0.4.7: per-asset fee floors in the asset's smallest unit (default MIN_MARKETPLACE_FEE for every asset). */
     minFeeByAsset?: Record<string, bigint>;
     /** v0.5.1 (ADR 0002): height stamped on entries when no timestamp is passed (default: height 0). */
@@ -343,7 +346,7 @@ export class MarketplaceTreasury {
     if (!this.authorizationVerifier) throw new Error("TREASURY_AUTHORIZER_NOT_CONFIGURED");
     if (!opts.authorizationRef.startsWith("auth:")) throw new Error("INVALID_AUTHORIZATION_REF");
     if (opts.amount <= 0n) throw new Error("INVALID_WITHDRAWAL_AMOUNT");
-    const authRecord = { withdrawalId: opts.withdrawalId, bucket: opts.bucket, asset: opts.asset, amount: opts.amount, beneficiary: opts.beneficiary, reason: opts.reason, authorizationRef: opts.authorizationRef };
+    const authRecord: TreasuryWithdrawalAuthorization = { withdrawalId: opts.withdrawalId, bucket: opts.bucket, asset: opts.asset, amount: opts.amount, beneficiary: opts.beneficiary, reason: opts.reason, authorizationRef: opts.authorizationRef };
     if (!this.authorizationVerifier(authRecord)) throw new Error("TREASURY_WITHDRAWAL_UNAUTHORIZED");
     if (this.withdrawnRefs.has(opts.withdrawalId)) throw new Error("WITHDRAWAL_REPLAY");
     const b = this.balance(opts.asset);

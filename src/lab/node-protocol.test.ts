@@ -91,7 +91,7 @@ describe("UEP-32 Ed25519 multi-node lab", () => {
     });
     assert.equal(sequencer.apply(env).ok, true);
     assert.equal(r2.apply(env).ok, true);
-    assert.equal(r2.apply(env).error, "IDEMPOTENT_REPLAY");
+    assert.equal((r2.apply(env) as { error?: string }).error, "IDEMPOTENT_REPLAY");
 
     const stale = signEnvelope(seqId, {
       protocolVersion: NODE_PROTOCOL_VERSION,
@@ -104,7 +104,7 @@ describe("UEP-32 Ed25519 multi-node lab", () => {
       nullifier: "n2",
       ts: Date.now(),
     });
-    assert.equal(r2.apply(stale).error, "STALE_ROOT");
+    assert.equal((r2.apply(stale) as { error?: string }).error, "STALE_ROOT");
 
     const good = signEnvelope(seqId, {
       protocolVersion: NODE_PROTOCOL_VERSION,

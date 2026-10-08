@@ -75,7 +75,7 @@ describe("UEP-35.7 multi-node foundation", () => {
   });
 
   it("byzantine node does not block honest DAG", () => {
-    const c = new MultiNodeCluster(4, 11, ["mn-3"]);
+    const c = new MultiNodeCluster(4, 11, { byzantineIds: ["mn-3"] });
     c.proposeFrom(c.nodes[0]!.id, txs(4));
     c.tick(30, 40);
     const honest = c.nodes.filter((n) => !n.byzantine);

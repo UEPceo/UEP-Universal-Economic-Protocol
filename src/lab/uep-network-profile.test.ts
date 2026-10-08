@@ -8,7 +8,7 @@ describe("UEP-NET-001", () => {
     assert.equal(LAB_PROFILE.networkId, "uep-lab-1");
     assert.equal(LAB_PROFILE.domainId, "lab-earth-0");
     assert.equal(LAB_PROFILE.ceremony, false);
-    const blocked = activateProfile({ ...LAB_PROFILE, kind: "TESTNET", testnetAllowed: true });
+    const blocked = activateProfile({ ...LAB_PROFILE, kind: "TESTNET", testnetAllowed: true } as unknown as Parameters<typeof activateProfile>[0]);
     assert.equal(blocked.ok, false);
     if (!blocked.ok) assert.equal(blocked.reason, "TESTNET_BLOCKED_NO_CEREMONY");
     assert.equal(assertSameNetwork(LAB_PROFILE, "uep-lab-1", "lab-earth-0").ok, true);

@@ -8,7 +8,7 @@ import type { IndependentNode } from "./uep35-multinode.ts";
 import { HeightVoteLock } from "./uep36-aggregate-semantics.ts";
 
 export type NodeConsensusSnapshot = {
-  version: "36.9.1";
+  version: "36.9";
   nodeId: string;
   epoch: number;
   sequence: number;

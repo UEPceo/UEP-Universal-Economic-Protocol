@@ -26,6 +26,8 @@ export type PoseidonSpendRequestJson = {
   extra_state_leaves?: Array<[number, string]>;
   existing_nullifiers?: string[];
   network_profile?: string;
+  /** Numeric domain id bound by the circuit request (lab). */
+  domain_id?: number;
   expected_old_state_root?: string;
   expected_old_nullifier_root?: string;
 };

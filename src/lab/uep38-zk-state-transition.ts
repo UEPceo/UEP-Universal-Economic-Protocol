@@ -158,7 +158,7 @@ export function applyTransfer(
       amount,
     },
   ]);
-  return { ok: r.ok, reason: r.reason, newRoot: st.stateRoot() };
+  return { ok: r.ok, reason: r.ok ? undefined : r.reason, newRoot: st.stateRoot() };
 }
 
 export type SpendProofArtifact = {

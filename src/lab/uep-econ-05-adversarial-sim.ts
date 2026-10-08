@@ -220,7 +220,7 @@ export function runAdversarialSim(cfg: SimConfig): SimMetrics {
   if (active[0]?.consumeTxId) {
     const a = active[0];
     const replay = buildHoldConsumeTx({
-      txId: a.consumeTxId,
+      txId: a.consumeTxId!,
       clientId: a.client,
       providerId: a.provider,
       holdId: a.holdId,

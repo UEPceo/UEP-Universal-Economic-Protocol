@@ -195,7 +195,7 @@ describe("UEP-ECON-05.2 delivery/expiry race matrix", () => {
 describe("UEP-ECON-05.2 invariant checker", () => {
   it("clean state has zero findings", () => {
     const st = new LocalEconomicState({ c: 10_000n });
-    const f = checkEconomicInvariants(st, { accountIds: ["c"] });
+    const f = checkEconomicInvariants(st as unknown as Parameters<typeof checkEconomicInvariants>[0], { accountIds: ["c"] });
     assert.equal(f.length, 0);
   });
 
@@ -210,7 +210,7 @@ describe("UEP-ECON-05.2 invariant checker", () => {
       price: 5000n,
     });
     assert.equal(st.applyTransfers([open]).ok, false);
-    assert.equal(checkEconomicInvariants(st, { accountIds: ["c"] }).length, 0);
+    assert.equal(checkEconomicInvariants(st as unknown as Parameters<typeof checkEconomicInvariants>[0], { accountIds: ["c"] }).length, 0);
   });
 });
 
@@ -261,7 +261,7 @@ describe("UEP-ECON-05.2 partition during economic ops", () => {
     cluster.heal();
     if (typeof cluster.resyncAfterHeal === "function") cluster.resyncAfterHeal();
     for (let i = 0; i < 60; i++) cluster.tick(15, 4);
-    const agree = tipsAndRootsAgree(cluster.nodes);
+    const agree = tipsAndRootsAgree(cluster.nodes as unknown as Parameters<typeof tipsAndRootsAgree>[0]);
     // After partition, convergence may require catch-up; require roots or document
     assert.ok(
       agree.tipsAgree || agree.rootsAgree,

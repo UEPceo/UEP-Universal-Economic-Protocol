@@ -28,6 +28,17 @@ export type UepZkDemoResult = {
   artifactBundleId?: string;
   constraints?: number;
   tag?: string;
+  /** New leaf values reported by the demo (when printed). */
+  leaves?: {
+    senderIndex: number;
+    senderNew: string;
+    recipientIndex: number;
+    recipientNew: string;
+    treasuryIndex: number;
+    treasuryNew: string;
+    nullifierIndex: number;
+    nullifier: string;
+  };
   raw: string;
 };
 

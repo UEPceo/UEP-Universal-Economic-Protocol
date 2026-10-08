@@ -34,7 +34,7 @@ describe("UEP-38.17 P4 view-change", () => {
     assert.equal(v.canPropose("q0"), false);
     assert.equal(v.canPropose("q1"), true);
     const env = v.lab.buildProposal(1000n, 1);
-    const ballots = v.lab.replicas.map((rep) => v.lab.vote(env, rep)).filter((x) => x);
+    const ballots = v.lab.replicas.map((rep) => v.lab.vote(env, rep)).filter((x): x is NonNullable<typeof x> => Boolean(x));
     assert.ok(ballots.length >= 3);
     assert.equal(v.lab.commit(env, ballots).ok, true);
     v.onCommittedHeight(1);

@@ -13,7 +13,7 @@ import { UepLedger } from "../testnet/ledger.ts";
 import { generateEd25519KeyPair } from "../core/ed25519.ts";
 import { TESTNET } from "../network/profiles.ts";
 import { receiptLogConsistencyProof, receiptLogRoot, settlementBatch, verifyReceiptLogConsistency } from "./batch.ts";
-import { anchorChainProblem } from "./anchor.ts";
+import { anchorChainProblem, type SettlementAnchor } from "./anchor.ts";
 
 const ADMIN = createTestAuthority("admin-1");
 const SNAP = generateEd25519KeyPair();
@@ -34,7 +34,7 @@ test("receipts anchored over several rounds form one consistent append-only log"
       settle(m, o.orderId, buyer);
     }
   };
-  const anchors = [];
+  const anchors: SettlementAnchor[] = [];
   for (const k of [3, 1, 5, 2]) {
     round(k);
     l.advanceHeight(l.height + 1);

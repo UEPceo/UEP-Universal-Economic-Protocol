@@ -38,6 +38,7 @@ Expected results for `0.5.3` (Node.js 22 and 24). Last re-checked with `npm run 
 | `npm run build:uep-zk` | `uep-core/target/release/uep-zk` built from source |
 | `npm run test:lab` | 116 files, 546 tests pass, 0 failures; no known-issue files (the list is empty) |
 | `npm run test:lab:known` | the known-issue files; the list is empty in v0.5.3, so it runs no files (non-blocking CI job) |
+| `npm install --no-save --no-package-lock typescript@5.9.3 @types/node@22 && npx tsc --noEmit -p .` | 0 type errors (blocking CI job; the type checker is installed for that job only, not a package dependency) |
 
 `src/testnet/key-derived-accounts.test.ts` uses fixed account vectors (no random account ids; the only random values are ephemeral snapshot and faucet keys, which do not change any outcome), so repeated runs give the same result; it was run 400 times on Node.js 22 with 0 failures:
 

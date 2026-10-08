@@ -36,7 +36,7 @@ test("a committed transaction is found through the index; replay is refused befo
   assert.equal(restored.hasCommittedNullifier(p.tx.nullifier), true);
   assert.match(code(restored.submit(p.tx)), /REPLAY|DOUBLE_SPEND/);
   // Offline: a queued copy of a committed spend is rejected by reconcilePending (indexed nullifier check).
-  restored.connected = false;
+  (restored as { connected: boolean }).connected = false; // test: simulate an offline node
   restored.pending.push({ ...p.tx });
   const rec = restored.reconcilePending();
   assert.equal(rec.rejected.length, 1);

@@ -113,7 +113,7 @@ test("vouchers: an AuthorizationLedger without a networkId is refused", () => {
 test("a provider can delist a listing; running orders continue and the same terms can be published again", () => {
   const admin = createTestAuthority("admin");
   const m = new DigitalServicesMarketplace({ adminIdentity: admin.identityId, adminPublicKey: admin.publicKeyHex, height: () => 10 });
-  const terms = { providerId: "p1", title: "delist me", description: "d", category: "COMPUTE", asset: QUOTE, unitPrice: 20n, capacity: 10n };
+  const terms = { providerId: "p1", title: "delist me", description: "d", category: "COMPUTE" as const, asset: QUOTE, unitPrice: 20n, capacity: 10n };
   const l = publishAs(m, terms);
   const o = reserveAs(m, { listingId: l.listingId, buyerId: "b1", quantity: 1n });
   assert.throws(() => publishAs(m, terms), /DUPLICATE_LISTING_FINGERPRINT/);

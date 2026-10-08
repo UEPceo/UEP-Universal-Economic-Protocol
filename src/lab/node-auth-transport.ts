@@ -67,6 +67,8 @@ type SocketState = {
   hs?: HandshakeResponder;
   /** initiator: waiting for challenge */
   pendingAuth?: boolean;
+  /** initiator: nonce of the challenge being answered */
+  challengeNonce?: string;
   buffer: Buffer;
 };
 
@@ -471,6 +473,7 @@ export class AuthNetworkNode {
     newStateRoot: string;
     transitionId: string;
     nullifier: string;
+    previousNullifierRoot?: string;
     newNullifierRoot?: string;
     proofHex?: string;
     publicInputsHex?: string[];

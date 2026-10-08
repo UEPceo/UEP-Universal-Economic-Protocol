@@ -41,7 +41,7 @@ parentPort!.on("message", (msg: { id: number; op: string; args: unknown[] }) => 
         value = true;
         break;
       case "status":
-        value = { height: ledger.blockHeight, stateRoot: ledger.stateRoot().toHex(), txCount: ledger.txs.length };
+        value = { height: ledger.height, stateRoot: ledger.stateRoot().toHex(), txCount: ledger.txs.length };
         break;
       case "snapshot":
         value = ledger.snapshot();

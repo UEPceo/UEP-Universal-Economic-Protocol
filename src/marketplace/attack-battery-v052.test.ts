@@ -47,7 +47,7 @@ function setup(opts: { maxUnfunded?: number; withPaymaster?: boolean } = {}) {
     providerId: provider.identityId,
     title: "svc",
     description: "d",
-    category: "compute",
+    category: "COMPUTE",
     asset: EUR,
     unitPrice: 100n,
     capacity: 100n,
@@ -125,7 +125,7 @@ test("paymaster: create/cancel releases sponsorship; settle captures gas", () =>
   const beforeOutstanding = paymaster.outstandingOf(EUR);
   assert.ok(beforeOutstanding > 0n);
   const record = settle(m, order2.orderId, "buyer2");
-  assert.equal(record.status === "SETTLED" || true, true);
+  assert.equal(record.orderId, order2.orderId);
   assert.ok((record.gasFee ?? 0n) > 0n);
   assert.equal(paymaster.outstandingOf(EUR), 0n);
   assert.equal(m.valueAccounting(EUR).conserved, true);

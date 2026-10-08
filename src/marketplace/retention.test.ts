@@ -17,7 +17,7 @@ function setup(retention = 100) {
   const admin = createTestAuthority("admin");
   const m = new DigitalServicesMarketplace({ adminIdentity: admin.identityId, adminPublicKey: admin.publicKeyHex, height: () => h.h, closedOrderRetentionHeights: retention });
   enrollIdentity(m, "prov", { asset: EUR, amount: 100_000n });
-  const listing = publishAs(m, { providerId: "prov", title: "svc", description: "d", category: "compute", asset: EUR, unitPrice: 10n, capacity: 1_000n });
+  const listing = publishAs(m, { providerId: "prov", title: "svc", description: "d", category: "COMPUTE", asset: EUR, unitPrice: 10n, capacity: 1_000n });
   return { m, h, listing, admin };
 }
 

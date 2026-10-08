@@ -27,7 +27,6 @@ function dummyTx(partial: Partial<UepTransaction> & { nullifier: Fr; txId?: Fr }
     amount: 1000n,
     fee: 1n,
     nonce: new Fr(4),
-    nullifier: partial.nullifier,
     inputCommitments: [],
     outputCommitments: [],
     transactionCommitment: new Fr(5),
@@ -183,6 +182,7 @@ describe("canonical tx commitment", () => {
   it("changes when amount changes", () => {
     const args = {
       networkId: "uep-testnet-1",
+      domainId: "EARTH",
       senderId: new Fr(1),
       recipientId: new Fr(2),
       assetId: new Fr(3),

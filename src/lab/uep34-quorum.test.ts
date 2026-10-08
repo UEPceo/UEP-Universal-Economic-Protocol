@@ -237,7 +237,7 @@ describe("UEP-34.2/34.3 quorum certificates", () => {
     const cert = assembleQuorumCert(msg, [
       { nodeId: next.id.nodeId, signature: "00".repeat(64) },
       { nodeId: leader.id.nodeId, signature: "11".repeat(64) },
-    ]);
+    ] as unknown as Parameters<typeof assembleQuorumCert>[1]);
     const r = verifyQuorumCert(cert, lab.cfg, (id) =>
       lab.registry.publicKeyHex(id),
     );

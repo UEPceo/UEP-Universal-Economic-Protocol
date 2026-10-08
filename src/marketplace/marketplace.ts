@@ -2048,7 +2048,7 @@ export class DigitalServicesMarketplace {
     if (module !== "swap" && module !== "relay" && module !== "dispute") throw new Error("CATEGORY_MODULE_INVALID");
     if (this.issuedCategoryPorts.has(module)) throw new Error("CATEGORY_PORT_ALREADY_ISSUED");
     this.issuedCategoryPorts.add(module);
-    const self = this;
+    const self: DigitalServicesMarketplace = this;
     const openHold = (holdId: string): CategoryHold => {
       const h = self.categoryHolds.get(self.categoryHoldKey(module, holdId));
       if (!h) throw new Error("CATEGORY_HOLD_UNKNOWN");
@@ -2181,7 +2181,7 @@ export class DigitalServicesMarketplace {
   issueSubsidyPort(): SubsidyPort {
     if (this.subsidyPortIssued) throw new Error("SUBSIDY_PORT_ALREADY_ISSUED");
     this.subsidyPortIssued = true;
-    const self = this;
+    const self: DigitalServicesMarketplace = this;
     return Object.freeze({
       height: () => self.now(),
       authenticate: (auth: ActorAuth | undefined, action: CategoryAction, target: string, details: Record<string, unknown>) => self.categoryAuthenticate(auth, action, target, details),

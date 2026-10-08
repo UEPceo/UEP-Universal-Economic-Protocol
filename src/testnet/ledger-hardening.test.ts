@@ -79,7 +79,7 @@ test("restore rejects tampered balance/state root", async () => {
   l.faucet(a.accountId, "uep-test/teur", 1000n);
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
-  tampered.balances[0]![1] = "999999999";
+  (tampered.balances as unknown as string[][])[0]![1] = "999999999";
   assert.throws(() => UepLedger.restore(tampered, TRUST), /INVALID_SNAPSHOT_HASH/);
   assert.throws(() => UepLedger.restore(resign(tampered), TRUST, NODE_KEYS), /INVALID_SNAPSHOT_STATE_ROOT/);
 });
@@ -240,7 +240,7 @@ test("restore requires the snapshot authority signature and rejects a coherent f
   const snap = l.snapshot();
   assert.throws(() => UepLedger.restore(snap, { ...TRUST, authorities: [generateEd25519KeyPair().publicKeyHex] }), /INVALID_SNAPSHOT_THRESHOLD/);
   const tampered = structuredClone(snap) as typeof snap;
-  tampered.balances[0]![1] = "999999";
+  (tampered.balances as unknown as string[][])[0]![1] = "999999";
   assert.throws(() => UepLedger.restore(tampered, TRUST), /INVALID_SNAPSHOT_HASH/);
   // Internally consistent snapshot produced under a different authority (default ephemeral keys).
   const other = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });

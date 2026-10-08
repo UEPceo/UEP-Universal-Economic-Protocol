@@ -90,7 +90,7 @@ describe("UEP-35.7.1 consensus + state convergence", () => {
       msgId: "fake-1",
     };
     // direct handle without valid sig → rejected
-    (c as unknown as { handleConsensus: (n: typeof n, e: typeof fake) => void }).handleConsensus?.(
+    (c as unknown as { handleConsensus: (node: typeof n, e: typeof fake) => void }).handleConsensus?.(
       n,
       fake as never,
     );

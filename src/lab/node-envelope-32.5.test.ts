@@ -100,7 +100,7 @@ describe("UEP-32.5 envelope signs proof + public inputs", () => {
       nullifier: "n1",
       ts: 1,
     });
-    assert.equal(node.apply(env).error, "ZK_PROOF_REQUIRED");
+    assert.equal((node.apply(env) as { error?: string }).error, "ZK_PROOF_REQUIRED");
   });
 });
 

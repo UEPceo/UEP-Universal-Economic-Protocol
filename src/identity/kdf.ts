@@ -10,16 +10,19 @@ import { accountIdFromSpendKey, accountIdFromSpendKeyV2, deriveSpendKey } from "
 
 const te = new TextEncoder();
 
+/** Type-only view for Web Crypto's BufferSource (the bytes are passed unchanged). */
+const bs = (u: Uint8Array): Uint8Array<ArrayBuffer> => u as Uint8Array<ArrayBuffer>;
+
 export async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const buf = await crypto.subtle.digest("SHA-256", data);
+  const buf = await crypto.subtle.digest("SHA-256", bs(data));
   return new Uint8Array(buf);
 }
 
 export async function hmacSha256(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, [
+  const key = await crypto.subtle.importKey("raw", bs(keyBytes), { name: "HMAC", hash: "SHA-256" }, false, [
     "sign",
   ]);
-  const sig = await crypto.subtle.sign("HMAC", key, data);
+  const sig = await crypto.subtle.sign("HMAC", key, bs(data));
   return new Uint8Array(sig);
 }
 
@@ -30,9 +33,9 @@ export async function pbkdf2(
   length: number,
   hash: "SHA-256" | "SHA-512" = "SHA-256",
 ): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", password, "PBKDF2", false, ["deriveBits"]);
+  const key = await crypto.subtle.importKey("raw", bs(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt, iterations, hash },
+    { name: "PBKDF2", salt: bs(salt), iterations, hash },
     key,
     length * 8,
   );
@@ -44,8 +47,8 @@ export async function aesGcmEncrypt(
   plaintext: Uint8Array,
 ): Promise<{ iv: Uint8Array; ciphertext: Uint8Array }> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
+  const key = await crypto.subtle.importKey("raw", bs(keyBytes), "AES-GCM", false, ["encrypt"]);
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, bs(plaintext));
   return { iv, ciphertext: new Uint8Array(ct) };
 }
 
@@ -54,8 +57,8 @@ export async function aesGcmDecrypt(
   iv: Uint8Array,
   ciphertext: Uint8Array,
 ): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+  const key = await crypto.subtle.importKey("raw", bs(keyBytes), "AES-GCM", false, ["decrypt"]);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bs(iv) }, key, bs(ciphertext));
   return new Uint8Array(pt);
 }
 
