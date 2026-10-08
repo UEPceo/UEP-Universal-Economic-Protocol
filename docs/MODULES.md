@@ -1,7 +1,6 @@
 # UEP modules
 
-> Module map of the repository at v0.5.3 (branch `v0.5.3-fixes`; version on `main`
-> before merge: 0.5.2, no release; latest GitHub Release: v0.5.0).
+> Module map of the repository at v0.5.3 (on `main`; Latest GitHub Release: v0.5.3).
 > Status labels follow the README legend: **Implemented (testnet)** = local,
 > single-node, in-process testnet only; **Experimental (lab)**; **Planned**; **Research**.
 > Nothing in this repository is a live network or a production system. There is no

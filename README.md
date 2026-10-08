@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.3` (branch `v0.5.3-fixes`, not released) · version on `main`: `0.5.2-public-iot-m2m` (not released) · latest GitHub Release: **v0.5.0**
+> **Version:** `0.5.3` (on `main`) · Latest GitHub Release: **v0.5.3**
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -60,11 +60,11 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 
 "Hashlock swap" (`src/category/swap.ts`) is a bilateral settlement between two parties; the "AMM lab pool" (`src/lab/liquidity.ts`) is a research simulation that never moves testnet value. Full module map: [`docs/MODULES.md`](docs/MODULES.md).
 
-### Current status (v0.5.3, not released)
+### Current status (v0.5.3)
 
 | Item | Status |
 |---|---|
-| Version | `0.5.3` on branch `v0.5.3-fixes` (not released): asset registry wired into the ledger, settlement receipts anchored in ledger state, multi-input transactions (UEP-C04), oracle hardening and price gate, category fixes, signed Marketplace snapshot with the full state (format 4) and retention policy, bounded ledger submit queue, ledger worker thread, height authority, HPKE for relay payloads — on top of `0.5.2` (settlement engine, category modules, oracle policy layer, on `main`, not released), `0.5.1` and `0.5.0` ([`CHANGELOG.md`](./CHANGELOG.md)). **Latest GitHub Release: `v0.5.0`** |
+| Version | `0.5.3` (2026-10-08, on `main`, GitHub Release `v0.5.3`): asset registry wired into the ledger, settlement receipts anchored in ledger state, multi-input transactions (UEP-C04), oracle hardening and price gate, category fixes, signed Marketplace snapshot with the full state (format 4) and retention policy, bounded ledger submit queue, ledger worker thread, height authority, HPKE for relay payloads — on top of `0.5.2` (settlement engine, category modules, oracle policy layer; not released separately), `0.5.1` and `0.5.0` ([`CHANGELOG.md`](./CHANGELOG.md)). **Latest GitHub Release: `v0.5.3`** |
 | Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) (single source of truth; earlier README and CHANGELOG counts disagreed) |
 | Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts and the list of lab files with known issues in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) and [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |

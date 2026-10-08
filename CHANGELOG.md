@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.3 — branch `v0.5.3-fixes` (not released)
+## 0.5.3 — 2026-10-08
 
 Package version `0.5.3`. From 0.5.3 on, versions are numeric semver only (`MAJOR.MINOR.PATCH`, release tag `vMAJOR.MINOR.PATCH`); `npm run check:version` enforces it. Earlier entries keep their historical `-public-iot-m2m` names. Fixes and wiring on top of 0.5.2. **Review status:** External reviews of later versions have taken place; their reports are not yet published in this repository and will be added (with version and remediation status) as they are incorporated. The last externally reviewed threshold with a published report in this repository is v0.4.6. ([`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md)); the changes since then, with their tests and status, are listed in [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md). No native token, no common currency, no runtime dependencies; protocol fee 0.1 %, Marketplace fee 3 %; time is block height.
 
@@ -89,7 +89,7 @@ Each finding was first reproduced against the code (`docs/REMEDIATION-COVERAGE-v
 - `npm run test:all` passes on Node.js 22.23 and 24.21 (Rust 1.85.1): determinism lint (140 files, 0 violations), snapshot compatibility (format 9, 3 migration steps from format 6), donation-address check, protocol 199/199, Marketplace + IoT + HTTP + height producer + submit queue + worker host 210/210, settlement 19/19, oracle 37/37, category 23/23, poisoned clock 425/425, smoke, quickstart, 20k simulation (20,000 settled, 0 errors, value conserved), Rust 127 (uep-21 7, uep-25 9, uep-26 99, uep-23 6, uep-24 6), labs 116 files / 546 tests (known-issue list empty, down from 14). Re-checked on 2026-10-08 after the external-review fixes.
 - Earlier README and CHANGELOG test counts disagreed; this entry is the reference for 0.5.3.
 
-## 0.5.2-public-iot-m2m — 2026-10-05 (on `main`, not released)
+## 0.5.2-public-iot-m2m — 2026-10-05 (not released separately; included in 0.5.3)
 
 Package version `0.5.2-public-iot-m2m`. Version 0.5.2 integrates three module packages into the testnet reference: a **settlement engine** (single payout executor behind the Marketplace), **category modules** (swap, relay, dispute, drip) over Marketplace HOLDs, and an **oracle layer** for policy evaluation only. Attack-battery fixes from BATTERY-2026-10-05 that are cheap and critical are included. No native token; fees unchanged. Status: IMPLEMENTED (testnet reference) — not a production, ZK-ready or throughput claim.
 

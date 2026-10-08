@@ -7,7 +7,7 @@ native code). Numbers depend on the machine; reproduce them with:
 node --experimental-strip-types --no-warnings scripts/bench-ledger-cost.ts
 ```
 
-## Measured (2026-10-08, branch `v0.5.3-fixes`)
+## Measured (2026-10-08, v0.5.3)
 
 | Measure | Node 22.23.3 | Node 24.21.0 |
 |---|---|---|

@@ -63,7 +63,7 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 | Lab node domain binding; development ZK keys refused under production settings | `src/lab/node-domain-binding.test.ts`, `src/lab/zk-dev-keys-guard.test.ts` | Experimental (lab), tested |
 | 130-bit self-certifying namespaces (legacy names readable) | `src/core/asset-registry.test.ts` | Implemented (testnet), tested |
 
-## v0.5.2 — settlement engine, category modules, oracle (on `main`, not released)
+## v0.5.2 — settlement engine, category modules, oracle (not released separately; included in 0.5.3)
 
 | Change | Tests | Status |
 |---|---|---|
@@ -78,7 +78,7 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 | Category modules (hashlock swap, relay, dispute, drip) over Marketplace escrow ports | `src/category/category.test.ts` | Implemented (testnet), tested; hardened in v0.5.3 |
 | Oracle policy layer (Poseidon, heights, Ed25519) | `src/oracle/oracle.test.ts` | Implemented (testnet), tested; hardened in v0.5.3 |
 
-## v0.5.3 — branch `v0.5.3-fixes` (not released)
+## v0.5.3 — released 2026-10-08
 
 ### Settlement and Marketplace
 
@@ -137,14 +137,14 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 
 ## External review provided by the project director, 2026-10-08
 
-Scope of the review: branch `v0.5.3-fixes` at `2cc37f3` (and `main` at `7173d37`). The
+Scope of the review: the pre-release commit `2cc37f3` of v0.5.3 (and `main` at `7173d37`). The
 review summary was provided to the project; the report itself is not published in this
 repository. Every finding was first checked against the code and reproduced with a test
 or a measurement before any change; the status below is the project's verification, not
 the reviewer's wording. The "Verification" column says how each finding was reproduced
 on the unchanged code; each fix has a regression test listed here.
 
-| # | Finding (neutral) | Verification | Fix on `v0.5.3-fixes` | Regression test | Remaining |
+| # | Finding (neutral) | Verification | Fix in v0.5.3 | Regression test | Remaining |
 |---|---|---|---|---|---|
 | 1 | Marketplace balances, orders, escrow holds and provider bonds were kept in memory only; the snapshot carried settlement receipts | **Confirmed.** Restoring a snapshot of a Marketplace with a funded order gave the buyer a balance of 0 (was 999 900), no order and no listing | Snapshot format 4 with the full state (tagged lossless codec), migration 3 → 4 (`state: null`, receipts-only shim), golden format 3 fixture; restore checks configuration, freshness, clock and value conservation | `marketplace-snapshot-state.test.ts`, `marketplace-restore-ids.test.ts` | Category hooks / ports and oracle gates are code, re-attached before restore |
 | 2 | `LEDGER_BUSY` without a queue or backpressure; high rejection rate under concurrency | **Partly confirmed.** `submit()` is synchronous; eight concurrent asynchronous submits of distinct spends were all accepted, so `LEDGER_BUSY` occurs only on synchronous re-entry and the stated rejection rate was not reproduced (`POST /v1/spends` goes to the lab spend inbox, not to the ledger). Confirmed: no bounded queue, no timeout, no backpressure | `LedgerSubmitQueue`: bounded FIFO, queue-wait timeout, `LEDGER_BUSY` with `retryAfterSeconds` when full or timed out; HTTP 1.4.0 `POST /v1/ledger/transactions` with 503 + `Retry-After`; `LEDGER_BUSY` on `/v1/spends` maps to 503 | `ledger-submit-queue.test.ts`, `concurrent-spend.test.ts` | Multi-process deployments still need a transactional store |
@@ -159,7 +159,7 @@ on the unchanged code; each fix has a regression test listed here.
 
 - External reviews of later versions have taken place; their reports are not yet published in this repository and will be added (with version and remediation status) as they are incorporated. The last externally reviewed threshold with a published report in this repository is v0.4.6.
 - ZK: development keys only (no ceremony); see the zk-spend row above.
-- Consensus and networking exist only as labs on one machine; `scripts/lab-known-issues.json` is empty on this branch, but the multi-process labs remain local experiments.
+- Consensus and networking exist only as labs on one machine; `scripts/lab-known-issues.json` is empty in v0.5.3, but the multi-process labs remain local experiments.
 - External review starting point: [`EXTERNAL-AUDIT-PACKAGE.md`](./EXTERNAL-AUDIT-PACKAGE.md).
 - Arbiters, oracle sources and the snapshot authority are configured keys: Sybil resistance, arbiter appeal and rotation, and oracle consensus are not implemented.
 - IoT telemetry is signed by the device key; physical attestation is out of scope.

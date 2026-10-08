@@ -34,7 +34,7 @@ The labs (`src/lab`, `uep-core`, the research circuits) are experimental and not
 | 5 | v0.4.5 – v0.4.7 | Refused; fixture `v5-v0.4.7-9922cdb.json` checks the refusal and its reason |
 | 6 | the Poseidon protocol hash release and v0.5.0 (both the pre-release asset ids and the namespaced ids) | **Migrated** 6 → 7; fixtures `v6-main-020e6ce.json` (old asset ids `asset:test:*`) and `v6-v0.5.0-8d774d3.json` |
 | 7 | v0.5.1 – v0.5.2 | **Migrated** 7 → 8; fixtures `v7-v0.5.0-evidence-time.json`, `v7-v0.5.2-7173d37.json` |
-| 8 | `v0.5.3-fixes` branch before the height-advance record | **Migrated** 8 → 9; fixture `v8-v0.5.3.json` |
+| 8 | v0.5.3 pre-release commits before the height-advance record | **Migrated** 8 → 9; fixture `v8-v0.5.3.json` |
 | 9 | this release | Current; fixture `v9-v0.5.3.json` |
 
 ### Restore order

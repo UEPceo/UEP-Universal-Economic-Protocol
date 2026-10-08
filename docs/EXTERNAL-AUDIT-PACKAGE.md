@@ -1,7 +1,7 @@
-# External review package — v0.5.3 (branch `v0.5.3-fixes`)
+# External review package — v0.5.3
 
-> **What this document is.** The starting point for an independent review of the
-> branch `v0.5.3-fixes`. It states the scope, the trust and threat model, the
+> **What this document is.** The starting point for an independent review of
+> v0.5.3 (tag `v0.5.3`). It states the scope, the trust and threat model, the
 > modules and entry points, how to reproduce every test, the known risks and the
 > residuals the project accepts, and the status of earlier self-assessment and
 > research findings. It is written by the project. It is not a review result, a
@@ -19,9 +19,9 @@ private vulnerability reporting, see [`SECURITY.md`](../SECURITY.md)).
 | Item | Value |
 |---|---|
 | Repository | `UEPceo/UEP-Universal-Economic-Protocol` |
-| Branch | `v0.5.3-fixes` (not merged to `main`, no release, no tag) |
+| Release | tag `v0.5.3` (GitHub Release, 2026-10-08), commit `c19bf37` on `main` |
 | Package version | `0.5.3` (`package.json`, `package-lock.json`; `npm run check:version`) |
-| Code commit under review | `afe6918` — the last commit that changes code; later commits on the branch change only documentation. Reviewers should pin the full SHA they received with the review request and run `git diff afe6918..<their SHA> -- src uep-core scripts` to confirm that nothing outside `docs/`, `README.md`, `CHANGELOG.md` changed. |
+| Code commit under review | `afe6918` — the last commit that changes code; later commits change only documentation. Reviewers should pin the full SHA they received with the review request and run `git diff afe6918..<their SHA> -- src uep-core scripts` to confirm that nothing outside `docs/`, `README.md`, `CHANGELOG.md` changed. |
 | Base | `main` at v0.5.2 (`7173d37`, the commit of the last non-public review) |
 | Toolchain | Node.js 22.23.x and 24.21.x, Rust 1.85.1 (as in `.github/workflows/ci.yml`), no npm runtime dependencies |
 
@@ -131,9 +131,9 @@ Individual suites: `npm run test:protocol`, `test:marketplace`, `test:settlement
 `test:category`, `test:oracle`, `test:poisoned-clock`, `test:rust`, `test:lab`.
 One file: `node --experimental-strip-types --no-warnings --test <file>`.
 Expected results and timings: [`REPRODUCIBILITY.md`](./REPRODUCIBILITY.md); the
-reference counts for this branch are in the CHANGELOG 0.5.3 entry ("Tests").
+reference counts for this release are in the CHANGELOG 0.5.3 entry ("Tests").
 
-`scripts/lab-known-issues.json` is empty on this branch: every lab file runs in the
+`scripts/lab-known-issues.json` is empty in this release: every lab file runs in the
 blocking `test:lab`. Two individual lab tests stay skipped (they pin the SHA-256 of
 a prebuilt `uep-zk` binary, which depends on the toolchain).
 
@@ -230,7 +230,7 @@ The self-assessment record is
 [`SECURITY-COVERAGE.md`](./SECURITY-COVERAGE.md). Findings from reports not yet published in this repository
 are summarised by property only.
 
-| Source | Topic (neutral) | Status on this branch |
+| Source | Topic (neutral) | Status in v0.5.3 |
 |---|---|---|
 | Non-public review of v0.5.2 (`7173d37`), items V52-01 … V52-06 | relay dispute timeout after key release; fault bond; dispute timeout bond; oracle quote network binding; donation address check; fee buckets in docs | Implemented and tested (V52-03 is a mitigation); see REMEDIATION-COVERAGE |
 | V50-10 | — | Disclosed privately; not described here |
@@ -239,7 +239,7 @@ are summarised by property only.
 | Same, smaller items | negative note amounts; fixed order domain profile; test-only clock refused in live deployments; producer error reporting | Implemented and tested |
 | Same, accepted residuals | no-fault close of a buyer deposit; historical compatibility paths; by-design limits (self-transfer, cap is not a rate limit); legacy millisecond inputs | Documented in section 6 |
 | Audit-preparation scope | registry mints by manifest issuer key set and threshold; ZK root binding through a circuit-depth projection, one account-id adapter, re-verification on restore; last two lab files fixed | Implemented and tested; ZK remains partial (section 6) |
-| External review provided by the project director, 2026-10-08 (branch at `2cc37f3`) | Marketplace state persistence; ledger submit queue and backpressure; ZK residuals; height operator; relay payload encryption; event-loop blocking by Poseidon / SMT; history scans; unbounded Marketplace maps | Verified finding by finding (confirmed / partly confirmed / residual) and fixed with regression tests; residuals in section 6; per-finding table in REMEDIATION-COVERAGE |
+| External review provided by the project director, 2026-10-08 (pre-release commit `2cc37f3`) | Marketplace state persistence; ledger submit queue and backpressure; ZK residuals; height operator; relay payload encryption; event-loop blocking by Poseidon / SMT; history scans; unbounded Marketplace maps | Verified finding by finding (confirmed / partly confirmed / residual) and fixed with regression tests; residuals in section 6; per-finding table in REMEDIATION-COVERAGE |
 | Earlier versions (v0.3.2 – v0.4.6) | — | Published remediation documents in the repository root |
 
 ## 8. Out of scope for this review
