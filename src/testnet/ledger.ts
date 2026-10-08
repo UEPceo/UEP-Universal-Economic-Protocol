@@ -254,7 +254,9 @@ export type RestoreOptions = {
    * v0.5.3: verifier for the zk-spend transactions in the snapshot. Restore
    * re-checks their bound public inputs (4..11) and re-runs the verifier; a
    * snapshot with zk-spends and no verifier is refused (ZK_VERIFIER). The
-   * restored ledger keeps the verifier.
+   * restored ledger keeps the verifier. Restore reads no environment: run
+   * assertVerifierAllowed(verifier) at configuration time (it refuses
+   * development keys under NODE_ENV=production).
    */
   zkSpendVerifier?: ZkSpendVerifier;
   /** v0.5.3: root binding mode of the restored ledger (see the constructor option). */
@@ -436,7 +438,7 @@ export class UepLedger {
     if (value !== this.proofRequired) throw new Error("REQUIRE_PROOF_IMMUTABLE: requireProof is fixed at construction (testOnlyDisableProof is test-only)");
   }
   private readonly proofRequired: boolean;
-  private readonly unboundedHeightAdvance: boolean;
+  private unboundedHeightAdvance: boolean;
   /** v0.5.1: set when a restore with `replaces` took over this ledger; it no longer advances. */
   private retired = false;
   readonly networkId: string;
@@ -2004,13 +2006,20 @@ export class UepLedger {
         snapshotSigningKeys: [],
         faucetSigningKey: null,
         maxPendingTransactions: data.maxPendingTransactions,
-        ...((data as { ticks?: { mode?: unknown } }).ticks?.mode === "test-unbounded" && opts.testOnlyUnboundedHeightAdvance === true ? { testOnlyUnboundedHeightAdvance: true } : {}),
         assetRegistry: trust.assetRegistry,
-        ...(opts.zkSpendVerifier ? { zkSpendVerifier: opts.zkSpendVerifier } : {}),
         ...(opts.zkRootBinding ? { zkRootBinding: opts.zkRootBinding } : {}),
       });
     } catch (e) {
       fail("PENDING", (e as Error).message);
+    }
+    // Restore is a state transition and reads no environment (poisoned-clock
+    // rule): restore options are set here without the NODE_ENV checks of the
+    // constructor. Callers apply them at configuration time (testOnlyOption(),
+    // assertVerifierAllowed()) before calling restore.
+    if ((data as { ticks?: { mode?: unknown } }).ticks?.mode === "test-unbounded" && opts.testOnlyUnboundedHeightAdvance === true) l.unboundedHeightAdvance = true;
+    if (opts.zkSpendVerifier) {
+      try { assertVerifierAllowed(opts.zkSpendVerifier, false); } catch (e) { fail("ZK_VERIFIER", (e as Error).message); }
+      l.zkSpendVerifier = opts.zkSpendVerifier;
     }
     // v0.5.3: settlement anchors re-checked (hash chain, indexes, no settlement anchored twice).
     {
@@ -2063,7 +2072,7 @@ export class UepLedger {
       const ticks = t as HeightAdvanceRecord;
       if (ticks.mode === "test-unbounded") {
         if (opts.testOnlyUnboundedHeightAdvance !== true) fail("HEIGHT_CAP", "the snapshot was written by a ledger without the 12-block cap (test-only); restore it with testOnlyUnboundedHeightAdvance");
-        testOnlyOption("testOnlyUnboundedHeightAdvance", true);
+        // No NODE_ENV check here: restore reads no environment (checked by the caller at configuration time).
       } else {
         if (ticks.maxBlocksPerTick !== MAX_BLOCKS_PER_TICK) fail("HEIGHT_CAP", `maxBlocksPerTick must be ${MAX_BLOCKS_PER_TICK}`);
         if (data.height > ticks.count * MAX_BLOCKS_PER_TICK) fail("HEIGHT_CAP", `height ${data.height} exceeds ${ticks.count} ticks x ${MAX_BLOCKS_PER_TICK} blocks`);
