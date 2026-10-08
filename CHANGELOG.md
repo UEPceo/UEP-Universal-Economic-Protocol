@@ -81,12 +81,12 @@ Each finding was first reproduced against the code (`docs/REMEDIATION-COVERAGE-v
 
 ### Compatibility
 
-- Snapshot format 9 (formats 6, 7 and 8 migrate). Marketplace snapshot format 2 (format 1 migrates). Receipt hash v2 (v1 verifies through the alias). Oracle quote payload v2 (v0.1 only with `acceptLegacyV1Quotes`).
+- Snapshot format 9 (formats 6, 7 and 8 migrate). Marketplace snapshot format 4 (formats 1, 2 and 3 migrate; a migrated format 3 snapshot restores receipts only). HTTP service API 1.4.0. Receipt hash v2 (v1 verifies through the alias). Oracle quote payload v2 (v0.1 only with `acceptLegacyV1Quotes`).
 - **Behaviour change:** unsigned Marketplace credits need a test-only option; relay disputes that time out after the key resume the order; dispute timeouts move part of the claimant's bond to the respondent (`timeoutBondToRespondentBps: 0` restores 0.5.2).
 
 ### Tests (0.5.3)
 
-- `npm run test:all` passes on Node.js 22.23 and 24.21 (Rust 1.85.1): determinism lint (126 files, 0 violations), snapshot compatibility (format 8, 2 migration steps from format 6), donation-address check, protocol 172/172, Marketplace + IoT + HTTP + height producer 178/178, settlement 17/17, oracle 20/20, category 18/18, poisoned clock 360/360, smoke, quickstart, 20k simulation (0 errors, value conserved), Rust 127 (uep-21 7, uep-25 9, uep-26 99, uep-23 6, uep-24 6), labs 110 files / 528 tests (2 known-issue files skipped, down from 14).
+- `npm run test:all` passes on Node.js 22.23 and 24.21 (Rust 1.85.1): determinism lint (140 files, 0 violations), snapshot compatibility (format 9, 3 migration steps from format 6), donation-address check, protocol 199/199, Marketplace + IoT + HTTP + height producer + submit queue + worker host 210/210, settlement 19/19, oracle 37/37, category 23/23, poisoned clock 425/425, smoke, quickstart, 20k simulation (20,000 settled, 0 errors, value conserved), Rust 127 (uep-21 7, uep-25 9, uep-26 99, uep-23 6, uep-24 6), labs 116 files / 546 tests (known-issue list empty, down from 14). Re-checked on 2026-10-08 after the external-review fixes.
 - Earlier README and CHANGELOG test counts disagreed; this entry is the reference for 0.5.3.
 
 ## 0.5.2-public-iot-m2m — 2026-10-05 (on `main`, not released)

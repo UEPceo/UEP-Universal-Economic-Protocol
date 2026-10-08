@@ -21,7 +21,7 @@ private vulnerability reporting, see [`SECURITY.md`](../SECURITY.md)).
 | Repository | `UEPceo/UEP-Universal-Economic-Protocol` |
 | Branch | `v0.5.3-fixes` (not merged to `main`, no release, no tag) |
 | Package version | `0.5.3` (`package.json`, `package-lock.json`; `npm run check:version`) |
-| Code commit under review | `d4dfdd4` — the last commit that changes code; later commits on the branch change only documentation. Reviewers should pin the full SHA they received with the review request and run `git diff d4dfdd4..<their SHA> -- src uep-core scripts` to confirm that nothing outside `docs/`, `README.md`, `CHANGELOG.md` changed. |
+| Code commit under review | `afe6918` — the last commit that changes code; later commits on the branch change only documentation. Reviewers should pin the full SHA they received with the review request and run `git diff afe6918..<their SHA> -- src uep-core scripts` to confirm that nothing outside `docs/`, `README.md`, `CHANGELOG.md` changed. |
 | Base | `main` at v0.5.2 (`7173d37`, the commit of the last non-public review) |
 | Toolchain | Node.js 22.23.x and 24.21.x, Rust 1.85.1 (as in `.github/workflows/ci.yml`), no npm runtime dependencies |
 
