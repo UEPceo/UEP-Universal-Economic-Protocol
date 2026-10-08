@@ -1,5 +1,5 @@
 /**
- * v0.5.3 regression tests (Marketplace snapshot format 3, settlement anchors):
+ * v0.5.3 regression tests (Marketplace snapshot format 3 / 4, settlement anchors):
  * - after a restart (restoreSnapshot) a repeated purchase gets a new order id
  *   and can settle or be refunded (no escrow stuck behind an already executed
  *   settlement id); an explicit order id that already has a receipt is refused;
@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DigitalServicesMarketplace } from "./marketplace.ts";
-import { createTestAuthority, deliver, fund, publishAs, refundAs, reserveAs, settle } from "./testkit.ts";
+import { adoptTestIdentities, createTestAuthority, deliver, fund, publishAs, refundAs, reserveAs, settle } from "./testkit.ts";
 import { buildMarketplaceSnapshot, marketplaceSnapshotFromJSON, marketplaceSnapshotToJSON, type MarketplaceSnapshot } from "./marketplace-snapshot.ts";
 import { settlementReceiptHash } from "../settlement/engine.ts";
 import { GENESIS_ANCHOR_HASH, signSettlementAnchorRequest } from "../settlement/anchor.ts";
@@ -27,18 +27,23 @@ const EUR = "uep-test/teur";
 const mk = () => new DigitalServicesMarketplace({ height: () => 10, adminIdentity: "admin-1", adminPublicKey: ADMIN.publicKeyHex, adminAuthorizer: (id) => id === "admin-1", snapshotSigningKeys: [SNAPKEY.privateKey], anchorSigningKey: ANCHOR.privateKey });
 const listing = (m: DigitalServicesMarketplace) => publishAs(m, { providerId: "p1", title: "restart", description: "d", category: "COMPUTE", asset: EUR, unitPrice: 100n, capacity: 10n });
 
+/** The same snapshot without the format 4 state section (what a migrated format 3 snapshot restores). */
+function receiptsOnly(snap: MarketplaceSnapshot): MarketplaceSnapshot {
+  return buildMarketplaceSnapshot({ marketplaceId: snap.marketplaceId, treasuryId: snap.treasuryId, networkId: snap.networkId!, height: snap.height, orderSequence: snap.orderSequence, receipts: snap.settlement.receipts, legacyV1SettlementIds: snap.settlement.legacyV1SettlementIds, state: null, signingKeys: [SNAPKEY.privateKey] });
+}
+
 function settledOnce(m = mk(), key = "buy-1") {
   const l = listing(m);
   const o = reserveAs(m, { listingId: l.listingId, buyerId: "b1", quantity: 1n, idempotencyKey: key });
   fund(m, o.orderId, o.fundingDue, undefined, "b1");
   deliver(m, o.orderId, "p1", Buffer.from("x"));
   settle(m, o.orderId, "b1");
-  return { m, orderId: o.orderId };
+  return { m, orderId: o.orderId, listingId: l.listingId };
 }
 
 test("after a restart a repeated purchase gets a new order id and settles; refund also stays reachable", () => {
   const { m: m1, orderId } = settledOnce();
-  const snap = m1.exportSnapshot();
+  const snap = receiptsOnly(m1.exportSnapshot());
   assert.ok(snap.orderSequence >= 2);
   for (const key of ["buy-1", "a-different-key"]) {
     const m2 = mk();
@@ -54,9 +59,26 @@ test("after a restart a repeated purchase gets a new order id and settles; refun
   }
 });
 
+test("after a restart with the full state (format 4) the same idempotency key returns the recorded order; a new key buys again", () => {
+  const { m: m1, orderId, listingId } = settledOnce();
+  const snap = m1.exportSnapshot();
+  const m2 = mk();
+  assert.equal(m2.restoreSnapshot(marketplaceSnapshotFromJSON(marketplaceSnapshotToJSON(snap))), 1);
+  adoptTestIdentities(m1, m2);
+  const replay = reserveAs(m2, { listingId, buyerId: "b1", quantity: 1n, idempotencyKey: "buy-1" }, { credit: 0n });
+  assert.equal(replay.orderId, orderId, "idempotent replay, no second purchase");
+  const o2 = reserveAs(m2, { listingId, buyerId: "b1", quantity: 1n, idempotencyKey: "a-different-key" });
+  assert.notEqual(o2.orderId, orderId);
+  fund(m2, o2.orderId, o2.fundingDue, undefined, "b1");
+  deliver(m2, o2.orderId, "p1", Buffer.from("x"));
+  refundAs(m2, "p1", o2.orderId);
+  assert.equal(m2.heldBalance(EUR, "b1"), 0n);
+  assert.equal(m2.valueAccounting(EUR).conserved, true);
+});
+
 test("generated ids skip ids that already have a receipt; an explicit one is refused", () => {
   const { m: m1, orderId } = settledOnce();
-  const snap = m1.exportSnapshot();
+  const snap = receiptsOnly(m1.exportSnapshot());
   // A counter behind the receipts (e.g. a migrated snapshot) still never reuses an executed id.
   const m2 = mk();
   m2.restoreSnapshot(snap);
@@ -70,7 +92,7 @@ test("generated ids skip ids that already have a receipt; an explicit one is ref
 test("Marketplace snapshots are signed; unsigned, forged or untrusted ones are refused", () => {
   const { m: m1 } = settledOnce();
   const snap = m1.exportSnapshot();
-  assert.equal(snap.formatVersion, 3);
+  assert.equal(snap.formatVersion, 4);
   assert.equal(snap.signatures?.length, 1);
   const { signatures: _s, ...unsigned } = snap;
   assert.throws(() => mk().restoreSnapshot(unsigned as MarketplaceSnapshot), /UNSIGNED|SIGNATURE_INVALID/);

@@ -81,7 +81,7 @@ Each row names the test file. Suite commands: `test:protocol` (`src/testnet`, `s
 |---|---|---|
 | Atomic settlement commit: journaled port moves, rollback on failure, engine halts if an undo fails | `src/settlement/settlement-atomicity.test.ts` | Implemented (testnet), tested |
 | Signed credits by default (`requireSignedCredits`; unsigned only through test-only options, refused in production) | `src/marketplace/multi-asset.test.ts` | Implemented (testnet), tested |
-| Marketplace snapshot (format 3, signed) with persisted settlement receipts; migrations 1 → 2 → 3, golden fixtures | `src/marketplace/marketplace-snapshot.test.ts` | Implemented (testnet), tested |
+| Marketplace snapshot (signed) with persisted settlement receipts; format 4 adds the full Marketplace state (balances, holds, orders, bonds, idempotency records); migrations 1 → 2 → 3 → 4, golden fixtures | `src/marketplace/marketplace-snapshot.test.ts`, `src/marketplace/marketplace-snapshot-state.test.ts` | Implemented (testnet), tested |
 | Receipts v2 bind the `networkId` in their hash; v1 receipts verified through a versioned alias; anchors refuse foreign-network receipts | `src/settlement/receipt-network.test.ts` | Implemented (testnet), tested |
 | Ledger anchors for settlement batches (verified, hash-chained, in snapshot format 8, re-checked on restore) | `src/settlement/settlement-anchor.test.ts` | Implemented (testnet), tested. The anchor proves which receipts were committed; it does not move ledger value (see `SETTLEMENT-BRIDGE.md`) |
 | Cumulative receipt log with RFC 9162 consistency proofs across batches | `src/settlement/cross-batch-consistency.test.ts` | Implemented (testnet), tested |

@@ -220,3 +220,15 @@ export function iotAuthorization(m: DigitalServicesMarketplace, input: { listing
 export function creditAs(m: DigitalServicesMarketplace, actorId: string, identityId: string, asset: string, amount: bigint, creditId: string): bigint {
   return m.creditAccount(identityId, asset, amount, { creditId, auth: act(m, actorId, "credit", identityId, { asset, amount, creditId }) });
 }
+
+/**
+ * v0.5.3 (snapshot format 4): carry the testkit's identities and order -> buyer
+ * records from `from` to a Marketplace restored from its snapshot, so the
+ * helpers keep signing with the same (ephemeral, in-memory) keys after a restart.
+ */
+export function adoptTestIdentities(from: DigitalServicesMarketplace, to: DigitalServicesMarketplace): void {
+  const ids = registry.get(from);
+  if (ids) registry.set(to, new Map(ids));
+  const buyers = orderBuyers.get(from);
+  if (buyers) orderBuyers.set(to, new Map(buyers));
+}

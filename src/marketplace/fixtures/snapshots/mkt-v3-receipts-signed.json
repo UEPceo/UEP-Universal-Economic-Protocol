@@ -1,0 +1,71 @@
+{
+  "kind": "uep-marketplace-snapshot",
+  "formatVersion": 3,
+  "marketplaceId": "uep-marketplace-testnet",
+  "treasuryId": "marketplace-treasury",
+  "networkId": "uep-testnet-1",
+  "height": 1700000000000,
+  "orderSequence": 1,
+  "settlement": {
+    "receiptVersions": [
+      "uep-settlement-receipt-v2"
+    ],
+    "count": 2,
+    "batchRoot": "890fcc0d0674d2f5d05ac50bf54a5f714bfa080a14a12c569f1c5eefe8f7bf30",
+    "totals": {
+      "EUR": {
+        "gross": "200n",
+        "fees": "6n",
+        "providerNet": "194n",
+        "refunds": "0n",
+        "gas": "0n"
+      }
+    },
+    "receipts": [
+      {
+        "version": "uep-settlement-receipt-v2",
+        "networkId": "uep-testnet-1",
+        "settlementId": "fixture-order-b1",
+        "asset": "EUR",
+        "payerId": "b1",
+        "payeeId": "p1",
+        "grossAmount": "100n",
+        "providerAmount": "100n",
+        "marketplaceFee": "3n",
+        "providerNet": "97n",
+        "gasCaptured": "0n",
+        "buyerRefund": "0n",
+        "outcome": "RELEASE",
+        "height": 1700000000000,
+        "treasuryId": "marketplace-treasury",
+        "receiptHash": "01750fea7b9a3983815b87c2e6eb0f0d0fc35c2b7b0864b27b0c8f3c57021cd6"
+      },
+      {
+        "version": "uep-settlement-receipt-v2",
+        "networkId": "uep-testnet-1",
+        "settlementId": "fixture-order-b2",
+        "asset": "EUR",
+        "payerId": "b2",
+        "payeeId": "p1",
+        "grossAmount": "100n",
+        "providerAmount": "100n",
+        "marketplaceFee": "3n",
+        "providerNet": "97n",
+        "gasCaptured": "0n",
+        "buyerRefund": "0n",
+        "outcome": "RELEASE",
+        "height": 1700000000000,
+        "treasuryId": "marketplace-treasury",
+        "receiptHash": "11dd239faeda3dc0f5ced7fff9b3be96a245559c3491adb45ad664c7cca61b5e"
+      }
+    ],
+    "legacyV1SettlementIds": []
+  },
+  "snapshotHash": "effc7c39b4be255d8344c0bd8ac624b07b74db9ba698c3897742059d4a3ed6f1",
+  "signatures": [
+    {
+      "publicKeyHex": "302a300506032b657003210019f14ca8141e4e43e40d2ab1b400b2b0d4858242e52f03fc2a35d232ffe0d74f",
+      "signature": "f9dad11dd51cc75ed36a4159501f1f95f618de3ab7d39b827041619f7bd88004ad8f24fd319ed460e21d2d00d2e8352a96fb60bc75cd91f4072c47db01106000"
+    }
+  ]
+}

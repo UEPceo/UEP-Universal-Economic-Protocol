@@ -27,6 +27,12 @@ Package version `0.5.3`. From 0.5.3 on, versions are numeric semver only (`MAJOR
 - **Retired ledger:** after `restore(..., { replaces })` the old ledger refuses spends (`prepare*`, `submit`, `submitBatch` → `LEDGER_RETIRED`), faucet, issuer key changes, height advances, anchors and snapshot signing, so only one history can continue.
 - **Ledger anchors (settlement bridge):** settlement batches are verified, hash-chained and stored in ledger state (snapshot format 8) and re-checked on restore ([`docs/SETTLEMENT-BRIDGE.md`](./docs/SETTLEMENT-BRIDGE.md)). A cumulative receipt log with RFC 9162 consistency proofs links the batches.
 
+### External review 2026-10-08 (provided by the project director): fixes
+
+Each finding was first reproduced against the code (`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`, section "External review provided by the project director, 2026-10-08").
+
+- **Marketplace snapshot format 4: full state.** The signed snapshot now carries the Marketplace state (balances, deposits, escrow holds, listings, active and closed orders, provider bonds, category holds, treasury, paymaster, evidence exposure, idempotency and replay records) through a tagged, lossless codec (`src/marketplace/marketplace-state.ts`), so a restart loses nothing that the snapshot covers. Migration 3 → 4 sets `state: null` (receipts-only shim, the format 3 behaviour); golden fixture `mkt-v3-receipts-signed.json` written by the format 3 code. Restore re-applies the immutability of published terms, checks configuration, freshness and clock, and re-checks value conservation. Runtime capabilities (category hooks and ports, oracle gate) are not persisted and are re-attached before restore.
+
 ### Oracle (commit `1c9f712` and follow-ups)
 
 - One signing key counts as one source; re-registering a source with another key is refused (explicit `rotateSourceKey`); quote payload v2 carries the `networkId` with a locally derived domain separator (V52-04); capped weighted median; signed `SettlementAuthorization` v2; legacy v0.1 quotes only through an explicit shim.

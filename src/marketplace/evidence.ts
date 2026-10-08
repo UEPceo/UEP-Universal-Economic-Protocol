@@ -165,6 +165,11 @@ export class EvidenceCaps {
     }
   }
 
+  /** v0.5.3: ids of the configured attester sets (sorted). */
+  attesterSetIds(): string[] {
+    return [...this.sets.keys()].sort();
+  }
+
   attesterSet(attesterSetId: string): AttesterSetPolicy {
     const set = this.sets.get(attesterSetId);
     if (!set) throw new Error("EVIDENCE_ATTESTER_SET_UNKNOWN");

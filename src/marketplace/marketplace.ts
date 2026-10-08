@@ -33,7 +33,9 @@ import { EvidenceCaps, evidenceCapsView, type EvidenceCapsConfig, type EvidenceC
 import { looksLikeLegacyMs } from "../core/deprecation.ts";
 import { SettlementEngine } from "../settlement/engine.ts";
 import type { PayoutInstruction, SettlementLedgerPort, SettlementOutcome, SettlementReceipt } from "../settlement/types.ts";
-import { buildMarketplaceSnapshot, migrateMarketplaceSnapshot, verifyMarketplaceSnapshot, verifyMarketplaceSnapshotSignatures, type MarketplaceSnapshot, type MarketplaceSnapshotTrust } from "./marketplace-snapshot.ts";
+import { buildMarketplaceSnapshot, migrateMarketplaceSnapshot, verifyMarketplaceSnapshot, verifyMarketplaceSnapshotSignatures, type MarketplaceSnapshot, type MarketplaceSnapshotTrust, type MarketplaceStateSection } from "./marketplace-snapshot.ts";
+import { MARKETPLACE_STATE_VERSION, captureFields, encodeStateValue, restoreFields } from "./marketplace-state.ts";
+import { canonicalJson } from "../core/canonical-json.ts";
 import { GENESIS_ANCHOR_HASH, signSettlementAnchorRequest, type SettlementAnchorAuthorization } from "../settlement/anchor.ts";
 import { CATEGORY_ACTIONS, type CategoryAction } from "./identity.ts";
 import { assertOracleReferenceTerms, runOracleCheck, type OracleCheckRecord, type OraclePolicyGate, type OracleReferenceTerms } from "../oracle/policy-gate.ts";
@@ -492,6 +494,49 @@ function makeId(prefix: string, payload: string, counter: number): string {
   return `${prefix}_${digest}`;
 }
 
+/**
+ * v0.5.3 (Marketplace snapshot format 4): the mutable fields persisted in the
+ * snapshot state section. Runtime capabilities and code (category hooks and
+ * ports, the drip capability, oracle gate) are not state and are not listed.
+ * A new mutable field must be added here (marketplace-snapshot-state.test.ts
+ * fails when a Map / Set field is neither listed nor declared runtime-only).
+ */
+export const MARKETPLACE_STATE_FIELDS = Object.freeze([
+  "sequence", "listings", "orders", "held", "settlements", "listingAttempts", "orderIdempotency", "operationIdempotency",
+  "listingIndex", "fingerprintIndex", "similarityIndex", "reservationQueue", "activeReservationsByIdentity", "usedCreditIds",
+  "identities", "identityKeys", "accounts", "locked", "credited", "feesCollected", "gasCollected", "unfundedByIdentityListing",
+  "categoryHolds", "categoryHeldTotals", "treasuryTransfers", "subsidiesPaid", "listingBonds", "listingBondTotals", "openBondedOrders",
+] as const);
+/** Map / Set fields deliberately not persisted (runtime capabilities or configuration). */
+export const MARKETPLACE_RUNTIME_ONLY_FIELDS = Object.freeze(["categoryServices", "issuedCategoryPorts", "minReservationDepositByAsset"] as const);
+const TREASURY_STATE_FIELDS = Object.freeze(["balancesByAsset", "entries", "withdrawals", "settledOrders", "withdrawnRefs", "transferRefs", "dripBudget", "dripAllocationRefs"]);
+const REPUTATION_STATE_FIELDS = Object.freeze(["events", "ratedOrders"]);
+const PAYMASTER_STATE_FIELDS = Object.freeze(["reserves", "sponsored", "captured", "outstanding", "actorOutstanding", "expiryHeap", "receipts"]);
+const EVIDENCE_STATE_FIELDS = Object.freeze(["exposure"]);
+const SETTLEMENT_ENGINE_STATE_FIELDS = Object.freeze(["halted"]);
+
+/** v0.5.1: the signed terms, domain profile and windows of a listing cannot change after publication (only `available` and `active` stay writable) and no term can be added. */
+function freezeListingTerms(listing: ServiceListing): void {
+  for (const key of ["windows", "evidencePolicy", "oracleReference", "publishOracleCheck"] as const) {
+    const v = (listing as Record<string, unknown>)[key];
+    if (v && typeof v === "object" && !Object.isFrozen(v)) (listing as Record<string, unknown>)[key] = Object.freeze(v);
+  }
+  for (const key of Object.keys(listing) as Array<keyof ServiceListing>) {
+    if (key !== "available" && key !== "active") Object.defineProperty(listing, key, { writable: false, configurable: false });
+  }
+  Object.preventExtensions(listing);
+}
+
+/** v0.5.1 / v0.5.3: the contract windows and domain profile of an order are fixed at reserve(). */
+function freezeOrderTerms(order: ServiceOrder): void {
+  for (const key of ["windows", "oracleCheck"] as const) {
+    const v = (order as Record<string, unknown>)[key];
+    if (v && typeof v === "object" && !Object.isFrozen(v)) (order as Record<string, unknown>)[key] = Object.freeze(v);
+  }
+  Object.defineProperty(order, "windows", { enumerable: true, writable: false, configurable: false });
+  Object.defineProperty(order, "domainProfile", { enumerable: true, writable: false, configurable: false });
+}
+
 export class DigitalServicesMarketplace {
   readonly version = MARKETPLACE_VERSION;
   readonly treasury: MarketplaceTreasury;
@@ -796,9 +841,12 @@ export class DigitalServicesMarketplace {
   }
 
   /**
-   * v0.5.3 (format 1, src/marketplace/marketplace-snapshot.ts): snapshot of the
+   * v0.5.3 (src/marketplace/marketplace-snapshot.ts): signed snapshot of the
    * settlement receipts executed so far (orders and category holds), with the
-   * batch root and totals, bound to this marketplace and treasury.
+   * batch root and totals, bound to this marketplace and treasury; since
+   * format 4 it also carries the full Marketplace state (balances, deposits,
+   * escrow holds, listings, orders, provider bonds, category holds, treasury,
+   * paymaster, evidence exposure, idempotency and replay records).
    */
   exportSnapshot(): MarketplaceSnapshot {
     return buildMarketplaceSnapshot({
@@ -809,8 +857,56 @@ export class DigitalServicesMarketplace {
       orderSequence: this.sequence,
       receipts: this.settlementEngine.receiptsList(),
       legacyV1SettlementIds: this.settlementEngine.legacyV1SettlementIds(),
+      state: this.captureState(),
       signingKeys: this.#snapshotSigningKeys,
     });
+  }
+
+  /** v0.5.3 (format 4): configuration the persisted state depends on (checked on restore). */
+  private stateConfig(): Record<string, unknown> {
+    return encodeStateValue({
+      feeBps: this.treasury.feeBps,
+      paymaster: this.paymaster ? this.paymaster.paymasterId : null,
+      attesterSets: this.#evidence.attesterSetIds(),
+      categoryServices: [...this.categoryServices.keys()].sort(),
+      adminIdentity: this.adminIdentity,
+    }) as Record<string, unknown>;
+  }
+
+  private captureState(): MarketplaceStateSection {
+    return {
+      stateVersion: MARKETPLACE_STATE_VERSION,
+      config: this.stateConfig(),
+      marketplace: captureFields(this, MARKETPLACE_STATE_FIELDS),
+      treasury: captureFields(this.treasury, TREASURY_STATE_FIELDS),
+      reputation: captureFields(this.reputation, REPUTATION_STATE_FIELDS),
+      paymaster: this.paymaster ? captureFields(this.paymaster, PAYMASTER_STATE_FIELDS) : null,
+      evidence: captureFields(this.#evidence, EVIDENCE_STATE_FIELDS),
+      settlementEngine: captureFields(this.settlementEngine, SETTLEMENT_ENGINE_STATE_FIELDS),
+    };
+  }
+
+  /** True while nothing has been recorded (restore target). */
+  private isFresh(): boolean {
+    return this.settlementEngine.receiptsList().length === 0 && this.listings.size === 0 && this.orders.size === 0 && this.identities.size === 0 && this.credited.size === 0 && this.categoryHolds.size === 0 && this.treasury.entries.length === 0;
+  }
+
+  private restoreState(state: MarketplaceStateSection, snapshotHeight: number): void {
+    if (canonicalJson(state.config) !== canonicalJson(this.stateConfig())) throw new Error("MARKETPLACE_SNAPSHOT_CONFIG_MISMATCH: fee, paymaster, attester sets, category services and administrator must match the snapshot (attach category services before restore)");
+    // Heights are the time base of every window in the state: the clock may not be behind the snapshot.
+    if (this.now() < snapshotHeight) throw new Error("MARKETPLACE_SNAPSHOT_HEIGHT_REGRESSED: the Marketplace clock is behind the snapshot height");
+    if ((state.paymaster === null) !== (this.paymaster === undefined)) throw new Error("MARKETPLACE_SNAPSHOT_CONFIG_MISMATCH: paymaster");
+    restoreFields(this, MARKETPLACE_STATE_FIELDS, state.marketplace);
+    restoreFields(this.treasury, TREASURY_STATE_FIELDS, state.treasury);
+    restoreFields(this.reputation, REPUTATION_STATE_FIELDS, state.reputation);
+    if (this.paymaster && state.paymaster) restoreFields(this.paymaster, PAYMASTER_STATE_FIELDS, state.paymaster);
+    restoreFields(this.#evidence, EVIDENCE_STATE_FIELDS, state.evidence);
+    restoreFields(this.settlementEngine, SETTLEMENT_ENGINE_STATE_FIELDS, state.settlementEngine);
+    // Re-apply the immutability of published terms and order windows (as at publish / reserve).
+    for (const listing of this.listings.values()) freezeListingTerms(listing);
+    for (const order of this.orders.values()) freezeOrderTerms(order);
+    // The restored balances must conserve value per asset.
+    for (const asset of this.credited.keys()) if (!this.valueAccounting(asset).conserved) throw new Error(`MARKETPLACE_SNAPSHOT_STATE_INCONSISTENT: value not conserved for ${asset}`);
   }
 
   /** v0.5.3: public keys that sign this instance's snapshots (the default restore trust). */
@@ -824,19 +920,24 @@ export class DigitalServicesMarketplace {
   }
 
   /**
-   * v0.5.3: restore persisted settlement receipts into a fresh Marketplace
-   * (no settlement executed yet). The snapshot is migrated per ADR 0003, its
-   * hash, receipts, batch root and binding are verified; afterwards every
-   * persisted settlement id is refused for re-execution
-   * (SETTLEMENT_ALREADY_EXECUTED) and its receipt is readable again.
+   * v0.5.3: restore a snapshot into a fresh Marketplace (nothing recorded yet;
+   * category services attached as in the snapshot). The snapshot is migrated
+   * per ADR 0003, its hash, signatures, receipts, batch root and binding are
+   * verified; afterwards every persisted settlement id is refused for
+   * re-execution (SETTLEMENT_ALREADY_EXECUTED) and its receipt is readable
+   * again. Format 4: the full state is restored too (balances, holds, orders,
+   * bonds, idempotency records), so open orders continue where they were.
+   * A migrated format 1 / 2 / 3 snapshot restores receipts and the order
+   * counter only (compatibility shim).
    */
   restoreSnapshot(snapshot: MarketplaceSnapshot | Record<string, unknown>, trust: MarketplaceSnapshotTrust = { snapshotPublicKeys: this.snapshotPublicKeys() }): number {
-    if (this.settlementEngine.receiptsList().length > 0) throw new Error("MARKETPLACE_SNAPSHOT_RESTORE_NOT_FRESH");
-    // v0.5.3: format 3 snapshots must carry a trusted signature; unsigned format 1 / 2 only with the explicit shim.
+    if (!this.isFresh()) throw new Error("MARKETPLACE_SNAPSHOT_RESTORE_NOT_FRESH");
+    // v0.5.3: format 3+ snapshots must carry a trusted signature; unsigned format 1 / 2 only with the explicit shim.
     // The hash is checked first (in migrate) so a signature always covers the content that is restored.
     const migrated = migrateMarketplaceSnapshot(snapshot as Record<string, unknown>);
     verifyMarketplaceSnapshotSignatures(snapshot as Record<string, unknown>, trust);
     const receipts = verifyMarketplaceSnapshot(migrated, { marketplaceId: this.marketplaceId, treasuryId: this.treasury.treasuryId, networkId: this.ledgerNetworkId });
+    if (migrated.state) this.restoreState(migrated.state, migrated.height);
     this.settlementEngine.restoreReceipts(receipts, { legacyV1SettlementIds: migrated.settlement.legacyV1SettlementIds });
     // v0.5.3: continue the order-id counter (never below what the snapshot recorded).
     this.sequence = Math.max(this.sequence, migrated.orderSequence);
@@ -981,11 +1082,8 @@ export class DigitalServicesMarketplace {
     if (publishOracleCheck) listing.publishOracleCheck = Object.freeze(publishOracleCheck);
     // v0.5.1: the signed terms, the domain profile and the windows cannot change after publication,
     // also not through an in-process reference; only `available` and `active` stay writable.
-    for (const key of Object.keys(listing) as Array<keyof ServiceListing>) {
-      if (key !== "available" && key !== "active") Object.defineProperty(listing, key, { writable: false, configurable: false });
-    }
     // v0.5.1: and no term can be added later (e.g. an evidencePolicy on a listing published without one).
-    Object.preventExtensions(listing);
+    freezeListingTerms(listing);
     this.listings.set(listingId, listing);
     if (evidencePolicy && sellerBond > 0n) {
       this.accounts.add(listing.asset, listing.providerId, -sellerBond);
@@ -1142,10 +1240,8 @@ export class DigitalServicesMarketplace {
       version: 1,
       ...(oracleCheck ? { oracleCheck: Object.freeze(oracleCheck) } : {}),
     };
-    // v0.5.1: the contract windows of an order are fixed at reserve() (not writable, frozen).
-    Object.defineProperty(order, "windows", { enumerable: true, writable: false, configurable: false });
-    // v0.5.3: so is its domain profile.
-    Object.defineProperty(order, "domainProfile", { enumerable: true, writable: false, configurable: false });
+    // v0.5.1: the contract windows of an order are fixed at reserve() (not writable, frozen); v0.5.3: so is its domain profile.
+    freezeOrderTerms(order);
     this.orders.set(orderId, order);
     this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
     this.adjustUnfunded(order, 1);

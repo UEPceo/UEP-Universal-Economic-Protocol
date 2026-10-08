@@ -1,5 +1,6 @@
 /**
- * Marketplace snapshot (v0.5.3, format 3): persisted settlement receipts.
+ * Marketplace snapshot (v0.5.3, format 4): persisted settlement receipts and,
+ * since format 4, the full Marketplace state.
  * Format 2 adds the networkId and allows v2 (networkId-bound) receipts next
  * to legacy v1 receipts (migration 1 -> 2).
  * Format 3 (migration 2 -> 3) adds the order-id counter (`orderSequence`), so a
@@ -17,11 +18,20 @@
  * holds), the RFC 9162 batch root over them and per-asset totals. It is bound
  * to the marketplace id and treasury id and committed by a SHA-256 hash.
  *
- * Scope (documented residual limit): this snapshot persists settlement
- * receipts only. Order, balance, treasury and category state are not part of
- * it yet; a restored Marketplace refuses to re-execute any persisted
- * settlement id and can prove each receipt, but balances must still be
- * re-funded from the external rail.
+ * Format 4 (migration 3 -> 4) adds the `state` section: balances, deposits,
+ * escrow holds, listings, active and closed orders, provider bonds, category
+ * holds, treasury, paymaster and evidence-exposure state, and the idempotency
+ * and replay records (encoded by marketplace-state.ts), so a restart loses
+ * nothing that the snapshot covers. A migrated format 1 / 2 / 3 snapshot has
+ * `state: null` (receipts only, the earlier behaviour): restoring it keeps
+ * the receipts and the order counter, and balances must be re-funded from
+ * the external rail as before.
+ *
+ * Not in the snapshot (by design): runtime capabilities and code (category
+ * service hooks, category settlement ports, oracle gates, drip and rollback
+ * capabilities). They are re-attached by the process before restore; the
+ * snapshot records which categories had hooks attached and restore refuses
+ * when they are missing.
  *
  * Compatibility follows ADR 0003: MARKETPLACE_SNAPSHOT_MIGRATIONS is an
  * append-only registry of steps N -> N + 1 (pure functions of the payload),
@@ -40,10 +50,11 @@ import { snapshotFromJSON, snapshotToJSON } from "../testnet/snapshot-json.ts";
 import { settlementBatch } from "../settlement/batch.ts";
 import { isKnownReceiptVersion, verifySettlementReceipt } from "../settlement/engine.ts";
 import { LEGACY_SETTLEMENT_RECEIPT_VERSION, type SettlementBatch, type SettlementReceipt } from "../settlement/types.ts";
+import { MARKETPLACE_STATE_VERSION } from "./marketplace-state.ts";
 import { publicKeyHexOf, signEd25519, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
 
 export const MARKETPLACE_SNAPSHOT_KIND = "uep-marketplace-snapshot" as const;
-export const MARKETPLACE_SNAPSHOT_FORMAT_VERSION = 3;
+export const MARKETPLACE_SNAPSHOT_FORMAT_VERSION = 4;
 export const OLDEST_MIGRATABLE_MARKETPLACE_SNAPSHOT_FORMAT = 1;
 /** First format that must be signed. */
 export const FIRST_SIGNED_MARKETPLACE_SNAPSHOT_FORMAT = 3;
@@ -82,6 +93,21 @@ export type MarketplaceSnapshotPayload = {
   /** Format 3: order-id counter of the Marketplace (ids generated after a restore continue from it). */
   orderSequence: number;
   settlement: MarketplaceSettlementSection;
+  /** Format 4: full Marketplace state (null for a migrated format 1 / 2 / 3 snapshot: receipts only). */
+  state: MarketplaceStateSection | null;
+};
+
+/** Format 4: Marketplace state, encoded with marketplace-state.ts (tagged JSON). */
+export type MarketplaceStateSection = {
+  stateVersion: number;
+  /** Configuration the state depends on (checked on restore, not restored). */
+  config: Record<string, unknown>;
+  marketplace: Record<string, unknown>;
+  treasury: Record<string, unknown>;
+  reputation: Record<string, unknown>;
+  paymaster: Record<string, unknown> | null;
+  evidence: Record<string, unknown>;
+  settlementEngine: Record<string, unknown>;
 };
 
 export type MarketplaceSnapshot = MarketplaceSnapshotPayload & { snapshotHash: string; signatures?: MarketplaceSnapshotSignature[] };
@@ -136,6 +162,20 @@ export const MARKETPLACE_SNAPSHOT_MIGRATIONS: readonly MarketplaceSnapshotMigrat
       return { ...p, orderSequence: count, settlement };
     },
   },
+  {
+    from: 3,
+    to: 4,
+    title: "full Marketplace state section",
+    derivation: [
+      "state = null: format 3 persisted receipts and the order counter only; a migrated snapshot restores exactly what format 3 restored (receipts, legacy list, order counter)",
+      "receipts, orderSequence and the signature rule are unchanged (the source snapshot's signatures are checked on the snapshot as written)",
+    ],
+    fixtures: ["mkt-v3-receipts-signed.json"],
+    migrate(p: Record<string, unknown>): Record<string, unknown> {
+      if (p.formatVersion !== 3) throw new Error("MARKETPLACE_MIGRATION_3_4: expected format 3");
+      return { ...p, state: null };
+    },
+  },
 ]);
 
 /** Registry consistency (same rules as the ledger registry). */
@@ -162,7 +202,7 @@ function signatureMessage(snapshotHash: string): string {
 }
 
 /** Build a snapshot of the given receipts (execution order), signed by `signingKeys` (format 3). */
-export function buildMarketplaceSnapshot(input: { marketplaceId: string; treasuryId: string; networkId: string; height: number; orderSequence: number; receipts: readonly SettlementReceipt[]; legacyV1SettlementIds?: readonly string[]; signingKeys: readonly PrivateKeyLike[] }): MarketplaceSnapshot {
+export function buildMarketplaceSnapshot(input: { marketplaceId: string; treasuryId: string; networkId: string; height: number; orderSequence: number; receipts: readonly SettlementReceipt[]; legacyV1SettlementIds?: readonly string[]; state?: MarketplaceStateSection | null; signingKeys: readonly PrivateKeyLike[] }): MarketplaceSnapshot {
   if (!Number.isSafeInteger(input.height) || input.height < 0) throw new Error("MARKETPLACE_SNAPSHOT_HEIGHT_INVALID");
   if (!Number.isSafeInteger(input.orderSequence) || input.orderSequence < 0) throw new Error("MARKETPLACE_SNAPSHOT_SEQUENCE_INVALID");
   if (!Array.isArray(input.signingKeys) || input.signingKeys.length === 0) throw new Error("MARKETPLACE_SNAPSHOT_SIGNING_KEY_REQUIRED");
@@ -184,6 +224,7 @@ export function buildMarketplaceSnapshot(input: { marketplaceId: string; treasur
       receipts,
       legacyV1SettlementIds: [...(input.legacyV1SettlementIds ?? [])],
     },
+    state: input.state ?? null,
   };
   const snapshotHash = marketplaceSnapshotHash(payload);
   const signatures = input.signingKeys.map((k) => ({ publicKeyHex: publicKeyHexOf(k as PublicKeyLike), signature: signEd25519(signatureMessage(snapshotHash), k) }));
@@ -251,6 +292,12 @@ export function verifyMarketplaceSnapshot(snapshot: MarketplaceSnapshot, expect:
   if (!s || !Array.isArray(s.receiptVersions) || !s.receiptVersions.every(isKnownReceiptVersion) || !Array.isArray(s.receipts) || s.count !== s.receipts.length) throw new Error("MARKETPLACE_SNAPSHOT_INVALID: settlement");
   if (!Number.isSafeInteger(snapshot.orderSequence) || snapshot.orderSequence < 0) throw new Error("MARKETPLACE_SNAPSHOT_INVALID: orderSequence");
   if (!Array.isArray(s.legacyV1SettlementIds)) throw new Error("MARKETPLACE_SNAPSHOT_INVALID: legacyV1SettlementIds");
+  const st = snapshot.state;
+  if (st !== null) {
+    if (!st || typeof st !== "object" || st.stateVersion !== MARKETPLACE_STATE_VERSION) throw new Error("MARKETPLACE_SNAPSHOT_INVALID: state");
+    for (const k of ["config", "marketplace", "treasury", "reputation", "evidence", "settlementEngine"] as const) if (!st[k] || typeof st[k] !== "object") throw new Error(`MARKETPLACE_SNAPSHOT_INVALID: state.${k}`);
+    if (st.paymaster !== null && (!st.paymaster || typeof st.paymaster !== "object")) throw new Error("MARKETPLACE_SNAPSHOT_INVALID: state.paymaster");
+  }
   const legacy = new Set(s.legacyV1SettlementIds);
   for (const r of s.receipts) {
     if (!isKnownReceiptVersion(r.version) || !s.receiptVersions.includes(r.version) || !verifySettlementReceipt(r)) throw new Error("SETTLEMENT_RECEIPT_INVALID");
@@ -279,12 +326,13 @@ export function marketplaceSnapshotFromJSON(text: string): MarketplaceSnapshot {
 }
 
 /** Shape recorded in FORMAT.json (top-level, settlement and receipt keys). */
-export function marketplaceSnapshotShape(snapshot: MarketplaceSnapshot): { formatVersion: number; payloadKeys: string[]; settlementKeys: string[]; receiptKeys: string[] } {
+export function marketplaceSnapshotShape(snapshot: MarketplaceSnapshot): { formatVersion: number; payloadKeys: string[]; settlementKeys: string[]; receiptKeys: string[]; stateKeys: string[] } {
   const { snapshotHash: _h, signatures: _s, ...payload } = snapshot;
   return {
     formatVersion: snapshot.formatVersion,
     payloadKeys: Object.keys(payload).sort(),
     settlementKeys: Object.keys(snapshot.settlement).sort(),
     receiptKeys: Object.keys(snapshot.settlement.receipts[0] ?? {}).sort(),
+    stateKeys: Object.keys(snapshot.state ?? {}).sort(),
   };
 }

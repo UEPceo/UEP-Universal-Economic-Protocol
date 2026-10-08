@@ -66,6 +66,17 @@ Each derivation is pure and needs no clock and no keys:
 | `ticks` | `{ count: ceil(height / 12), maxBlocksPerTick: 12, mode: "capped" }` | Format 8 did not record producer ticks. This is the smallest count consistent with the 12-block cap. Checkpoints of format 8 snapshots carry no tick count, so the per-tick growth check across a chain link starts at the first format 9 snapshot. |
 | everything else | unchanged | |
 
+### Marketplace snapshot step 3 → 4 (full Marketplace state)
+
+`src/marketplace/marketplace-snapshot.ts`, its own registry (`MARKETPLACE_SNAPSHOT_MIGRATIONS`) and fixtures in `src/marketplace/fixtures/snapshots/` (`mkt-v1-…`, `mkt-v2-…`, `mkt-v3-receipts-signed.json`, the last written by the format 3 code at commit `287fb92` and signed with an ephemeral key that was discarded).
+
+| Field | Format 4 value | Reason |
+|---|---|---|
+| `state` | `null` | Format 3 persisted settlement receipts and the order counter only. A migrated snapshot restores exactly that (receipts-only shim); balances are re-funded from the external rail as before. A format 4 snapshot written by the current code carries the full state (balances, deposits, escrow holds, listings, orders, provider bonds, category holds, treasury, paymaster, evidence exposure, idempotency and replay records). |
+| everything else | unchanged | The source snapshot's hash and signatures are checked on the snapshot as written, before the step. |
+
+Not persisted by design: category service hooks, category settlement ports, oracle gates and drip / rollback capabilities (code and capabilities, re-attached by the process). Restore requires the same configuration (fee, paymaster, attester sets, attached category services, administrator: `MARKETPLACE_SNAPSHOT_CONFIG_MISMATCH`), a fresh Marketplace (`MARKETPLACE_SNAPSHOT_RESTORE_NOT_FRESH`) and a clock not behind the snapshot height (`MARKETPLACE_SNAPSHOT_HEIGHT_REGRESSED`), and re-checks value conservation per asset.
+
 ### Adding a format (example: format 8)
 
 1. Bump `SNAPSHOT_FORMAT_VERSION` to 8 in `src/testnet/ledger.ts` and change the payload.

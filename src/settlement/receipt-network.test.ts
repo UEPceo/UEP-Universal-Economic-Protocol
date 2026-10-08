@@ -58,7 +58,7 @@ test("format 1 Marketplace snapshot (v1 receipts) migrates to the current format
   const fx = marketplaceSnapshotFromJSON(fs.readFileSync(FIXTURE, "utf8"));
   assert.deepEqual(marketplaceMigrationRegistryProblems(), []);
   const migrated = migrateMarketplaceSnapshot(fx as never);
-  assert.equal(migrated.formatVersion, 3);
+  assert.equal(migrated.formatVersion, 4);
   assert.deepEqual(migrated.settlement.legacyV1SettlementIds, ["ord-fixture-0", "ord-fixture-1"]);
   assert.equal(migrated.networkId, null);
   assert.deepEqual(migrated.settlement.receiptVersions, [LEGACY_SETTLEMENT_RECEIPT_VERSION]);
@@ -84,7 +84,7 @@ test("migration: an unsigned format 2 snapshot restores only via the shim; count
   const fx = marketplaceSnapshotFromJSON(fs.readFileSync(FIXTURE_V2, "utf8"));
   assert.equal(fx.formatVersion, 2);
   const migrated = migrateMarketplaceSnapshot(fx as never);
-  assert.equal(migrated.formatVersion, 3);
+  assert.equal(migrated.formatVersion, 4);
   assert.equal(migrated.orderSequence, 3);
   assert.deepEqual(migrated.settlement.legacyV1SettlementIds, ["ord-fixture-0", "ord-fixture-1"]);
   assert.throws(() => mkK().restoreSnapshot(fx as never), /MARKETPLACE_SNAPSHOT_UNSIGNED/);
@@ -92,7 +92,7 @@ test("migration: an unsigned format 2 snapshot restores only via the shim; count
   assert.equal(m.restoreSnapshot(fx as never, { snapshotPublicKeys: [], acceptUnsignedLegacySnapshot: true }), 3);
   // The next snapshot is format 3, signed, and keeps the legacy list; it restores with the operator key.
   const next = m.exportSnapshot();
-  assert.equal(next.formatVersion, 3);
+  assert.equal(next.formatVersion, 4);
   assert.deepEqual(next.settlement.legacyV1SettlementIds, ["ord-fixture-0", "ord-fixture-1"]);
   assert.equal(mkK().restoreSnapshot(next), 3);
   // A new purchase after the migration never reuses a restored id.
