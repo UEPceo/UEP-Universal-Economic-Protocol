@@ -16,7 +16,9 @@ test("determinism lint: transition paths have no clock reads or external calls o
 });
 
 test("determinism lint: every allowlist entry is justified; outside tests only the two key generators and the NODE_ENV guard, line-scoped", () => {
-  assert.ok(ALLOWLIST.length <= 10); // v0.5.3: + two test-only entries (NODE_ENV toggle, Marketplace fixture read)
+  // v0.5.3: + two test-only entries (NODE_ENV toggle, Marketplace fixture read), + the format 3 Marketplace
+  // fixture read and the HPKE ephemeral key (RFC 9180 SetupBaseS), both line- or file-scoped below.
+  assert.ok(ALLOWLIST.length <= 12);
   const nonTest: string[] = [];
   for (const a of ALLOWLIST as Array<{ file: string; rule: string; reason: string; match?: string[] }>) {
     assert.ok(a.reason.length > 40, a.file);
@@ -30,9 +32,15 @@ test("determinism lint: every allowlist entry is justified; outside tests only t
       continue;
     }
     assert.equal(a.rule, "randomness", a.file);
+    if (a.file === "src/core/hpke.ts") {
+      // The HPKE sender draws its ephemeral key; only the randomBytes import and that one call are covered.
+      assert.ok(a.match.every((m) => m.includes("randomBytes")), "hpke.ts: randomBytes lines only");
+      assert.match(a.reason, /RFC 9180/);
+      continue;
+    }
     assert.match(a.reason, /poisoned-clock\.test\.ts/);
   }
-  assert.deepEqual(nonTest.sort(), ["src/core/ed25519.ts", "src/core/test-only.ts", "src/service/iot-m2m.ts"]);
+  assert.deepEqual(nonTest.sort(), ["src/core/ed25519.ts", "src/core/hpke.ts", "src/core/test-only.ts", "src/service/iot-m2m.ts"]);
   // A line-scoped entry does not cover another randomness call in the same file.
   const ed = checkRepository(undefined, { "src/core/ed25519.ts": 'import { randomBytes } from "node:crypto";\nexport const r = () => randomBytes(8);\n' });
   assert.ok(ed.violations.some((v: { file: string; rule: string }) => v.file === "src/core/ed25519.ts" && v.rule === "randomness"));

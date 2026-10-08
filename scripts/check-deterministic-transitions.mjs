@@ -150,11 +150,6 @@ export const ALLOWLIST = [
     reason: "Test-only node:fs read of the committed golden format 3 Marketplace snapshot fixture (src/marketplace/fixtures/snapshots); static repository data, not live data.",
   },
   {
-    file: "src/testnet/history-index.test.ts",
-    rule: "performance-now",
-    reason: "Test-only timing of the txId index lookup (asserted by the test); never reaches a transition.",
-  },
-  {
     file: "src/testnet/key-derived-accounts.test.ts",
     rule: "net-import",
     reason: "Test-only node:fs read of a committed golden snapshot fixture (v2 account ids); static repository data, not live data.",

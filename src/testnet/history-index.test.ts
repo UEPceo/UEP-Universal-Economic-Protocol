@@ -45,19 +45,23 @@ test("a committed transaction is found through the index; replay is refused befo
 
 test("the index follows `txs` when the array is replaced and does not scan the history per lookup", () => {
   const l = mk();
-  const synth = (i: number) => ({ txId: new Fr(BigInt(i) * 7n + 1n), nullifier: new Fr(BigInt(i) * 11n + 3n) }) as unknown as UepTransaction;
+  let reads = 0; // counts txId reads: a history scan per lookup would read every entry again
+  const synth = (i: number) => {
+    const txId = new Fr(BigInt(i) * 7n + 1n);
+    return { get txId() { reads++; return txId; }, nullifier: new Fr(BigInt(i) * 11n + 3n) } as unknown as UepTransaction;
+  };
   l.txs = Array.from({ length: 1_000 }, (_, i) => synth(i));
   assert.equal(l.hasCommittedTx(new Fr(7n * 999n + 1n)), true);
   l.txs = Array.from({ length: 100_000 }, (_, i) => synth(i));
   assert.equal(l.hasCommittedTx(new Fr(7n * 99_999n + 1n)), true, "rebuilt after the array was replaced");
   assert.equal(l.hasCommittedTx(new Fr(2n)), false);
-  // After the one-time build, a lookup is a Set probe: 10 000 lookups at 100 000 transactions stay far
-  // below one full scan per lookup (each scan of 100 000 Fr comparisons takes milliseconds).
+  // After the one-time build, a lookup is a Set probe: 10 000 lookups (hits and misses) read no
+  // history entry at all (deterministic; no timing).
   const probe = new Fr(123_456_789n);
-  const t0 = performance.now();
-  for (let i = 0; i < 10_000; i++) l.hasCommittedTx(probe);
-  const perLookupMs = (performance.now() - t0) / 10_000;
-  assert.ok(perLookupMs < 0.05, `lookup ${perLookupMs.toFixed(4)} ms`);
+  const before = reads;
+  for (let i = 0; i < 10_000; i++) { l.hasCommittedTx(probe); l.hasCommittedTx(new Fr(7n * BigInt(i) + 1n)); }
+  assert.equal(reads, before, "no history entry is read per lookup");
   l.txs.push(synth(200_000));
   assert.equal(l.hasCommittedTx(new Fr(7n * 200_000n + 1n)), true, "appended transactions are indexed incrementally");
+  assert.equal(reads, before + 1, "an append indexes only the new entry");
 });
