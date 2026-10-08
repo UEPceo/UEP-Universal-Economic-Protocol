@@ -128,7 +128,7 @@ export function publishAs(m: DigitalServicesMarketplace, input: Parameters<Digit
  */
 export function reserveAs(
   m: DigitalServicesMarketplace,
-  input: { listingId: string; buyerId: string; quantity: bigint; orderId?: string; idempotencyKey?: string; gasQuote?: GasQuote },
+  input: { listingId: string; buyerId: string; quantity: bigint; orderId?: string; idempotencyKey?: string; gasQuote?: GasQuote; notAfterHeight?: number },
   opts: { credit?: bigint } = {},
 ): ServiceOrder {
   const asset = m.getListing(input.listingId).asset;
@@ -136,7 +136,7 @@ export function reserveAs(
   const credit = opts.credit ?? 1_000_000n;
   if (credit > 0n && m.availableBalance(asset, input.buyerId) < credit) testCredit(m, input.buyerId, asset, credit - m.availableBalance(asset, input.buyerId));
   const idempotencyKey = input.idempotencyKey ?? `auto-${++autoKey}`;
-  const signature = signReservation({ marketplaceId: m.marketplaceId, listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId }, identity.privateKey);
+  const signature = signReservation({ marketplaceId: m.marketplaceId, listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId, notAfterHeight: input.notAfterHeight }, identity.privateKey);
   const order = m.reserve({ ...input, idempotencyKey, signature });
   let tracked = orderBuyers.get(m);
   if (!tracked) { tracked = new Map(); orderBuyers.set(m, tracked); }

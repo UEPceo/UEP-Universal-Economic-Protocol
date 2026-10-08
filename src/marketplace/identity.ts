@@ -26,6 +26,8 @@ export type ReservationAuthorization = {
   idempotencyKey: string;
   orderId?: string;
   gasQuoteId?: string;
+  /** v0.5.3 (optional): last Marketplace height at which the reservation may be accepted. Signed only when set (earlier signatures are unchanged). */
+  notAfterHeight?: number;
 };
 
 export type CancellationAuthorization = { marketplaceId?: string; orderId: string; buyerId: string };
@@ -48,6 +50,7 @@ export function reservationMessage(a: ReservationAuthorization): string {
     idempotencyKey: a.idempotencyKey,
     orderId: a.orderId ?? null,
     gasQuoteId: a.gasQuoteId ?? null,
+    ...(a.notAfterHeight !== undefined ? { notAfterHeight: a.notAfterHeight } : {}),
   });
 }
 

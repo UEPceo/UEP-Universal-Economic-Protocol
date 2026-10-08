@@ -38,6 +38,7 @@ The oracle, settlement-anchor and listing changes of 0.5.3 are described in `CHA
 - `maxUnfundedReservationsPerListing` (default 3) → `UNFUNDED_RESERVATION_LIMIT_REACHED`.
 - `ValueAccounting` adds `categoryHeld`, `treasuryTransfers`, `subsidiesPaid`.
 - `SettlementRecord.receiptHash`.
+- v0.5.3: `exportSnapshot()` / `restoreSnapshot()` carry the full state (snapshot format 4, `src/marketplace/marketplace-state.ts`); `closedOrderRetentionHeights`, `pruneRetention({ budget?, listingAttempts? })`, `orderTombstone(orderId)`, `retentionStats()`, `ORDER_PRUNED`; reservations accept an optional signed `notAfterHeight` (`RESERVATION_AUTHORIZATION_EXPIRED`); `MAX_IDEMPOTENCY_KEY_LENGTH = 256` (`IDEMPOTENCY_KEY_TOO_LONG`).
 
 ## Category: `src/category`
 

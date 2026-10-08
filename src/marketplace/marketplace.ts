@@ -171,6 +171,21 @@ export type ListingInput = Omit<ServiceListing, "listingId" | "available" | "act
   evidencePolicy?: ListingEvidencePolicy;
 };
 
+/** v0.5.3 retention: what remains of a pruned closed order. */
+export type OrderTombstone = {
+  orderId: string;
+  listingId: string;
+  buyerId: string;
+  providerId: string;
+  status: OrderStatus;
+  closedAt: number;
+  /** Settlement receipt hash (SETTLED / REFUNDED; the receipt itself stays in the settlement engine). */
+  settlementReceiptHash: string | null;
+};
+
+/** v0.5.3: default closed-order retention, 30 days of heights. */
+export const DEFAULT_CLOSED_ORDER_RETENTION_HEIGHTS = 30 * 17_280;
+
 export type ServiceOrder = {
   /**
    * v0.5.3: outcome of the oracle check at reserve() for an oracle-bound
@@ -308,6 +323,14 @@ export type MarketplaceConfig = {
   reservationTtlHeights?: number;
   reservationTtlMs?: number;
   maxListingsPerWindow?: number;
+  /**
+   * v0.5.3: closed orders (SETTLED, REFUNDED, CANCELLED, EXPIRED) keep their
+   * full record for this many heights after closing (default 30 days =
+   * 518 400 heights), then pruneRetention() replaces the record by a compact
+   * tombstone (status, close height, settlement receipt hash). Reviews and
+   * reads of a closed order must happen within this window.
+   */
+  closedOrderRetentionHeights?: number;
   /** Listing rate-limit window in heights (default 720 = 1 h). */
   listingWindowHeights?: number;
   listingWindowMs?: number;
@@ -503,6 +526,7 @@ function makeId(prefix: string, payload: string, counter: number): string {
  */
 export const MARKETPLACE_STATE_FIELDS = Object.freeze([
   "sequence", "listings", "orders", "held", "settlements", "listingAttempts", "orderIdempotency", "operationIdempotency",
+  "closedQueue", "orderTombstones", "idempotencyExpiry", "prunedCapacityConsumed",
   "listingIndex", "fingerprintIndex", "similarityIndex", "reservationQueue", "activeReservationsByIdentity", "usedCreditIds",
   "identities", "identityKeys", "accounts", "locked", "credited", "feesCollected", "gasCollected", "unfundedByIdentityListing",
   "categoryHolds", "categoryHeldTotals", "treasuryTransfers", "subsidiesPaid", "listingBonds", "listingBondTotals", "openBondedOrders",
@@ -514,6 +538,25 @@ const REPUTATION_STATE_FIELDS = Object.freeze(["events", "ratedOrders"]);
 const PAYMASTER_STATE_FIELDS = Object.freeze(["reserves", "sponsored", "captured", "outstanding", "actorOutstanding", "expiryHeap", "receipts"]);
 const EVIDENCE_STATE_FIELDS = Object.freeze(["exposure"]);
 const SETTLEMENT_ENGINE_STATE_FIELDS = Object.freeze(["halted"]);
+
+/** v0.5.3: longest accepted idempotency key (bounds the memory of one idempotency entry). */
+export const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
+
+function isClosedStatus(status: OrderStatus): boolean {
+  return status === "SETTLED" || status === "REFUNDED" || status === "CANCELLED" || status === "EXPIRED";
+}
+
+/** Insert keeping `at` ascending (binary search; stable for equal keys). */
+function insertSorted(list: Array<{ at: number; key: string }>, item: { at: number; key: string }): void {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (list[mid]!.at <= item.at) lo = mid + 1;
+    else hi = mid;
+  }
+  list.splice(lo, 0, item);
+}
 
 /** v0.5.1: the signed terms, domain profile and windows of a listing cannot change after publication (only `available` and `active` stay writable) and no term can be added. */
 function freezeListingTerms(listing: ServiceListing): void {
@@ -562,7 +605,18 @@ export class DigitalServicesMarketplace {
   readonly #evidence: EvidenceCaps;
   private readonly listingAttempts = new Map<string, number[]>();
   private readonly orderIdempotency = new Map<string, string>();
-  private readonly operationIdempotency = new Map<string, string>();
+  /** v0.5.3: fund / deliver idempotency per order (orderId -> op|key -> value); dropped with the order's full record. */
+  private readonly operationIdempotency = new Map<string, Map<string, string>>();
+  /** v0.5.3 retention: closed orders in closing order (close height, id). */
+  private readonly closedQueue: Array<{ at: number; orderId: string }> = [];
+  /** v0.5.3 retention: compact records of pruned closed orders (kept: an id is never reused, replays are refused). */
+  private readonly orderTombstones = new Map<string, OrderTombstone>();
+  /** v0.5.3 retention: reservation idempotency entries of authorizations signed with notAfterHeight, by expiry (sorted). */
+  private readonly idempotencyExpiry: Array<{ at: number; key: string }> = [];
+  /** v0.5.3 retention: capacity consumed by pruned orders per listing (keeps capacityAccounting exact). */
+  private readonly prunedCapacityConsumed = new Map<string, bigint>();
+  /** v0.5.3: closed-order retention window (ticks). */
+  readonly closedOrderRetention: number;
   private readonly listingIndex = new Map<string, Set<string>>();
   /** v0.5.0 (DOS-001): exact catalog fingerprint -> listing id. */
   private readonly fingerprintIndex = new Map<string, string>();
@@ -648,6 +702,7 @@ export class DigitalServicesMarketplace {
       listingWindow: clock.window("listingWindow", config.listingWindowHeights, config.listingWindowMs, DEFAULT_LISTING_WINDOW_HEIGHTS),
     };
     this.baseWindows = Object.freeze(base);
+    this.closedOrderRetention = clock.window("closedOrderRetention", config.closedOrderRetentionHeights, undefined, DEFAULT_CLOSED_ORDER_RETENTION_HEIGHTS);
     this.reservationTtlMs = clock.toNominalMs(base.reservationTtl);
     this.maxListingsPerWindow = config.maxListingsPerWindow ?? 10;
     this.deliveryValidator = config.deliveryValidator;
@@ -1169,12 +1224,16 @@ export class DigitalServicesMarketplace {
    * request must carry the buyer's Ed25519 signature (see signReservation) and
    * the reservation deposit is locked from the buyer's available balance.
    */
-  reserve(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote }): ServiceOrder {
+  reserve(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number }): ServiceOrder {
     this.assertReservationAuthorized(input);
-    // A signed request authorizes at most one reservation: replays return the same order.
+    // v0.5.3: an authorization signed with notAfterHeight is refused after it (its idempotency entry can then be dropped).
+    if (input.notAfterHeight !== undefined && this.now() > input.notAfterHeight) throw new Error("RESERVATION_AUTHORIZATION_EXPIRED");
+    // A signed request authorizes at most one reservation: replays return the same order
+    // (ORDER_PRUNED once its closed record was pruned: still no second reservation).
     const previous = this.orderIdempotency.get(tupleKey(input.buyerId, input.idempotencyKey));
     if (previous) return { ...this.order(previous) };
     this.reapExpiredReservations();
+    this.pruneRetention({ budget: 8, listingAttempts: false });
     const listing = this.listings.get(input.listingId);
     if (!listing || !listing.active) throw new Error("LISTING_NOT_FOUND");
     if (input.quantity <= 0n || input.quantity > listing.available) throw new Error("INSUFFICIENT_CAPACITY");
@@ -1192,9 +1251,9 @@ export class DigitalServicesMarketplace {
     // generated ids skip it, an explicit one is refused.
     let orderId = input.orderId ?? makeId("ord", `${listing.listingId}|${input.buyerId}|${input.quantity}`, ++this.sequence);
     if (input.orderId === undefined) {
-      while (this.orders.has(orderId) || this.settlementEngine.hasExecuted(orderId)) orderId = makeId("ord", `${listing.listingId}|${input.buyerId}|${input.quantity}`, ++this.sequence);
+      while (this.orders.has(orderId) || this.orderTombstones.has(orderId) || this.settlementEngine.hasExecuted(orderId)) orderId = makeId("ord", `${listing.listingId}|${input.buyerId}|${input.quantity}`, ++this.sequence);
     }
-    if (this.orders.has(orderId) || this.settlementEngine.hasExecuted(orderId)) throw new Error("ORDER_ID_CONFLICT");
+    if (this.orders.has(orderId) || this.orderTombstones.has(orderId) || this.settlementEngine.hasExecuted(orderId)) throw new Error("ORDER_ID_CONFLICT");
     // v0.5.2: category settlement ids ("swap:", "relay:", "dispute:") share the treasury and engine id space.
     if (/^(?:swap|relay|dispute):/.test(orderId)) throw new Error("ORDER_ID_RESERVED");
     const gasFee = input.gasQuote?.gasFee ?? 0n;
@@ -1262,23 +1321,27 @@ export class DigitalServicesMarketplace {
         throw error;
       }
     }
-    this.orderIdempotency.set(tupleKey(input.buyerId, input.idempotencyKey), orderId);
+    const idemKey = tupleKey(input.buyerId, input.idempotencyKey);
+    this.orderIdempotency.set(idemKey, orderId);
+    if (input.notAfterHeight !== undefined) insertSorted(this.idempotencyExpiry, { at: input.notAfterHeight, key: idemKey });
     return { ...order };
   }
 
   /** Throws unless `buyerId` is registered and `signature` is its valid signReservation() signature. */
-  assertReservationAuthorized(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote }): void {
+  assertReservationAuthorized(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number }): void {
     if (!input.buyerId) throw new Error("BUYER_REQUIRED");
     if (this.isReservedIdentity(input.buyerId)) throw new Error("RESERVED_IDENTITY");
     const identity = this.identities.get(input.buyerId);
     if (!identity) throw new Error("IDENTITY_NOT_REGISTERED");
     if (!input.idempotencyKey) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
-    const message = reservationMessage({ marketplaceId: this.marketplaceId, listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId });
+    if (input.notAfterHeight !== undefined && (!Number.isSafeInteger(input.notAfterHeight) || input.notAfterHeight < 0)) throw new Error("RESERVATION_NOT_AFTER_INVALID");
+    if (typeof input.idempotencyKey !== "string" || input.idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) throw new Error("IDEMPOTENCY_KEY_TOO_LONG");
+    const message = reservationMessage({ marketplaceId: this.marketplaceId, listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId, notAfterHeight: input.notAfterHeight });
     if (!verifyEd25519(message, input.signature, this.identityKeys.get(input.buyerId)!)) throw new Error("RESERVATION_SIGNATURE_INVALID");
   }
 
   /** Alias of reserve() (same signed, funded, fail-closed rules). */
-  acceptOrder(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote }): ServiceOrder {
+  acceptOrder(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number }): ServiceOrder {
     return this.reserve(input);
   }
 
@@ -1288,7 +1351,7 @@ export class DigitalServicesMarketplace {
     const order = this.order(orderId);
     if (actor !== order.buyerId) throw new Error("ORDER_ACCESS_FORBIDDEN");
     if (idempotencyKey) {
-      const previous = this.operationIdempotency.get(tupleKey("fund", orderId, idempotencyKey));
+      const previous = this.operationIdempotency.get(orderId)?.get(tupleKey("fund", idempotencyKey));
       if (previous) {
         if (previous !== tupleKey(orderId, amount.toString())) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
         return { ...order };
@@ -1330,7 +1393,7 @@ export class DigitalServicesMarketplace {
     order.status = "HELD";
     order.updatedAt = this.now();
     order.version++;
-    if (idempotencyKey) this.operationIdempotency.set(tupleKey("fund", orderId, idempotencyKey), tupleKey(orderId, amount.toString()));
+    if (idempotencyKey) this.recordOperation(orderId, tupleKey("fund", idempotencyKey), tupleKey(orderId, amount.toString()));
     return { ...order };
   }
 
@@ -1341,7 +1404,7 @@ export class DigitalServicesMarketplace {
     const order = this.order(orderId);
     if (actor !== order.providerId) throw new Error("PROVIDER_NOT_AUTHORIZED");
     if (idempotencyKey) {
-      const previous = this.operationIdempotency.get(tupleKey("deliver", orderId, idempotencyKey));
+      const previous = this.operationIdempotency.get(orderId)?.get(tupleKey("deliver", idempotencyKey));
       if (previous) {
         if (previous !== orderId) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
         return { ...order };
@@ -1361,7 +1424,7 @@ export class DigitalServicesMarketplace {
     order.deliveredAt = this.now();
     order.updatedAt = order.deliveredAt;
     order.version++;
-    if (idempotencyKey) this.operationIdempotency.set(tupleKey("deliver", orderId, idempotencyKey), orderId);
+    if (idempotencyKey) this.recordOperation(orderId, tupleKey("deliver", idempotencyKey), orderId);
     return { ...order };
   }
 
@@ -1696,7 +1759,7 @@ export class DigitalServicesMarketplace {
   capacityAccounting(listingId: string): CapacityAccounting {
     const listing = this.listing(listingId);
     let reserved = 0n;
-    let consumed = 0n;
+    let consumed = this.prunedCapacityConsumed.get(listingId) ?? 0n;
     for (const order of this.orders.values()) {
       if (order.listingId !== listingId) continue;
       if (order.status === "ACCEPTED" || order.status === "HELD" || order.status === "DELIVERED" || order.status === "DISPUTED") reserved += order.quantity;
@@ -1754,6 +1817,7 @@ export class DigitalServicesMarketplace {
     order.updatedAt = this.now();
     order.settlementReceiptHash = receipt.receiptHash;
     order.version++;
+    this.closedQueue.push({ at: order.updatedAt, orderId: order.orderId });
     this.applyCapacityRestore(order, capacity.consumed, capacity.restore);
     this.decrementActiveReservation(order.buyerId);
     this.releaseEvidence(order);
@@ -1917,6 +1981,7 @@ export class DigitalServicesMarketplace {
     order.status = status;
     order.updatedAt = this.now();
     order.version++;
+    this.closedQueue.push({ at: order.updatedAt, orderId: order.orderId });
     if (wasUnfunded) this.adjustUnfunded(order, -1);
     this.decrementActiveReservation(order.buyerId);
     this.releaseEvidence(order);
@@ -2186,7 +2251,78 @@ export class DigitalServicesMarketplace {
 
   private order(orderId: string): ServiceOrder {
     const order = this.orders.get(orderId);
-    if (!order) throw new Error("ORDER_NOT_FOUND");
+    if (!order) {
+      const t = this.orderTombstones.get(orderId);
+      if (t) throw new Error(`ORDER_PRUNED: order closed as ${t.status} at height ${t.closedAt}; its full record was pruned after the retention window (orderTombstone())`);
+      throw new Error("ORDER_NOT_FOUND");
+    }
     return order;
+  }
+
+  private recordOperation(orderId: string, key: string, value: string): void {
+    let ops = this.operationIdempotency.get(orderId);
+    if (!ops) { ops = new Map(); this.operationIdempotency.set(orderId, ops); }
+    ops.set(key, value);
+  }
+
+  /** v0.5.3: compact record of a pruned closed order (undefined while the full record is kept). */
+  orderTombstone(orderId: string): OrderTombstone | undefined {
+    const t = this.orderTombstones.get(orderId);
+    return t ? { ...t } : undefined;
+  }
+
+  /**
+   * v0.5.3 retention policy (height-based; never weakens replay protection):
+   *  - a closed order keeps its full record for `closedOrderRetention` after
+   *    closing; then the record, its settlement record and its fund / deliver
+   *    idempotency entries are dropped and a tombstone remains (status, close
+   *    height, settlement receipt hash). The id is never reused (reserve()
+   *    treats a tombstone like an existing order), replays of the reservation
+   *    or of fund / deliver are refused (ORDER_PRUNED), and the settlement
+   *    receipt stays in the settlement engine (SETTLEMENT_ALREADY_EXECUTED);
+   *  - a reservation idempotency entry is dropped once its authorization's
+   *    signed notAfterHeight has passed (a replay is then refused as
+   *    RESERVATION_AUTHORIZATION_EXPIRED); entries of authorizations without
+   *    notAfterHeight are kept (they could be replayed otherwise);
+   *  - listing rate-limit timestamps outside the listing window are dropped.
+   * Processes at most `budget` closed orders and idempotency entries per call
+   * (reserve() calls it with a small budget and without the listing sweep;
+   * operators call it periodically, e.g. once per block, with the defaults).
+   */
+  pruneRetention(opts: { budget?: number; listingAttempts?: boolean } = {}): { orders: number; idempotency: number; providers: number } {
+    const budget = opts.budget ?? 256;
+    const now = this.now();
+    let orders = 0;
+    while (orders < budget && this.closedQueue.length > 0 && now - this.closedQueue[0]!.at >= this.closedOrderRetention) {
+      const { at, orderId } = this.closedQueue.shift()!;
+      const order = this.orders.get(orderId);
+      if (!order || !isClosedStatus(order.status)) continue;
+      this.orderTombstones.set(orderId, { orderId, listingId: order.listingId, buyerId: order.buyerId, providerId: order.providerId, status: order.status, closedAt: at, settlementReceiptHash: order.settlementReceiptHash ?? null });
+      const consumed = order.capacityConsumed ?? 0n;
+      if (consumed > 0n) this.prunedCapacityConsumed.set(order.listingId, (this.prunedCapacityConsumed.get(order.listingId) ?? 0n) + consumed);
+      this.orders.delete(orderId);
+      this.settlements.delete(orderId);
+      this.operationIdempotency.delete(orderId);
+      orders++;
+    }
+    let idempotency = 0;
+    while (idempotency < budget && this.idempotencyExpiry.length > 0 && this.idempotencyExpiry[0]!.at < now) {
+      const { key } = this.idempotencyExpiry.shift()!;
+      if (this.orderIdempotency.delete(key)) idempotency++;
+    }
+    let providers = 0;
+    if (opts.listingAttempts ?? true) {
+      for (const [provider, times] of this.listingAttempts) {
+        const recent = times.filter((t) => now - t < this.baseWindows.listingWindow);
+        if (recent.length === 0) { this.listingAttempts.delete(provider); providers++; }
+        else if (recent.length !== times.length) this.listingAttempts.set(provider, recent);
+      }
+    }
+    return { orders, idempotency, providers };
+  }
+
+  /** v0.5.3: sizes of the retained structures (for monitoring the retention policy). */
+  retentionStats(): { orders: number; closedPending: number; tombstones: number; reservationIdempotency: number; operationIdempotency: number; listingAttemptProviders: number } {
+    return { orders: this.orders.size, closedPending: this.closedQueue.length, tombstones: this.orderTombstones.size, reservationIdempotency: this.orderIdempotency.size, operationIdempotency: this.operationIdempotency.size, listingAttemptProviders: this.listingAttempts.size };
   }
 }
