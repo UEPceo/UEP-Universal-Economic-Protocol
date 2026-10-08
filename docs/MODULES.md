@@ -22,6 +22,7 @@ flowchart TB
     MTR["Marketplace treasury<br/>marketplace/economy.ts"]
     CAT["Category modules<br/>src/category: hashlock swap · relay · dispute · drip"]
     IOT["IoT / M2M service<br/>src/service/iot-m2m*"]
+    LSA["Ledger service adapters<br/>src/service: height producer · submit queue · worker host"]
   end
   subgraph L3["Settlement & policy — Implemented (testnet)"]
     SET["Settlement engine + anchors<br/>src/settlement"]
@@ -33,7 +34,7 @@ flowchart TB
     IDN["Identity / wallet<br/>src/identity"]
   end
   subgraph L1["Core primitives — Implemented (testnet)"]
-    CORE["src/core: Poseidon BN254, SMT, notes, nullifiers, transactions (1–8 inputs),<br/>fees, assets + registry, heights, domain profiles, RFC 9162 Merkle, zk-tx adapter"]
+    CORE["src/core: Poseidon BN254, SMT, notes, nullifiers, transactions (1–8 inputs),<br/>fees, assets + registry, heights, domain profiles, RFC 9162 Merkle, zk-tx adapter, HPKE"]
   end
   subgraph LAB["Research labs — Experimental (lab)"]
     CONS["Consensus labs<br/>src/lab/uep34–38"]
@@ -54,6 +55,7 @@ flowchart TB
   ORA -- "OraclePolicyGate (prices)" --> MKT
   ORA -- "gate" --> CAT
   ORA -- "gate" --> IOT
+  LSA --> LED
   LED --> CORE
   LED --> IDN --> CORE
   NET --> CORE
@@ -86,18 +88,19 @@ ledger verifies anchored settlement receipts itself and never calls the Marketpl
 | 14 | Consensus / node labs | `src/lab` | Experimental (lab) | 0.5.0 | `test:lab`, `test:lab:known` |
 | 15 | Agents | `src/agent` | Experimental (lab) | 0.5.0 | `test:lab` |
 | 16 | Rust / ZK | `uep-core` | Experimental (lab) | 0.5.0 | `test:rust`, `build:uep-zk` |
+| 17 | Ledger service adapters (height producer, submit queue, worker host) | `src/service/height-producer.ts`, `ledger-submit-queue.ts`, `ledger-worker-host.ts` | Implemented (testnet) | 0.5.1 (queue, worker 0.5.3) | `test:marketplace` |
 
 ---
 
 ## 1. Core primitives (`src/core`)
-- **Purpose:** primitives shared by every other module: Poseidon BN254 hash, field arithmetic, sparse Merkle tree (compressed since v0.5.0), notes, nullifiers, transactions (single- and multi-input since v0.5.3), fee rule, asset ids and the signed asset registry manifest, Ed25519, block height, domain profiles, RFC 9162 Merkle tree (inclusion and, since v0.5.3, consistency proofs), the zk-tx adapter (v0.5.3).
+- **Purpose:** primitives shared by every other module: Poseidon BN254 hash, field arithmetic, sparse Merkle tree (compressed since v0.5.0), notes, nullifiers, transactions (single- and multi-input since v0.5.3), fee rule, asset ids and the signed asset registry manifest, Ed25519, block height, domain profiles, RFC 9162 Merkle tree (inclusion and, since v0.5.3, consistency proofs), the zk-tx adapter (v0.5.3), the height authority (v0.5.3) and HPKE (RFC 9180 base mode, X25519 / HKDF-SHA256 / ChaCha20-Poly1305, node:crypto, v0.5.3; used to seal relay payloads end to end).
 - **Status:** Implemented (testnet).
-- **Introduced:** v0.3.0; Poseidon protocol hash v0.5.0; heights and domain profiles v0.5.1; RFC 9162 Merkle v0.5.2; multi-input, consistency proofs, zk-tx adapter v0.5.3.
+- **Introduced:** v0.3.0; Poseidon protocol hash v0.5.0; heights and domain profiles v0.5.1; RFC 9162 Merkle v0.5.2; multi-input, consistency proofs, zk-tx adapter, HPKE v0.5.3.
 - **Tests:** `npm run test:protocol` (includes `src/core/*.test.ts` and the RFC test vectors in `crypto-vectors.test.ts`); `npm run lint:determinism`.
 - **Depends on:** nothing outside `src/core`.
 
 ## 2. Testnet reference ledger (`src/testnet`)
-- **Purpose:** deterministic, local, in-process state machine: accounts, multi-asset balances, signed spends with 1–8 input notes, nullifier replay protection, protocol fee (0.1 %, min. 1 unit) into the protocol treasury, snapshots with chained migrations (format 8). Since v0.5.3: optional signed asset registry (unknown / deprecated assets refused, registry hash in the snapshot) and settlement anchors (Marketplace receipts verified and hash-chained into ledger state).
+- **Purpose:** deterministic, local, in-process state machine: accounts, multi-asset balances, signed spends with 1–8 input notes, nullifier replay protection, protocol fee (0.1 %, min. 1 unit) into the protocol treasury, snapshots with chained migrations (format 9). Since v0.5.3: optional signed asset registry (unknown / deprecated assets refused, registry hash in the snapshot), settlement anchors (Marketplace receipts verified and hash-chained into ledger state), O(1) txId / committed-nullifier indexes for the replay checks (rebuilt on restore) and the height authority (only a running height producer advances the height).
 - **Status:** Implemented (testnet), single node, in-process.
 - **Introduced:** v0.3.0; per-asset isolation v0.4.7; snapshot migration chain v0.5.1; registry, anchors and multi-input v0.5.3.
 - **Tests:** `npm run test:protocol`, `npm run check:snapshot-compat`, `npm run smoke:testnet`, `npm run quickstart`.
@@ -123,7 +126,7 @@ Not a separate code module; two distinct accounting concepts:
 - Neither is a token treasury, and neither gives anyone a claim.
 
 ## 6. Marketplace (`src/marketplace`)
-- **Purpose:** service listings, capacity, orders, HOLD / reservation lifecycle, delivery hashing, reputation, signed order actions, buyer disputes with arbiters and timeout outcome; snapshot / restore including settlement receipts (format 2, v0.5.3); optional oracle reference prices on listings (v0.5.3).
+- **Purpose:** service listings, capacity, orders, HOLD / reservation lifecycle, delivery hashing, reputation, signed order actions, buyer disputes with arbiters and timeout outcome; signed snapshot / restore of the full Marketplace state (format 4, v0.5.3: balances, holds, orders, bonds, treasury, paymaster, idempotency records; `marketplace-state.ts`); height-based retention of closed orders and expiring idempotency records (v0.5.3); optional oracle reference prices on listings (v0.5.3).
 - **Status:** Implemented (testnet). Not an end-to-end transaction through the consensus / ZK stack.
 - **Introduced:** v0.3.0; signed actions and disputes v0.4.4; settlement through the engine v0.5.2; snapshot, anchors and oracle gate v0.5.3.
 - **Tests:** `npm run test:marketplace`, `npm run simulate:20k`.
@@ -194,6 +197,13 @@ Subsidy claims bound to the settlement index written by swap / relay; at most 50
 - **Tests:** `npm run test:rust`, `npm run build:uep-zk`.
 - **What remains for alignment with the core:** see [`LABS.md`](./LABS.md) point 7.
 
-## 17. Planned / research
+## 17. Ledger service adapters (`src/service/height-producer.ts`, `ledger-submit-queue.ts`, `ledger-worker-host.ts`)
+- **Purpose:** node tooling around the ledger, outside the transitions. `HeightProducer` turns monotonic real time into heights (5 s minimum block spacing, at most 12 blocks per tick) and, since v0.5.3, holds the ledger's height authority while it runs. `LedgerSubmitQueue` (v0.5.3) is a bounded FIFO with queue-wait timeout and backpressure (`LEDGER_BUSY` with `retryAfterSeconds`; HTTP 503 + `Retry-After` on `POST /v1/ledger/transactions`). `LedgerWorkerHost` (v0.5.3) runs the ledger on a `node:worker_threads` worker so Poseidon / SMT work does not block the service event loop ([`PERFORMANCE.md`](./PERFORMANCE.md)).
+- **Status:** Implemented (testnet).
+- **Introduced:** v0.5.1 (height producer); v0.5.3 (height authority, submit queue, worker host).
+- **Tests:** `height-producer.test.ts`, `ledger-submit-queue.test.ts`, `ledger-worker-host.test.ts` (in `test:marketplace`).
+- **Depends on:** testnet, core.
+
+## 18. Planned / research
 - **Planned:** IoT multi-attester evidence; binding relay recipient X25519 keys to Marketplace identities (HPKE sealing itself is in v0.5.3); arbiter appeal / stake; circuit-friendly account ids (see [`ROADMAP.md`](../ROADMAP.md)).
 - **Research:** multi-node public network, delay-tolerant and interplanetary settlement. Nothing operational.

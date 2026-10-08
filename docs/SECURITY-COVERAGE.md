@@ -12,6 +12,7 @@ This document states the review status of the public UEP reference. It is a disc
 | v0.5.1 | Report not yet published in this repository | None | Deterministic transitions, compatibility policy |
 | v0.5.2 | Yes, on main `7173d37`; report not yet published in this repository | None | Findings addressed on the `v0.5.3-fixes` branch |
 | v0.5.3 (branch) | Report not yet published in this repository | None | See `docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md` |
+| v0.5.3 (branch, `2cc37f3`) | External review provided by the project director, 2026-10-08; report not published in this repository | Per-finding verification and status in `docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md` (section "External review provided by the project director, 2026-10-08") | 8 findings. Confirmed and fixed: 1 (Marketplace state persistence), 5 (relay payload encryption), 6 (event-loop blocking, mitigated by a worker thread), 7 (history scans), 8 (unbounded maps). Partly confirmed and fixed: 2 (submit queue / backpressure). Confirmed as residuals: 3 (ZK, documented) and 4 (height operator, mitigated by the height authority). Regression test per fix on the branch |
 
 ## How to read this
 

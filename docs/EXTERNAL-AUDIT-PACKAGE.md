@@ -149,8 +149,12 @@ should not report as new unless the stated bound does not hold.
   detectable; they do not make a key holder honest.
 - The single-node operator controls the height. The 12-blocks-per-tick cap is a
   state invariant (snapshot `ticks`, checked on restore) and limits mistakes and
-  fast-forwards to 12 blocks per call; it is **not** a rate limit on calls.
-  Multi-operator heights need a block-validation rule (future consensus work).
+  fast-forwards to 12 blocks per call; it is **not** a rate limit on calls. Since
+  the height authority (v0.5.3) a running producer is the only caller that
+  advances height (5 s spacing, direct calls refused, one producer per ledger, no
+  HTTP route); an operator who controls the process can still run without a
+  producer. Multi-operator heights need a block-validation rule (future consensus
+  work).
 - Test-only options are refused when `NODE_ENV` marks a live deployment and are
   never read from untrusted input; their presence in code is intended.
 
@@ -165,6 +169,14 @@ should not report as new unless the stated bound does not hold.
   fails for a reason outside the buyer's control; the per-buyer quota and the bond
   bound the cost of repeating this. Accepted residual for 0.5.3.
 - IoT telemetry proves which device key signed, not the physical service.
+- Marketplace snapshot format 4 persists the full state; category hooks / ports and
+  oracle gates are code and are re-attached before restore. Retention: closed orders
+  become tombstones after `closedOrderRetentionHeights`; reservations signed without
+  `notAfterHeight` keep one small idempotency record and one tombstone each.
+- Performance: a ledger submit costs ~440 ms of Poseidon / SMT work (depth 254) in
+  TypeScript; services run the ledger on a worker thread (`LedgerWorkerHost`) and
+  submit through the bounded `LedgerSubmitQueue`. No Wasm Poseidon
+  ([`PERFORMANCE.md`](./PERFORMANCE.md)).
 
 **Category modules**
 
@@ -189,7 +201,15 @@ should not report as new unless the stated bound does not hold.
 **Zero knowledge (experimental)**
 
 - Groth16 keys are development keys derived from a public seed; no ceremony has
-  been held. ZK verification must not be used to accept value.
+  been held. ZK verification must not be used to accept value; a verifier with
+  development keys is refused when `NODE_ENV` marks a live deployment.
+- The circuit works on depth-32 trees; the ledger trees (depth 254) are projected
+  to depth 32 under the opt-in root binding. Two keys whose low 32 bits collide map
+  to one slot: such a zk-spend is refused (`ZK_SLOT_COLLISION`), so a collision is a
+  liveness limit for the affected account, not a soundness break; with many
+  accounts collisions become likely (birthday bound around 2^16 accounts).
+- A zk-spend still carries the Ed25519 sender signature and the public transaction
+  fields; the ZK path does not provide sender or amount privacy.
 - The ledger accepts a zk-spend only with an explicitly configured verifier and
   still requires the sender signature. Precise list of what is and is not bound
   (roots under the opt-in projection, slot collisions at depth 32, nullifier
@@ -219,6 +239,7 @@ are summarised by property only.
 | Same, smaller items | negative note amounts; fixed order domain profile; test-only clock refused in live deployments; producer error reporting | Implemented and tested |
 | Same, accepted residuals | no-fault close of a buyer deposit; historical compatibility paths; by-design limits (self-transfer, cap is not a rate limit); legacy millisecond inputs | Documented in section 6 |
 | Audit-preparation scope | registry mints by manifest issuer key set and threshold; ZK root binding through a circuit-depth projection, one account-id adapter, re-verification on restore; last two lab files fixed | Implemented and tested; ZK remains partial (section 6) |
+| External review provided by the project director, 2026-10-08 (branch at `2cc37f3`) | Marketplace state persistence; ledger submit queue and backpressure; ZK residuals; height operator; relay payload encryption; event-loop blocking by Poseidon / SMT; history scans; unbounded Marketplace maps | Verified finding by finding (confirmed / partly confirmed / residual) and fixed with regression tests; residuals in section 6; per-finding table in REMEDIATION-COVERAGE |
 | Earlier versions (v0.3.2 – v0.4.6) | — | Published remediation documents in the repository root |
 
 ## 8. Out of scope for this review

@@ -35,7 +35,7 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 
 | Label | Meaning |
 |---|---|
-| **Implemented (testnet)** | Code in `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/settlement`, `src/category`, `src/oracle`, `src/service/iot-m2m*` and `src/network`, covered by `npm test`. Runs only on the local, single-node, in-process testnet. |
+| **Implemented (testnet)** | Code in `src/core`, `src/testnet`, `src/identity`, `src/marketplace`, `src/settlement`, `src/category`, `src/oracle`, `src/service/iot-m2m*`, the ledger service adapters (`src/service/height-producer.ts`, `src/service/ledger-*.ts`) and `src/network`, covered by `npm test`. Runs only on the local, single-node, in-process testnet. |
 | **Experimental (lab)** | Code in `src/lab`, `src/agent`, the service/API lab in `src/service` and `uep-core/`. Tested by `npm run test:all`, but not part of the testnet rules and without any security claim. |
 | **Planned** | A roadmap milestone with deliverables and exit criteria ([`ROADMAP.md`](./ROADMAP.md)); not yet in code. |
 | **Research / future vision** | A direction of inquiry, such as delay-tolerant or interplanetary settlement. No settled design, nothing operational. |
@@ -56,6 +56,7 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | [Consensus / node / economic labs, AMM lab pool](docs/MODULES.md#14-consensus-and-node-labs-srclabuep34---uep38--node-ts-execution-enginets-uep-net-adapt) | `src/lab` | Experimental (lab) | 0.5.0 | `test:lab` |
 | [Agents](docs/MODULES.md#15-agents-srcagent) | `src/agent` | Experimental (lab) | 0.5.0 | `test:lab` |
 | [Rust / ZK](docs/MODULES.md#16-rust--zk-core-uep-core) | `uep-core` | Experimental (lab) | 0.5.0 | `test:rust` |
+| [Ledger service adapters (height producer, submit queue, worker host)](docs/MODULES.md#17-ledger-service-adapters-srcserviceheight-producerts-ledger-submit-queuets-ledger-worker-hostts) | `src/service/height-producer.ts`, `ledger-*.ts` | Implemented (testnet) | 0.5.1 / 0.5.3 | `test:marketplace` |
 
 "Hashlock swap" (`src/category/swap.ts`) is a bilateral settlement between two parties; the "AMM lab pool" (`src/lab/liquidity.ts`) is a research simulation that never moves testnet value. Full module map: [`docs/MODULES.md`](docs/MODULES.md).
 
@@ -63,11 +64,11 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 
 | Item | Status |
 |---|---|
-| Version | `0.5.3` on branch `v0.5.3-fixes` (not released): asset registry wired into the ledger, settlement receipts anchored in ledger state, multi-input transactions (UEP-C04), oracle hardening and price gate, category fixes, Marketplace snapshot with receipts — on top of `0.5.2` (settlement engine, category modules, oracle policy layer, on `main`, not released), `0.5.1` and `0.5.0` ([`CHANGELOG.md`](./CHANGELOG.md)). **Latest GitHub Release: `v0.5.0`** |
+| Version | `0.5.3` on branch `v0.5.3-fixes` (not released): asset registry wired into the ledger, settlement receipts anchored in ledger state, multi-input transactions (UEP-C04), oracle hardening and price gate, category fixes, signed Marketplace snapshot with the full state (format 4) and retention policy, bounded ledger submit queue, ledger worker thread, height authority, HPKE for relay payloads — on top of `0.5.2` (settlement engine, category modules, oracle policy layer, on `main`, not released), `0.5.1` and `0.5.0` ([`CHANGELOG.md`](./CHANGELOG.md)). **Latest GitHub Release: `v0.5.0`** |
 | Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) (single source of truth; earlier README and CHANGELOG counts disagreed) |
 | Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts and the list of lab files with known issues in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) and [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
-| Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); snapshot format 8 (formats 6 and 7 migrated) ([compatibility policy](docs/COMPATIBILITY.md)) |
+| Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); ledger snapshot format 9 (formats 6–8 migrated), Marketplace snapshot format 4 (formats 1–3 migrated) ([compatibility policy](docs/COMPATIBILITY.md)) |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
 | CI | Blocking: `npm run test:core` on Node.js 22.x and 24.x, and `npm run test:lab` (labs not listed in `scripts/lab-known-issues.json`). Non-blocking: the lab files with known issues |
