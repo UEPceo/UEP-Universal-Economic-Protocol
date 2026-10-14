@@ -11,6 +11,7 @@
   - Six node and SDK test files that no script ran (`sdk/cli.test.ts`, `src/node/{bridge-api,categories-oracle,node-e2e,paymaster-ledger,persist}.test.ts`) now run in `test:core` as `npm run test:node`.
   - README version line, status table and module table; `docs/MODULES.md` (reference node / BFT kernel / PeerNet, SDK, configuration and examples); ROADMAP, BUG-BOUNTY, REPRODUCIBILITY and PHASE-4-ASSESSMENT headers updated to 0.5.80.
   - `src/service/ledger-worker-host.test.ts` (event-loop gap under 150 ms) is timing-sensitive and failed once on a heavily loaded machine; it passed in isolation and on a quiet machine. The threshold is unchanged.
+- Test counts for this tree (`npm run test:all`, Node.js 22.23.3 and 24.21.0, identical on both, 0 failed, 0 skipped): protocol 214, Marketplace 220, settlement 20, oracle 38, category 24, consensus 66, node 6, poisoned-clock 446, Rust 127; lab 126 files, 561 tests. v0.5.3 (CI): protocol 199, Marketplace 210, settlement 19, oracle 37, category 23, poisoned-clock 425, Rust 127; lab 116 files, 546 tests.
 
 ## 0.5.79 — 2026-10-13
 
