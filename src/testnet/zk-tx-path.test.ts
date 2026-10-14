@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3 crypto alignment: the ZK witness contract on the transaction path.
  * The ledger binds public inputs 4..11 of a zk-spend to the transaction before
@@ -31,7 +32,7 @@ async function setup(verifier?: ZkSpendVerifier) {
   const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, ...(verifier ? { zkSpendVerifier: verifier } : {}) });
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const b = await identityFromMnemonic(await generateMnemonic(128));
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(730801615919n));
   const p = l.prepareSpend(a, b.accountId, EUR, 1_000n);
   assert.ok("tx" in p);
   return { l, tx: p.tx };

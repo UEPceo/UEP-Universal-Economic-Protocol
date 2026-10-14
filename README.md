@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.3` (on `main`) · Latest GitHub Release: **v0.5.3**
+> **Version:** `0.5.80` (experimental BFT safety kernel, authenticated PeerNet transport) · Latest GitHub Release: **v0.5.80**
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -57,23 +57,27 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | [Agents](docs/MODULES.md#15-agents-srcagent) | `src/agent` | Experimental (lab) | 0.5.0 | `test:lab` |
 | [Rust / ZK](docs/MODULES.md#16-rust--zk-core-uep-core) | `uep-core` | Experimental (lab) | 0.5.0 | `test:rust` |
 | [Ledger service adapters (height producer, submit queue, worker host)](docs/MODULES.md#17-ledger-service-adapters-srcserviceheight-producerts-ledger-submit-queuets-ledger-worker-hostts) | `src/service/height-producer.ts`, `ledger-*.ts` | Implemented (testnet) | 0.5.1 / 0.5.3 | `test:marketplace` |
+| [Reference node + BFT safety kernel + PeerNet](docs/MODULES.md#19-reference-node-bft-safety-kernel-and-peernet-srcnode) | `src/node` | Experimental (lab) | 0.5.10 (BFT kernel 0.5.74, PeerNet 0.5.78) | `test:consensus`, `test:node` |
+| [SDK (client, Marketplace, IoT/M2M, CLI)](docs/MODULES.md#20-sdk-sdk) | `sdk/` | Implemented (testnet) | 0.5.20 | `test:sdk`, `test:node` |
+| [Node configuration examples](docs/MODULES.md#21-configuration-and-examples-config-examples) | `config/`, `examples/` | Implemented (testnet) | 0.5.42 / 0.5.23 | `test:consensus`, sample service test |
+| [Service gateways and adapters (IoT gateway, GLEIF display, storage adapters)](docs/MODULES.md#12-serviceapi-lab-srcserviceuep-ts-storage-adapters-groth16-spend-queuets) | `src/service/*` | Experimental (lab) | 0.5.x | `test:lab`, `test:marketplace` |
 
 "Hashlock swap" (`src/category/swap.ts`) is a bilateral settlement between two parties; the "AMM lab pool" (`src/lab/liquidity.ts`) is a research simulation that never moves testnet value. Full module map: [`docs/MODULES.md`](docs/MODULES.md).
 
-### Current status (v0.5.3)
+### Current status (v0.5.80)
 
 | Item | Status |
 |---|---|
-| Version | `0.5.3` (2026-10-08, on `main`, GitHub Release `v0.5.3`): asset registry wired into the ledger, settlement receipts anchored in ledger state, multi-input transactions (UEP-C04), oracle hardening and price gate, category fixes, signed Marketplace snapshot with the full state (format 4) and retention policy, bounded ledger submit queue, ledger worker thread, height authority, HPKE for relay payloads — on top of `0.5.2` (settlement engine, category modules, oracle policy layer; not released separately), `0.5.1` and `0.5.0` ([`CHANGELOG.md`](./CHANGELOG.md)). **Latest GitHub Release: `v0.5.3`** |
-| Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) (single source of truth; earlier README and CHANGELOG counts disagreed) |
-| Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts and the list of lab files with known issues in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) and [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
+| Version | `0.5.80` (2026-10-14, on `main`, GitHub Release `v0.5.80`): experimental BFT safety kernel with authenticated PeerNet transport and certified ledger application (crash-consistent single-process commit and recovery), reference node in `src/node`, SDK, node configuration examples, ledger snapshot format 10, development ZK verifying-key pins for circuit v5-foldv2. Changes since v0.5.3 are in the [CHANGELOG](./CHANGELOG.md) (0.5.4 – 0.5.80) |
+| Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.80 entry](./CHANGELOG.md) (single source of truth) |
+| Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts in the [CHANGELOG 0.5.80 entry](./CHANGELOG.md); known-issue list: [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
-| Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); ledger snapshot format 9 (formats 6–8 migrated), Marketplace snapshot format 4 (formats 1–3 migrated) ([compatibility policy](docs/COMPATIBILITY.md)) |
+| Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); ledger snapshot format 10 (formats 5–9 migrated), Marketplace snapshot format 4 (formats 1–3 migrated) ([compatibility policy](docs/COMPATIBILITY.md)) |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
-| Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process) |
+| Simulation | `npm run simulate:20k` (CI), `simulate:50k`, `simulate:100k`, `simulate:500k`: signed funded settlements, 0 errors, value conserved (in-process) |
 | CI | Blocking: `npm run test:core` on Node.js 22.x and 24.x, and `npm run test:lab` (labs not listed in `scripts/lab-known-issues.json`). Non-blocking: the lab files with known issues |
 | Network | Local, single-node, in-process **testnet only** |
-| External review | External reviews of later versions have taken place; their reports are not yet published in this repository and will be added (with version and remediation status) as they are incorporated. The last externally reviewed threshold with a published report in this repository is **v0.4.6**: [`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md), [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md); starting point for an independent review of v0.5.3: [`docs/EXTERNAL-AUDIT-PACKAGE.md`](./docs/EXTERNAL-AUDIT-PACKAGE.md) |
+| External review | External reviews of later versions have taken place. The reports of 2026-10-09 and 2026-10-10 (v0.5.6, v0.5.11 and the Phase 4 harness) and their dispositions are in [`docs/audit/`](./docs/audit/); further reports will be added (with version and remediation status) as they are incorporated. The v0.4.x reviews: [`docs/SECURITY-COVERAGE.md`](./docs/SECURITY-COVERAGE.md), [`docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md`](./docs/REMEDIATION-COVERAGE-v0.4.7-v0.5.x.md); starting point for an independent review of v0.5.3: [`docs/EXTERNAL-AUDIT-PACKAGE.md`](./docs/EXTERNAL-AUDIT-PACKAGE.md) |
 
 Architecture by layer: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). Phases and next milestones: [`ROADMAP.md`](./ROADMAP.md).
 
@@ -368,7 +372,7 @@ npm run test:all
 2. `npm test`: protocol/testnet (including the golden snapshot fixtures and the cryptographic test vectors), Marketplace + IoT/M2M + HTTP authorization + compatibility shims + height producer, settlement, oracle and category suites; then `npm run test:poisoned-clock` (the same transitions with the clock, timers, network and randomness poisoned);
 3. `npm run smoke:testnet`: prints `SMOKE OK`;
 4. `npm run quickstart`: the first-transaction example;
-5. `npm run simulate:20k`: 20,000 in-process settlements, `errors: 0`, `valueConserved: true`;
+5. `npm run simulate:20k` (also `simulate:50k`, `simulate:100k`, `simulate:500k`): in-process settlements, `errors: 0`, `valueConserved: true`;
 6. `npm run test:rust`: Rust tests of the research crates in `uep-core/` (Poseidon, prototype, UEP-26 spend circuit);
 7. `npm run build:uep-zk`: builds the research Groth16 prover `uep-zk` from source into `uep-core/target/`;
 8. `npm run test:lab`: the research labs in `src/lab/`, `src/agent/` and the service/API lab in `src/service/`, except the files listed in `scripts/lab-known-issues.json` (see [`docs/LABS.md`](./docs/LABS.md)); `npm run test:lab:known` runs those as well.
@@ -842,3 +846,19 @@ Donations are voluntary gifts to support research and development. They are **no
 For larger funding, grants or partnerships, please get in touch at the contact address below.
 
 Project contact: uep.dev@proton.me
+
+
+## SDK (0.5.20)
+
+A buyer and a provider can run an order against the local API without importing the Marketplace. The packages in this tree are `sdk/client`, `sdk/marketplace` and `sdk/iot-m2m`.
+
+```ts
+import { UepClient } from "./sdk/client/index.ts";
+import { MarketplaceClient } from "./sdk/marketplace/index.ts";
+
+const sdk = new MarketplaceClient(new UepClient("http://127.0.0.1:8787"), marketplaceId);
+await sdk.publish(providerKey, listing);
+await sdk.reserve(buyerKey, listing.listingId, buyerId, 1n, "k1");
+```
+
+`npm run test:sdk` runs that flow.

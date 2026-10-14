@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.1: a snapshot survives a generic JSON round trip (bigints as tagged
  * objects, field elements as hex) and repeated restarts without changing a
@@ -34,8 +35,8 @@ const payloadOf = (l: UepLedger) => {
 test("snapshot: a JSON-codec round trip restores, and repeated restarts keep the payload byte-identical", async () => {
   const a = await identityFromMnemonic(await generateMnemonic(128)); // in memory only
   const b = await identityFromMnemonic(await generateMnemonic(128));
-  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, ...KEYS });
-  ledger.faucet(ledger.addressOf(a.accountId), "uep-test/teur", 100_000n);
+  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, testOnlyAllowDevelopmentMac: true, ...KEYS });
+  ledger.faucet(ledger.addressOf(a.accountId), "uep-test/teur", 100_000n, clientBlinding(473826812975n));
   for (const authorization of ["sender-signature", "development-mac"] as const) {
     ledger.advanceHeight(1);
     const p = ledger.prepareSpend(a, ledger.addressOf(b.accountId), "uep-test/teur", 1_000n, undefined, { authorization });

@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Fr } from "../core/field.ts";
@@ -18,7 +19,7 @@ test("forged accountId without the secret cannot spend", async () => {
   const owner = await identityFromMnemonic(await generateMnemonic(128));
   const attacker = await identityFromMnemonic(await generateMnemonic(128));
   const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
-  ledger.faucet(owner.accountId, "uep-test/teur", 500_000n);
+  ledger.faucet(owner.accountId, "uep-test/teur", 500_000n, clientBlinding(622036980783n));
   const forged = { ...attacker, accountId: owner.accountId };
   const prepared = ledger.prepareSpend(forged, attacker.accountId, "uep-test/teur", 400_000n);
   assert.equal("error" in prepared, true);
@@ -28,7 +29,7 @@ test("submit requires sender authentication by default and cannot bypass policy"
   const owner = await identityFromMnemonic(await generateMnemonic(128));
   const recipient = await identityFromMnemonic(await generateMnemonic(128));
   const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
-  ledger.faucet(owner.accountId, "uep-test/teur", 500_000n);
+  ledger.faucet(owner.accountId, "uep-test/teur", 500_000n, clientBlinding(933866017839n));
   // Local development MAC: without the sender identity there is no proof.
   const mac = ledger.prepareSpend(owner, recipient.accountId, "uep-test/teur", 100_000n, ledger.height, { authorization: "development-mac" });
   assert.ok("tx" in mac);
@@ -50,7 +51,7 @@ test("input value is bound to the amount plus fee", async () => {
   const owner = await identityFromMnemonic(await generateMnemonic(128));
   const recipient = await identityFromMnemonic(await generateMnemonic(128));
   const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
-  ledger.faucet(owner.accountId, "uep-test/teur", 1n);
+  ledger.faucet(owner.accountId, "uep-test/teur", 1n, clientBlinding(213991064623n));
   const prepared = ledger.prepareSpend(owner, recipient.accountId, "uep-test/teur", 2n);
   assert.equal("error" in prepared, true);
 });
@@ -58,7 +59,7 @@ test("input value is bound to the amount plus fee", async () => {
 test("snapshot and restore are executable", async () => {
   const owner = await identityFromMnemonic(await generateMnemonic(128));
   const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
-  ledger.faucet(owner.accountId, "uep-test/teur", 500n);
+  ledger.faucet(owner.accountId, "uep-test/teur", 500n, clientBlinding(869353129007n));
   const snap = ledger.snapshot();
   // Verifiers only need the public keys.
   const restored = UepLedger.restore(snap, { authorities: ledger.snapshotAuthorityPublicKeys(), faucetPublicKeys: [ledger.faucetPublicKey()!] });
@@ -71,8 +72,8 @@ test("domain separation changes transaction commitments", async () => {
   const recipient = await identityFromMnemonic(await generateMnemonic(128));
   const a = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
   const b = new UepLedger({ networkId: TESTNET.networkId, domainId: "MARS", connected: true, allowFaucet: true });
-  a.faucet(owner.accountId, "uep-test/teur", 500n);
-  b.faucet(owner.accountId, "uep-test/teur", 500n);
+  a.faucet(owner.accountId, "uep-test/teur", 500n, clientBlinding(665882625071n));
+  b.faucet(owner.accountId, "uep-test/teur", 500n, clientBlinding(494116111407n));
   const pa = a.prepareSpend(owner, recipient.accountId, "uep-test/teur", 100n);
   const pb = b.prepareSpend(owner, recipient.accountId, "uep-test/teur", 100n);
   assert.ok("tx" in pa && "tx" in pb);

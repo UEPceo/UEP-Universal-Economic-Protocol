@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.4.2 ledger invariants: output binding (UEP-B03), restore availability
  * (UEP-B02), snapshot invariants under a valid authority tag (UEP-B05),
@@ -73,7 +74,7 @@ function errorCode(r: ReturnType<UepLedger["submit"]>): string | undefined {
 test("B03: outputs redirected to a third party are rejected and the honest snapshot still restores (B02)", async () => {
   const [a, b, z] = await Promise.all([identity(), identity(), identity()]);
   const l = newLedger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(918831326255n));
   const tx = prepared(l, a, b.accountId, 1_000n);
   const outs = tx.outputNotes!.map(deserializeNote);
   const redirected = reauthorize(l, a, tx, { outputs: [makeNote(z.accountId, asset, 1_000n, outs[0]!.blinding), outs[1]!] });
@@ -92,7 +93,7 @@ test("B03: outputs redirected to a third party are rejected and the honest snaps
 test("B03: recipient amount and change are bound exactly", async () => {
   const [a, b] = await Promise.all([identity(), identity()]);
   const l = newLedger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(731343463471n));
   const tx = prepared(l, a, b.accountId, 2_000n);
   const [out, change] = tx.outputNotes!.map(deserializeNote) as [Note, Note];
   const cases: Note[][] = [
@@ -110,7 +111,7 @@ test("B03: recipient amount and change are bound exactly", async () => {
 test("C01: transaction nonce must be the consumed note's nonce", async () => {
   const [a, b] = await Promise.all([identity(), identity()]);
   const l = newLedger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(124831147055n));
   const tx = prepared(l, a, b.accountId, 1_000n);
   const unbound = reauthorize(l, a, tx, { nonce: hLeaf(tx.nonce, new Fr(7n)) });
   assert.equal(errorCode(l.submit(unbound, a)), "NOTE_NONCE");
@@ -120,7 +121,7 @@ test("C01: transaction nonce must be the consumed note's nonce", async () => {
 test("B01: an input commitment that is not in the ledger is rejected", async () => {
   const [a, b] = await Promise.all([identity(), identity()]);
   const l = newLedger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(282299229231n));
   const tx = prepared(l, a, b.accountId, 1_000n);
   const outsider = makeNote(a.accountId, asset, 10_000n, hLeaf(a.secret, new Fr(999_999n)));
   const forged = reauthorize(l, a, tx, { inputs: [outsider], nonce: outsider.nonce });
@@ -130,7 +131,7 @@ test("B01: an input commitment that is not in the ledger is rejected", async () 
 test("self-transfers and treasury-party transfers are rejected", async () => {
   const [a, b] = await Promise.all([identity(), identity()]);
   const l = newLedger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(439767311407n));
   for (const to of [a.accountId, TREASURY_ID]) {
     const p = l.prepareSpend(a, to, EUR, 1_000n);
     assert.ok("error" in p && p.error.code === "INVALID_PARTICIPANTS");
@@ -145,8 +146,8 @@ test("self-transfers and treasury-party transfers are rejected", async () => {
 test("B02: honest snapshots restore after many random honest spends", async () => {
   const people = await Promise.all([identity(), identity(), identity(), identity()]);
   const l = newLedger();
-  for (const p of people) l.faucet(p.accountId, EUR, 50_000n);
-  l.faucet(people[0]!.accountId, EUR, 1_001n);
+  for (const [i, p] of people.entries()) l.faucet(p.accountId, EUR, 50_000n, clientBlinding(156380578863n + BigInt(i)));
+  l.faucet(people[0]!.accountId, EUR, 1_001n, clientBlinding(468209615919n));
   let seed = 12345;
   const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed % n; };
   let applied = 0;
@@ -172,8 +173,8 @@ test("B02: honest snapshots restore after many random honest spends", async () =
 async function ledgerWithHistory() {
   const [a, b] = await Promise.all([identity(), identity()]);
   const l = newLedger();
-  l.faucet(a.accountId, EUR, 10_000n);
-  l.faucet(b.accountId, EUR, 5_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(693297714223n));
+  l.faucet(b.accountId, EUR, 5_000n, clientBlinding(5126751279n));
   assert.ok("tx" in l.submit(prepared(l, a, b.accountId, 2_000n), a));
   return { l, a, b };
 }
@@ -245,7 +246,7 @@ test("B05: restore rejects authority-signed snapshots that break internal invari
 test("B05: restore rejects a signed history containing an unbound or unordered transaction", async () => {
   const [a, b, z] = await Promise.all([identity(), identity(), identity()]);
   const l = newLedger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(141370688559n));
   const tx = prepared(l, a, b.accountId, 1_000n);
   const outs = tx.outputNotes!.map(deserializeNote);
   const redirected = reauthorize(l, a, tx, { outputs: [makeNote(z.accountId, asset, 1_000n, outs[0]!.blinding), outs[1]!] });

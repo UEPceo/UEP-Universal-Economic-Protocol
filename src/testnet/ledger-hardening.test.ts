@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Fr } from "../core/field.ts";
@@ -33,14 +34,14 @@ function resign(snap: UepLedgerSnapshot): UepLedgerSnapshot {
   return signSnapshot(snap, [SNAPSHOT_KEY.privateKey]);
 }
 
-function ledger() {
-  return new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey });
+function ledger(extra = {}) {
+  return new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey, ...extra });
 }
 
 test("change is amount minus fee and note conservation holds", async () => {
   const { a, b } = await ids();
   const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 100_500n);
+  l.faucet(a.accountId, "uep-test/teur", 100_500n, clientBlinding(47763825711n));
   const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100_000n);
   assert.ok("tx" in p);
   if (!("tx" in p)) return;
@@ -58,7 +59,7 @@ test("change is amount minus fee and note conservation holds", async () => {
 test("output and input notes travel with a transaction and survive replica apply", async () => {
   const { a, b } = await ids();
   const source = ledger();
-  source.faucet(a.accountId, "uep-test/teur", 100_500n);
+  source.faucet(a.accountId, "uep-test/teur", 100_500n, clientBlinding(671416341551n));
   const before = source.snapshot();
   const p = source.prepareSpend(a, b.accountId, "uep-test/teur", 100_000n);
   assert.ok("tx" in p);
@@ -76,7 +77,7 @@ test("output and input notes travel with a transaction and survive replica apply
 test("restore rejects tampered balance/state root", async () => {
   const { a } = await ids();
   const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 1000n);
+  l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(348153586735n));
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
   tampered.balances[0]![1] = "999999999";
@@ -87,7 +88,7 @@ test("restore rejects tampered balance/state root", async () => {
 test("restore rejects tampered note commitment", async () => {
   const { a } = await ids();
   const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 1000n);
+  l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(76875334703n));
   const snap = l.snapshot();
   const tampered = structuredClone(snap) as typeof snap;
   tampered.notes[0]!.commitment = "01".padStart(64, "0");
@@ -98,7 +99,7 @@ test("restore rejects tampered note commitment", async () => {
 test("restore rejects tampered nullifier tree", async () => {
   const { a, b } = await ids();
   const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 1000n);
+  l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(418280420399n));
   const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
   assert.ok("tx" in p);
   if (!("tx" in p)) return;
@@ -113,7 +114,7 @@ test("restore rejects tampered nullifier tree", async () => {
 test("reconcile keeps a valid pending transaction queued and rejects an invented one", async () => {
   const { a, b } = await ids();
   const source = ledger();
-  source.faucet(a.accountId, "uep-test/teur", 1000n);
+  source.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(190610940975n));
   const l = UepLedger.restore(source.snapshot(), TRUST, NODE_KEYS);
   const asset = encodeStringToFr("uep-test/teur");
   const p = source.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
@@ -157,7 +158,7 @@ test("reconcile keeps a valid pending transaction queued and rejects an invented
 test("conflicting valid pending spends stay queued and are flagged", async () => {
   const { a, b } = await ids();
   const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 1000n);
+  l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(170752996399n));
   const p1 = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
   const p2 = l.prepareSpend(a, b.accountId, "uep-test/teur", 200n);
   assert.ok("tx" in p1 && "tx" in p2);
@@ -174,9 +175,9 @@ test("conflicting valid pending spends stay queued and are flagged", async () =>
 
 test("bare transactions cannot bypass ownership authorization", async () => {
   const { a, b } = await ids();
-  const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 1000n);
-  // A local development-MAC spend needs the sender identity in-process.
+  const l = ledger({ testOnlyAllowDevelopmentMac: true });
+  l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(415487763503n));
+  // A local development-MAC spend needs the sender identity in-process and the lab flag.
   const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n, l.height, { authorization: "development-mac" });
   assert.ok("tx" in p);
   if (!("tx" in p)) return;
@@ -197,7 +198,7 @@ test("bare transactions cannot bypass ownership authorization", async () => {
 test("remote path: a signed spend is verified with the public key only (no secret reaches the node)", async () => {
   const { a, b } = await ids();
   const client = ledger();
-  client.faucet(a.accountId, "uep-test/teur", 1000n);
+  client.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(57628705839n));
   // The client builds and signs on its own replica; the node only sees the serialized transaction.
   const node = UepLedger.restore(client.snapshot(), TRUST);
   const p = client.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
@@ -218,7 +219,7 @@ test("remote path: a signed spend is verified with the public key only (no secre
 test("zero-value transactions are rejected", async () => {
   const { a, b } = await ids();
   const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 1000n);
+  l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(185077007407n));
   const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 0n);
   assert.ok("error" in p);
 });
@@ -226,7 +227,7 @@ test("zero-value transactions are rejected", async () => {
 test("submit rejects a fabricated self-consistent input note", async () => {
   const { a, b } = await ids();
   const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 1000n);
+  l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(444821664815n));
   const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
   assert.ok("tx" in p); if (!("tx" in p)) return;
   const fake = { ...p.tx, inputNotes: p.tx.inputNotes!.map((n) => ({ ...n, amount: "999999" })) };
@@ -236,7 +237,7 @@ test("submit rejects a fabricated self-consistent input note", async () => {
 
 test("restore requires the snapshot authority signature and rejects a coherent forged snapshot", async () => {
   const { a } = await ids();
-  const l = ledger(); l.faucet(a.accountId, "uep-test/teur", 1000n);
+  const l = ledger(); l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(429811774511n));
   const snap = l.snapshot();
   assert.throws(() => UepLedger.restore(snap, { ...TRUST, authorities: [generateEd25519KeyPair().publicKeyHex] }), /INVALID_SNAPSHOT_THRESHOLD/);
   const tampered = structuredClone(snap) as typeof snap;
@@ -244,7 +245,7 @@ test("restore requires the snapshot authority signature and rejects a coherent f
   assert.throws(() => UepLedger.restore(tampered, TRUST), /INVALID_SNAPSHOT_HASH/);
   // Internally consistent snapshot produced under a different authority (default ephemeral keys).
   const other = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
-  other.faucet(a.accountId, "uep-test/teur", 1_000_000n);
+  other.faucet(a.accountId, "uep-test/teur", 1_000_000n, clientBlinding(99865719855n));
   assert.throws(() => UepLedger.restore(other.snapshot(), TRUST), /INVALID_SNAPSHOT_THRESHOLD/);
   const metadata = structuredClone(snap) as typeof snap;
   metadata.noteCounter = "42";
@@ -253,7 +254,7 @@ test("restore requires the snapshot authority signature and rejects a coherent f
 
 test("exact-note balance can pay amount plus fee", async () => {
   const { a, b } = await ids();
-  const l = ledger(); l.faucet(a.accountId, "uep-test/teur", 100100n);
+  const l = ledger(); l.faucet(a.accountId, "uep-test/teur", 100100n, clientBlinding(927387747375n));
   const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100000n);
   assert.ok("tx" in p);
   if (!("tx" in p)) return;
@@ -264,8 +265,8 @@ test("honest snapshot restores after one or more submits", async () => {
   const { a, b } = await ids();
   const asset = encodeStringToFr("uep-test/teur");
   const l = ledger();
-  l.faucet(a.accountId, "uep-test/teur", 100_500n);
-  l.faucet(a.accountId, "uep-test/teur", 1_001n);
+  l.faucet(a.accountId, "uep-test/teur", 100_500n, clientBlinding(69845939247n));
+  l.faucet(a.accountId, "uep-test/teur", 1_001n, clientBlinding(227314021423n));
   // With change output.
   const p1 = l.prepareSpend(a, b.accountId, "uep-test/teur", 100_000n);
   assert.ok("tx" in p1); if (!("tx" in p1)) return;
@@ -300,7 +301,7 @@ test("a valid pending transaction survives reconciliation and snapshot restore",
   const { a, b } = await ids();
   const asset = encodeStringToFr("uep-test/teur");
   const source = ledger();
-  source.faucet(a.accountId, "uep-test/teur", 1000n);
+  source.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(326849319983n));
   const l = UepLedger.restore(source.snapshot(), TRUST, NODE_KEYS);
   const p = source.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
   assert.ok("tx" in p); if (!("tx" in p)) return;
@@ -320,7 +321,7 @@ test("a valid pending transaction survives reconciliation and snapshot restore",
 
 test("prepareSpend rejects a note that covers the amount but not the fee", async () => {
   const { a, b } = await ids();
-  const l = ledger(); l.faucet(a.accountId, "uep-test/teur", 100_000n);
+  const l = ledger(); l.faucet(a.accountId, "uep-test/teur", 100_000n, clientBlinding(296829539375n));
   const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100_000n);
   assert.ok("error" in p);
   if ("error" in p) assert.equal(p.error.code, "INSUFFICIENT");
@@ -328,7 +329,7 @@ test("prepareSpend rejects a note that covers the amount but not the fee", async
 
 test("a spent input note cannot be referenced by a second transaction", async () => {
   const { a, b } = await ids();
-  const l = ledger(); l.faucet(a.accountId, "uep-test/teur", 1000n);
+  const l = ledger(); l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(966883484719n));
   const p1 = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n);
   const p2 = l.prepareSpend(a, b.accountId, "uep-test/teur", 200n);
   assert.ok("tx" in p1 && "tx" in p2); if (!("tx" in p1) || !("tx" in p2)) return;
@@ -337,4 +338,15 @@ test("a spent input note cannot be referenced by a second transaction", async ()
   assert.ok("error" in second);
   if ("error" in second) assert.equal(second.error.code, "DOUBLE_SPEND");
   assert.equal(l.balanceOf(b.accountId, encodeStringToFr("uep-test/teur")), 100n);
+});
+
+test("a node ledger rejects a development MAC spend", async () => {
+  const { a, b } = await ids();
+  const l = ledger();
+  l.faucet(a.accountId, "uep-test/teur", 1000n, clientBlinding(415487763504n));
+  const p = l.prepareSpend(a, b.accountId, "uep-test/teur", 100n, l.height, { authorization: "development-mac" });
+  assert.ok("tx" in p);
+  if (!("tx" in p)) return;
+  const rejected = l.submit(p.tx, a);
+  assert.equal("error" in rejected && rejected.error.code, "PROOF");
 });

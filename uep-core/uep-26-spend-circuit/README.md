@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| Tag | `UEP-27-SPEND-POSEIDON-D32-v4-assetkey` |
+| Tag | `UEP-27-SPEND-POSEIDON-D32-v5-foldv2` |
 | Constraints | 155_393 (D=32, `uep-zk count-constraints`) |
 | Public inputs | 13 (domain_id is input 13) |
 | circuit_hash (= circuit_metadata_id) | `0x4a06417077a45cec18709c3c5e5ad6760401235cd0f89798d235a29ab07b40f1` |
@@ -19,4 +19,4 @@ D=4 measures 48_097. v3 added the protocol fee floor: fee = max(1, floor(amount 
 
 ### Development verifying keys (pinned)
 
-The lab uses development keys from a fixed seeded setup (`DEV_SETUP_SEED`, no ceremony). Their SHA-256 per depth and domain is pinned in [`../vectors/UEP-ZK-DEV-VK-PINS.json`](../vectors/UEP-ZK-DEV-VK-PINS.json) (`uep-zk dev-vk <depth>` prints the key). TypeScript verifiers load the key from the pin file and only accept proofs under the pinned key; a key carried in a message must match it. A deployment supplies its own pin file through `UEP_ZK_VK_PINS_FILE`. Field inputs are parsed canonically (values >= p are rejected, no truncation).
+The lab uses development keys from a fixed seeded setup (`DEV_SETUP_SEED`, no ceremony). Their SHA-256 per depth and domain is pinned in [`../vectors/UEP-ZK-DEV-VK-PINS.json`](../vectors/UEP-ZK-DEV-VK-PINS.json) (`uep-zk dev-vk <depth>` prints the key). When the circuit tag changes, regenerate the pins with `npm run build:uep-zk && node scripts/gen-zk-dev-vk-pins.mjs` (it adds the pins for the new tag at depths 4 and 32, domain 1, and keeps the earlier ones); `npm run check:zk-pins` (part of `test:all`) fails if the built tag has no pin. The v5-foldv2 pins were added in 0.5.80 this way; the seed is public, so no secret is involved. TypeScript verifiers load the key from the pin file and only accept proofs under the pinned key; a key carried in a message must match it. A deployment supplies its own pin file through `UEP_ZK_VK_PINS_FILE`. Field inputs are parsed canonically (values >= p are rejected, no truncation).

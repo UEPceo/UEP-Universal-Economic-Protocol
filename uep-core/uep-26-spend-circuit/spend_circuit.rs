@@ -7,7 +7,7 @@
 //! - sequential state-tree updates: sender → recipient → treasury
 //!   (intermediate roots are private witnesses; public old/new state roots bound at ends)
 //! - nullifier-tree insert at empty slot
-//! - transaction_commitment = H_fold(D_TX, [version, …public fields])
+//! - transaction_commitment = H_fold_v2(D_TX, [version, …public fields])  // UEP-26.3 freeze
 //!
 //! Not a production Groth16-ready circuit.
 

@@ -15,6 +15,18 @@
       "depth": 32,
       "domainId": "1",
       "vkSha256": "9ec23ecdef4e37c29c2f08def4d77cb976cc8c5a49e9f73a8169aeabd7fd60f7"
+    },
+    {
+      "circuitTag": "UEP-27-SPEND-POSEIDON-D32-v5-foldv2",
+      "depth": 4,
+      "domainId": "1",
+      "vkSha256": "944b490133f464811b0003fca87c0d9374e9ebc6a79e4959739e27b2f47d7363"
+    },
+    {
+      "circuitTag": "UEP-27-SPEND-POSEIDON-D32-v5-foldv2",
+      "depth": 32,
+      "domainId": "1",
+      "vkSha256": "78c93ffc0352817936962e600fd34dc7c72ffdfd95b09d976fcd8d679e2864a3"
     }
   ]
 }

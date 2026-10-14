@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3 crypto alignment, root binding: the ledger trees projected to circuit
  * depth 32 give the four roots a zk-spend must prove (opt-in
@@ -84,7 +85,7 @@ async function setup(v: ZkSpendVerifier, zkRootBinding: "off" | "circuit-project
   const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, zkSpendVerifier: v, zkRootBinding });
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const b = await identityFromMnemonic(await generateMnemonic(128));
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(16801625135n));
   return { l, a, b };
 }
 

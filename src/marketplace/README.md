@@ -4,7 +4,7 @@
 |---|---|
 | Status | Implemented (testnet) |
 | Since | 0.3.0 |
-| Tests | npm run test:marketplace, npm run simulate:20k |
+| Tests | npm run test:marketplace, npm run simulate:20k (also 50k, 100k, 500k) |
 | Depends on | core, settlement, oracle (optional gate), service (content hash), network, testnet, identity |
 
 ## Purpose

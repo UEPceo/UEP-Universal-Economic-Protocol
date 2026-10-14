@@ -79,8 +79,8 @@ export class LedgerWorkerHost implements LedgerSubmitTarget {
     return (r.txs ? { txs: r.txs.map(deserializeTx) } : r) as BatchResult;
   }
 
-  faucet(accountIdHex: string, asset: string, amount: bigint): Promise<true> {
-    return this.call("faucet", accountIdHex, asset, amount.toString());
+  faucet(accountIdHex: string, asset: string, amount: bigint, opening: string): Promise<true> {
+    return this.call("faucet", accountIdHex, asset, amount.toString(), opening);
   }
 
   status(): Promise<{ height: number; stateRoot: string; txCount: number }> {

@@ -17,7 +17,7 @@ Consequences:
 - H is a block height of the settling ledger, not a timestamp from the source or from a block header.
 - A statement is bound to one order (contract) so that it cannot be replayed in another.
 
-The planned statement shape is the `EvidenceStatement` type in `src/marketplace/evidence.ts`: `sourceId`, `dataHash` (SHA-256 of the published bytes), `observedHeight`, `orderId`, `attesterSetId` and `signatures`. The code does not verify statements yet.
+The planned statement shape is the `EvidenceStatement` type in `src/marketplace/evidence.ts`: `sourceId`, `dataHash` (SHA-256 of the published bytes), `observedHeight`, `orderId`, `attesterSetId` and `signatures`. Since 0.5.15 `submitEvidence` verifies the statement (k of n, bound to the order). Settlement of an evidence-bound order requires it. The published bytes are not stored.
 
 ## Value caps
 

@@ -21,6 +21,8 @@ export const Domain = {
   MerkleNode: 3,
   Leaf: 4,
   Transaction: 5,
+  /** v0.5.4: version domain for hFoldV2. Not used by the frozen UEP-26 leaf/tx composition. */
+  FoldV2: 6,
 } as const;
 export type Domain = (typeof Domain)[keyof typeof Domain];
 
@@ -135,4 +137,31 @@ export function hFold(domain: Domain, items: Fr[]): Fr {
   let acc = items[0]!;
   for (let i = 1; i < items.length; i++) acc = h(domain, acc, items[i]!);
   return acc;
+}
+
+/**
+ * v0.5.4 fold, introduced before the SpendCircuit freeze.
+ *
+ * hFold (UEP-26) treats a singleton as the identity and does not bind the
+ * length, so H_fold(d, [x]) === x and a length-extension is not domain-separated.
+ * hFoldV2 always mixes a version domain, the caller's domain tag and the length
+ * before any item. Existing transaction commitments, note commitments and
+ * settlement roots stay on hFold; new aggregates opt in via hFoldV2 / migrateFold.
+ *
+ *   acc0 = H(FoldV2, version, domain)
+ *   acc1 = H(FoldV2, acc0, length)
+ *   acc  = H(FoldV2, acc, item) for each item, including the empty case (no items)
+ */
+export const FOLD_V2_VERSION = 2;
+
+export function hFoldV2(domain: Domain, items: Fr[]): Fr {
+  let acc = h(Domain.FoldV2, new Fr(FOLD_V2_VERSION), new Fr(domain));
+  acc = h(Domain.FoldV2, acc, new Fr(items.length));
+  for (const item of items) acc = h(Domain.FoldV2, acc, item);
+  return acc;
+}
+
+/** Explicit migration: version 1 is the frozen hFold; version 2 is hFoldV2. */
+export function migrateFold(domain: Domain, items: Fr[], fromVersion: 1 | 2): Fr {
+  return fromVersion === 2 ? hFoldV2(domain, items) : hFold(domain, items);
 }

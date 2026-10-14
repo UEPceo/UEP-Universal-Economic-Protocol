@@ -1,3 +1,4 @@
+import { clientBlinding } from "../src/core/client-note.ts";
 import { encodeStringToFr } from "../src/core/encoding.ts";
 import { creatorFee } from "../src/core/fee.ts";
 import { generateMnemonic, identityFromMnemonic } from "../src/identity/index.ts";
@@ -22,7 +23,7 @@ const amount = 10_000n;
 // v0.4.5: accounts are key-derived; addresses are Bech32m v2 (UEP-ADDR-002).
 const senderAddress = encodeAccountAddress(TESTNET.networkId, sender.accountId);
 const recipientAddress = encodeAccountAddress(TESTNET.networkId, recipient.accountId);
-ledger.faucet(senderAddress, asset, 100_000n);
+ledger.faucet(senderAddress, asset, 100_000n, clientBlinding(1n));
 const prepared = ledger.prepareSpend(sender, recipientAddress, asset, amount);
 if (!("tx" in prepared)) throw new Error(prepared.error.message);
 const oldStateRoot = ledger.stateRoot().toHex();

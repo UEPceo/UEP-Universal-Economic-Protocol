@@ -1,0 +1,35 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
+import { encodeStringToFr } from "../core/encoding.ts";
+import { clientBlinding } from "../core/client-note.ts";
+import { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
+import { createMarketplaceIdentity } from "../marketplace/identity.ts";
+import { UepLedger } from "../testnet/ledger.ts";
+import { TESTNET } from "../network/profiles.ts";
+import { ValueBridge } from "./value-bridge.ts";
+
+test("a withdrawal pays its fee from the withdrawer, and recover rejects an invented tx", async () => {
+  const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
+  const admin = createMarketplaceIdentity("admin-1");
+  const marketplace = new DigitalServicesMarketplace({ testOnlyNowMs: () => ledger.height, adminIdentity: "admin-1", adminPublicKey: admin.publicKeyHex, adminAuthorizer: (id) => id === "admin-1" });
+  const custody = await identityFromMnemonic(await generateMnemonic(128));
+  const fee = await identityFromMnemonic(await generateMnemonic(128));
+  const a = await identityFromMnemonic(await generateMnemonic(128));
+  const b = await identityFromMnemonic(await generateMnemonic(128));
+  marketplace.registerIdentity("a", createMarketplaceIdentity("a").publicKeyHex);
+  marketplace.registerIdentity("b", createMarketplaceIdentity("b").publicKeyHex);
+  const asset = "uep-test/teur";
+  ledger.faucet(a.accountId, asset, 5_005n, clientBlinding(1n));
+  ledger.faucet(b.accountId, asset, 5_005n, clientBlinding(2n));
+  const bridge = new ValueBridge(ledger, marketplace, custody, fee, admin);
+  bridge.deposit("a", a, asset, 5_000n, 11n);
+  bridge.deposit("b", b, asset, 5_000n, 12n);
+  const owedBefore = marketplace.availableBalance(asset, "a") + marketplace.availableBalance(asset, "b");
+  bridge.withdraw("a", a, asset, 1_000n, 21n);
+  bridge.reconcile(asset);
+  assert.equal(marketplace.availableBalance(asset, "a"), 3_999n);
+  assert.equal(marketplace.availableBalance(asset, "b"), 5_000n);
+  assert.ok(ledger.balanceOf(custody.accountId, encodeStringToFr(asset)) >= owedBefore - 1_000n - 1n);
+  assert.throws(() => bridge.recover("deposit", "a", asset, 1_000_000n, "ab".repeat(32)), /BRIDGE_TX_UNKNOWN/);
+});

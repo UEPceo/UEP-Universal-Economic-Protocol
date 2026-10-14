@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * A node upgraded from format 6 keeps its snapshot chain: it restores the
  * signed format 6 snapshot (migrated to 7), takes its next snapshot in format
@@ -19,7 +20,7 @@ const KEYS = { snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey:
 
 /** The format 6 form of a format 7 snapshot (no height, Unix-ms lastReconcileAt, windowMs), signed again. */
 function asFormat6(s: UepLedgerSnapshot): UepLedgerSnapshot {
-  const { snapshotHash: _h, signatures: _s, height: _height, assetRegistry: _reg, settlementAnchors: _anc, ticks: _ticks, ...p } = s as UepLedgerSnapshot & Record<string, unknown>;
+  const { snapshotHash: _h, signatures: _s, height: _height, assetRegistry: _reg, settlementAnchors: _anc, ticks: _ticks, policyWindows: _pw, protocol: _proto, protocolVersion: _pv, foldVersion: _fv, networkTag: _tag, ...p } = s as UepLedgerSnapshot & Record<string, unknown>;
   const { windowHeights, ...policy } = p.policy as unknown as Record<string, unknown>;
   const v6 = { ...p, formatVersion: 6, lastReconcileAt: 1_790_000_000_000, policy: { ...policy, windowMs: (windowHeights as number) * 5000 } };
   return signSnapshot(v6 as never, [SNAPSHOT_KEY.privateKey]);
@@ -28,24 +29,24 @@ function asFormat6(s: UepLedgerSnapshot): UepLedgerSnapshot {
 test("a mixed 6 -> 7 snapshot chain restores and keeps its links", async () => {
   const alice = await identityFromMnemonic(await generateMnemonic(128)); // in memory only, discarded
   const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, ...KEYS });
-  l.faucet(l.addressOf(alice.accountId), "uep-test/teur", 50_000n);
+  l.faucet(l.addressOf(alice.accountId), "uep-test/teur", 50_000n, clientBlinding(100945269807n));
   const s6 = asFormat6(l.snapshot());
   assert.equal(s6.formatVersion, 6);
 
   const upgraded = UepLedger.restore(s6, TRUST, KEYS);
-  assert.deepEqual(upgraded.restoredFrom, { formatVersion: 6, migrationSteps: ["6->7", "7->8", "8->9"] });
+  assert.deepEqual(upgraded.restoredFrom, { formatVersion: 6, migrationSteps: ["6->7", "7->8", "8->9", "9->10"] });
   assert.equal(upgraded.height, 0);
   assert.equal(upgraded.lastReconcileHeight, 0);
   upgraded.advanceHeight(3);
-  upgraded.faucet(upgraded.addressOf(alice.accountId), "asset:test:eur", 1_000n); // legacy id, resolved to uep-test/teur
+  upgraded.faucet(upgraded.addressOf(alice.accountId), "asset:test:eur", 1_000n, clientBlinding(479314068527n)); // legacy id, resolved to uep-test/teur
   const s7 = upgraded.snapshot();
-  assert.equal(s7.formatVersion, 9);
+  assert.equal(s7.formatVersion, 10);
   assert.equal(s7.prevSnapshotHash, snapshotHash(s6));
   assert.equal(s7.sequence, s6.sequence + 1);
 
   const verifier = UepLedger.restoreChain([s6, s7], TRUST);
   assert.equal(verifier.height, 3);
-  assert.equal(verifier.restoredFrom?.formatVersion, 9);
+  assert.equal(verifier.restoredFrom?.formatVersion, 10);
   assert.equal(verifier.balanceOfAsset(alice.accountId, "uep-test/teur"), 51_000n);
   assert.equal(verifier.balanceOfAsset(alice.accountId, "asset:test:eur"), 51_000n);
   assert.equal(verifier.lastCheckpoint().snapshotHash, s7.snapshotHash);

@@ -15,5 +15,6 @@ Source registry with key rotation, signed quotes domain-separated with the netwo
 
 - Never holds balances and is not on the spend or consensus path.
 - FX reference rates (ECB, BIS) are display-only. Data-source policy: `docs/ORACLE.md`.
+- LEI checksum is offline and rejects ungenerated pairs 00, 01 and 99. A GLEIF name is a service-layer display, not an oracle input.
 
 Full module map: [`docs/MODULES.md`](../../docs/MODULES.md).

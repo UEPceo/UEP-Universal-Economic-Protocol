@@ -1,3 +1,5 @@
+import { verifyEd25519 } from "../core/ed25519.ts";
+import { canonicalJson } from "../core/canonical-json.ts";
 /**
  * Evidence trust model and value caps (ADR 0002 rule 6, docs/EVIDENCE.md).
  *
@@ -289,4 +291,35 @@ export function evidenceCapsView(caps: EvidenceCaps): EvidenceCapsView {
     minProviderBond: (attesterSetId: string, asset: string) => caps.minProviderBond(attesterSetId, asset),
     attesterSet: (attesterSetId: string) => caps.attesterSet(attesterSetId),
   });
+}
+
+
+/** Bytes the attesters sign. The published data is not included. */
+export function evidenceStatementMessage(statement: Omit<EvidenceStatement, "signatures">): Uint8Array {
+  return Buffer.from(canonicalJson({
+    sourceId: statement.sourceId,
+    dataHash: statement.dataHash,
+    observedHeight: statement.observedHeight,
+    orderId: statement.orderId,
+    attesterSetId: statement.attesterSetId,
+  }));
+}
+
+/** k of n over the statement. Does not fetch the source and does not keep the data. */
+export function verifyEvidenceStatement(statement: EvidenceStatement, set: AttesterSetPolicy): void {
+  if (statement.attesterSetId !== set.attesterSetId) throw new Error("EVIDENCE_SET_MISMATCH");
+  if (statement.sourceId !== set.sourceId) throw new Error("EVIDENCE_SOURCE_MISMATCH");
+  if (!/^[0-9a-f]{64}$/.test(statement.dataHash)) throw new Error("EVIDENCE_HASH_INVALID");
+  if (!Number.isSafeInteger(statement.observedHeight) || statement.observedHeight < 0) throw new Error("EVIDENCE_HEIGHT_INVALID");
+  const message = evidenceStatementMessage(statement);
+  const seen = new Set<string>();
+  let ok = 0;
+  for (const sig of statement.signatures) {
+    if (seen.has(sig.attesterId)) throw new Error("EVIDENCE_ATTESTER_REPEATED");
+    seen.add(sig.attesterId);
+    if (!set.attesterKeys.includes(sig.attesterId)) throw new Error("EVIDENCE_ATTESTER_UNKNOWN");
+    if (!verifyEd25519(message, sig.signature, sig.attesterId)) throw new Error("EVIDENCE_SIGNATURE_INVALID");
+    ok += 1;
+  }
+  if (ok < set.threshold) throw new Error("EVIDENCE_THRESHOLD");
 }

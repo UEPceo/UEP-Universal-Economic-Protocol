@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.1 (ADR 0002): the single-node testnet exposes a deterministic block
  * height. It starts at 0, only moves through advanceHeight(), is part of the
@@ -30,7 +31,7 @@ test("height: starts at 0, advances only through advanceHeight(), never through 
   const a = await identity(); const b = await identity();
   const l = ledger();
   assert.equal(l.height, 0);
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(273578304559n));
   const p = l.prepareSpend(a, b.accountId, EUR, 100n);
   assert.ok("tx" in p);
   if (!("tx" in p)) return;
@@ -51,9 +52,9 @@ test("height: two replicas fed the same inputs reach the same height and state",
   const a = await identity();
   const run = () => {
     const l = ledger();
-    l.faucet(a.accountId, EUR, 500n);
+    l.faucet(a.accountId, EUR, 500n, clientBlinding(873202078767n));
     l.advanceHeight(3);
-    l.faucet(a.accountId, EUR, 700n);
+    l.faucet(a.accountId, EUR, 700n, clientBlinding(303463212079n));
     l.advanceHeight(2);
     return { h: l.height, root: l.stateRoot().toHex(), reconcile: (l.reconcilePending(), l.lastReconcileAt) };
   };
@@ -66,13 +67,13 @@ test("height: two replicas fed the same inputs reach the same height and state",
 test("height: carried by the signed snapshot (format 7) and checked on restore", async () => {
   const a = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(141101515823n));
   l.advanceHeight(42);
   l.reconcilePending();
   l.advanceHeight(8);
   const snap = l.snapshot();
-  assert.equal(SNAPSHOT_FORMAT_VERSION, 9);
-  assert.equal(snap.formatVersion, 9);
+  assert.equal(SNAPSHOT_FORMAT_VERSION, 10);
+  assert.equal(snap.formatVersion, 10);
   assert.equal(snap.height, 50);
   assert.equal(snap.lastReconcileAt, 42);
   assert.equal(snap.policy.windowHeights, 12);
@@ -100,7 +101,7 @@ test("height: the policy rate window is measured in heights (default 12 = 60 s)"
   const a = await identity(); const b = await identity();
   const l = ledger();
   l.policy.config.maxTxPerWindow = 2;
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(988371657775n));
   const pay = () => { const p = l.prepareSpend(a, b.accountId, EUR, 10n); return "tx" in p ? ("tx" in l.submit(p.tx) ? "OK" : "SUBMIT") : p.error.code; };
   assert.equal(pay(), "OK");
   assert.equal(pay(), "OK");
@@ -125,7 +126,7 @@ test("height: advanceHeight(n) is bounded to MAX_BLOCKS_PER_TICK per call outsid
 test("height: a restore never lowers the height unless the operator forces it, and retires the replaced ledger", async () => {
   const a = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(785758110767n));
   l.advanceHeight(10);
   const s1 = l.snapshot();
   l.advanceHeight(100);
@@ -145,7 +146,7 @@ test("height: a restore never lowers the height unless the operator forces it, a
   assert.throws(() => l.advanceHeight(1), /LEDGER_RETIRED/);
   // Forward restore with `replaces`: accepted, the old ledger is retired.
   const fresh = ledger();
-  fresh.faucet(a.accountId, EUR, 1n);
+  fresh.faucet(a.accountId, EUR, 1n, clientBlinding(216019244079n));
   const snap = fresh.snapshot();
   const next = UepLedger.restore(structuredClone(snap), TRUST, {}, { ...U, replaces: fresh });
   assert.equal(next.height, fresh.height);

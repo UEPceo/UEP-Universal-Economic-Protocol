@@ -10,6 +10,8 @@ import { heightOf } from "../core/height.ts";
 import { UEP_API_VERSION, httpStatusOf, type ApiRequestMeta } from "./uep-api-types.ts";
 import { ledgerBusyHttpStatus, type LedgerSubmitQueue } from "./ledger-submit-queue.ts";
 import { deserializeTx, serializeTx } from "../core/transaction.ts";
+import { MAX_OBJECT_BYTES } from "./storage-provider.ts";
+import { displayLei, renderLeiDisplayPage, type GleifDisplayOptions } from "./gleif-display.ts";
 
 export const UEP_HTTP_API_VERSION = "1.4.0";
 
@@ -67,6 +69,15 @@ export type HttpApiOptions = {
    * `Retry-After` (error code LEDGER_BUSY); the route is absent without it.
    */
   ledgerQueue?: LedgerSubmitQueue;
+  /** Optional sink for the exception behind an INTERNAL answer, keyed by the id returned to the client. */
+  onError?: (id: string, error: unknown) => void;
+  /**
+   * Display-only LEI page. Not a protocol input: the handler never writes
+   * ledger, oracle or marketplace state. `fetch` is injectable so tests do
+   * not call GLEIF. Absent fetch uses the platform fetch and still returns
+   * a page if the registry is unreachable.
+   */
+  leiDisplay?: GleifDisplayOptions;
 };
 
 /**
@@ -218,7 +229,17 @@ function send(res: ServerResponse, status: number, body: unknown, extraHeaders: 
   res.end(raw);
 }
 
-async function readBody(req: IncomingMessage, limit = 16 * 1024 * 1024): Promise<Buffer> {
+let httpErrorSeq = 0;
+
+
+/** Audit C3: reject non-canonical or oversized decimals before the quadratic BigInt parser. */
+function decimalField(value: unknown, fallback = "0"): bigint {
+  const raw = value === undefined || value === null || value === "" ? fallback : String(value);
+  if (!/^(0|[1-9][0-9]{0,29})$/.test(raw)) throw new Error("AMOUNT_INVALID");
+  return BigInt(raw);
+}
+
+async function readBody(req: IncomingMessage, limit = 64 * 1024): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let n = 0;
   for await (const chunk of req) {
@@ -253,6 +274,29 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         send(res, h.ok ? 200 : 503, h);
         return;
       }
+
+      if (req.method === "GET" && (path === "/v1/display/lei" || path.startsWith("/v1/display/lei/"))) {
+        const fromPath = path.startsWith("/v1/display/lei/") ? decodeURIComponent(path.slice("/v1/display/lei/".length)) : "";
+        const entered = (url.searchParams.get("lei") ?? fromPath).trim();
+        const wantsJson = (req.headers.accept ?? "").includes("application/json") || path.endsWith(".json");
+        if (!entered) {
+          if (wantsJson) {
+            send(res, 200, { ok: true, displayOnly: true, entersState: false, data: null });
+            return;
+          }
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-uep-api": UEP_HTTP_API_VERSION, "x-uep-display": "lei" });
+          res.end(renderLeiDisplayPage(null, ""));
+          return;
+        }
+        const view = await displayLei(entered, opts.leiDisplay);
+        if (wantsJson) {
+          send(res, view.checksumValid ? 200 : 422, { ok: view.checksumValid, displayOnly: true, entersState: false, data: view });
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-uep-api": UEP_HTTP_API_VERSION, "x-uep-display": "lei" });
+        res.end(renderLeiDisplayPage(view, entered));
+        return;
+      }
       if (req.method === "GET" && path === "/v1/economic/tip") {
         if (!opts.economic) {
           send(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "economic read model not attached" } });
@@ -283,7 +327,7 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         return;
       }
       if (obj && req.method === "PUT") {
-        const body = await readBody(req);
+        const body = await readBody(req, MAX_OBJECT_BYTES);
         const result = await opts.api.putObject({
           objectId: decodeURIComponent(obj[1]!),
           body,
@@ -307,6 +351,58 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         send(res, result.ok ? 200 : 500, result);
         return;
       }
+
+
+      if (req.method === "GET" && path === "/v1/events") {
+        const after = Number(url.searchParams.get("after") ?? "0");
+        const limit = Number(url.searchParams.get("limit") ?? "100");
+        const result = opts.api.marketplaceEvents(metaOf(req), after, limit);
+        send(res, httpStatusOf(result), result);
+        return;
+      }
+      if (req.method === "POST" && path === "/v1/marketplace/identities") {
+        const body = JSON.parse((await readBody(req)).toString() || "{}");
+        if (!body.signature) { send(res, 401, { ok: false, error: { code: "ACTOR_SIGNATURE_REQUIRED" } }); return; }
+        if ((opts.api.marketplace?.identitiesSize() ?? 0) >= (opts.identityCap ?? 1024)) { send(res, 429, { ok: false, error: { code: "IDENTITY_CAP" } }); return; }
+        const result = opts.api.marketplaceRegisterIdentity(String(body.identityId ?? ""), String(body.publicKeyHex ?? ""), metaOf(req), String(body.signature));
+        send(res, httpStatusOf(result, 201), result);
+        return;
+      }
+
+      if (req.method === "GET" && path === "/v1/categories") {
+        const result = opts.api.categories(metaOf(req));
+        send(res, httpStatusOf(result), result);
+        return;
+      }
+      if (req.method === "GET" && path === "/v1/bridge/info") {
+        const result = opts.api.bridgeInfo(metaOf(req));
+        send(res, httpStatusOf(result), result);
+        return;
+      }
+      if (req.method === "POST" && path === "/v1/bridge/deposit") {
+        const body = JSON.parse((await readBody(req)).toString() || "{}");
+        const result = opts.api.bridgeDeposit(String(body.buyerId ?? ""), body.tx, String(body.signature ?? ""), metaOf(req));
+        send(res, httpStatusOf(result, 201), result);
+        return;
+      }
+      if (req.method === "POST" && path === "/v1/bridge/claim") {
+        const body = JSON.parse((await readBody(req)).toString() || "{}");
+        const result = opts.api.bridgeClaim(String(body.buyerId ?? ""), String(body.txId ?? ""), String(body.signature ?? ""), metaOf(req));
+        send(res, httpStatusOf(result, 201), result);
+        return;
+      }
+      if (req.method === "POST" && path === "/v1/bridge/withdraw") {
+        const body = JSON.parse((await readBody(req)).toString() || "{}");
+        const result = opts.api.bridgeWithdraw(String(body.buyerId ?? ""), String(body.recipient ?? ""), decimalField(body.amount), decimalField(body.openingSeed), String(body.nonce ?? ""), Number(body.expiresAtHeight ?? 0), String(body.signature ?? ""), metaOf(req));
+        send(res, httpStatusOf(result), result);
+        return;
+      }
+      if (req.method === "POST" && path === "/v1/marketplace/credits") {
+        const body = JSON.parse((await readBody(req)).toString() || "{}");
+        const result = opts.api.marketplaceCreditAccount(String(body.identityId ?? ""), String(body.asset ?? ""), decimalField(body.amount), String(body.creditId ?? ""), metaOf(req));
+        send(res, httpStatusOf(result, 201), result);
+        return;
+      }
       if (req.method === "POST" && path === "/v1/marketplace/listings") {
         const body = JSON.parse((await readBody(req)).toString() || "{}");
         const result = opts.api.marketplacePublishListing({
@@ -316,8 +412,8 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
           description: String(body.description ?? ""),
           category: String(body.category ?? "API") as any,
           asset: String(body.asset ?? ""),
-          unitPrice: BigInt(String(body.unitPrice ?? "0")),
-          capacity: BigInt(String(body.capacity ?? "0")),
+          unitPrice: decimalField(body.unitPrice),
+          capacity: decimalField(body.capacity),
         }, metaOf(req));
         send(res, httpStatusOf(result, 201), result);
         return;
@@ -343,7 +439,7 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
       }
       if (req.method === "GET" && path === "/v1/marketplace/quote") {
         const listingId = url.searchParams.get("listingId") ?? "";
-        const quantity = BigInt(url.searchParams.get("quantity") ?? "0");
+        const quantity = decimalField(url.searchParams.get("quantity"));
         const result = opts.api.marketplaceCheckoutQuote(listingId, quantity, metaOf(req));
         send(res, httpStatusOf(result), result);
         return;
@@ -355,7 +451,7 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         const result = opts.api.marketplaceAcceptOrder({
           listingId: String(body.listingId ?? ""),
           buyerId: String(body.buyerId ?? ""),
-          quantity: BigInt(String(body.quantity ?? "0")),
+          quantity: decimalField(body.quantity),
           idempotencyKey: String(body.idempotencyKey ?? meta.idempotencyKey ?? ""),
           signature: String(body.signature ?? ""),
           orderId: body.orderId ? String(body.orderId) : undefined,
@@ -376,7 +472,7 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         const meta = metaOf(req);
         if (action === "fund") {
           const body = JSON.parse((await readBody(req)).toString() || "{}");
-          const result = opts.api.marketplaceFundOrder(orderId, BigInt(String(body.amount ?? "0")), meta);
+          const result = opts.api.marketplaceFundOrder(orderId, decimalField(body.amount), meta);
           send(res, httpStatusOf(result), result);
           return;
         }
@@ -449,7 +545,7 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
       }
       if (req.method === "POST" && path === "/v1/compute/jobs") {
         const programId = url.searchParams.get("programId") ?? "";
-        const result = await opts.api.submitCompute(programId, await readBody(req));
+        const result = await opts.api.submitCompute(programId, await readBody(req, MAX_OBJECT_BYTES));
         send(res, result.ok ? 202 : 400, result);
         return;
       }
@@ -464,6 +560,13 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         send(res, result.ok ? 200 : 404, result);
         return;
       }
+
+      if (req.method === "POST" && path === "/v1/oracle/quotes") {
+        const body = JSON.parse((await readBody(req)).toString() || "{}");
+        const result = opts.api.oraclePublish(String(body.feed ?? ""), String(body.value ?? ""), metaOf(req));
+        send(res, httpStatusOf(result, 201), result);
+        return;
+      }
       const quote = path.match(/^\/v1\/oracle\/quotes\/([^/]+)$/);
       if (req.method === "GET" && quote) {
         const result = await opts.api.oracleQuote(decodeURIComponent(quote[1]!));
@@ -473,7 +576,18 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
       send(res, 404, { ok: false, error: { code: "NOT_FOUND", message: path } });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      send(res, message === "PAYLOAD_TOO_LARGE" ? 413 : 500, { ok: false, error: { code: message === "PAYLOAD_TOO_LARGE" ? "PAYLOAD_TOO_LARGE" : "INTERNAL", message } });
+      if (message === "PAYLOAD_TOO_LARGE") {
+        send(res, 413, { ok: false, error: { code: "PAYLOAD_TOO_LARGE", message: "PAYLOAD_TOO_LARGE" } });
+        return;
+      }
+      if (message === "AMOUNT_INVALID" || e instanceof SyntaxError) {
+        send(res, 400, { ok: false, error: { code: "INVALID_REQUEST", message: message === "AMOUNT_INVALID" ? "AMOUNT_INVALID" : "body is not valid JSON" } });
+        return;
+      }
+      // Audit C4: do not return internal exception text. The id is a counter, not entropy.
+      httpErrorSeq += 1;
+      try { opts.onError?.(String(httpErrorSeq), e); } catch { /* the sink must not break the answer */ }
+      send(res, 500, { ok: false, error: { code: "INTERNAL", message: "INTERNAL", id: String(httpErrorSeq) } });
     }
   });
 }

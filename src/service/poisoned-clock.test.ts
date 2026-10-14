@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * ADR 0002 rule 1, checked by execution: transitions run with a poisoned
  * clock, network and randomness (scripts/poisoned-clock.mjs). A full ledger,
@@ -38,7 +39,7 @@ describe("poisoned clock", () => {
     const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, faucetSigningKey: F.privateKey, testOnlyUnboundedHeightAdvance: true });
     const a = await identityFromMnemonic(await generateMnemonic(128)); // in memory only
     const b = await identityFromMnemonic(await generateMnemonic(128));
-    ledger.faucet(ledger.addressOf(a.accountId), "uep-test/teur", 100_000n);
+    ledger.faucet(ledger.addressOf(a.accountId), "uep-test/teur", 100_000n, clientBlinding(248740820015n));
     for (let i = 0; i < 3; i++) {
       ledger.advanceHeight(1);
       const p = ledger.prepareSpend(a, ledger.addressOf(b.accountId), "uep-test/teur", 1_000n); // client side, not a transition

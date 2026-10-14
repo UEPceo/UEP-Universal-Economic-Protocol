@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3 crypto alignment: the circuit-depth projection of the ledger state
  * tree (src/core/zk-tx-adapter.ts) gives the same leaves, slots and root as
@@ -21,7 +22,7 @@ test("projected ledger roots at depth 32 equal uep-zk smt-root over circuit leav
   const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, faucetSigningKey: FAUCET.privateKey });
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const b = await identityFromMnemonic(await generateMnemonic(128));
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(567828202543n));
   const p = l.prepareSpend(a, b.accountId, EUR, 1_000n);
   assert.ok("tx" in p);
   assert.ok("tx" in l.submit(p.tx));

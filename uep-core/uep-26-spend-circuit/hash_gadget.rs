@@ -77,7 +77,13 @@ pub fn h_tx<H: Hash2>(a: Fr, b: Fr) -> Fr {
     domain_hash::<H>(D_TX, a, b)
 }
 
-/// Left-fold under a domain (UEP-26 freeze).
+/// Domain tag of hFoldV2. Matches TypeScript `Domain.FoldV2`.
+pub const D_FOLD_V2: u64 = 6;
+/// Frozen fold version (UEP-26.3). Not the transaction encoding version.
+pub const FOLD_V2_VERSION: u64 = 2;
+
+/// Left-fold under a domain (UEP-26 leaf/historical freeze).
+/// Kept for migration of pre-v5 proofs. Not used by the frozen SpendCircuit commitment.
 /// H_fold(d, []) = H(d,0,0); H_fold(d,[x0]) = x0;
 /// H_fold(d,[x0..xk]) = H(d, H_fold(d,[x0..x{k-1}]), xk)
 pub fn h_fold<H: Hash2>(domain: u64, items: &[Fr]) -> Fr {
@@ -94,8 +100,23 @@ pub fn h_fold<H: Hash2>(domain: u64, items: &[Fr]) -> Fr {
     acc
 }
 
+/// UEP-26.3 freeze. Length-prefixed, version-domained fold.
+/// acc0 = H(D_FOLD_V2, FOLD_V2_VERSION, domain)
+/// acc1 = H(D_FOLD_V2, acc0, len)
+/// acc  = H(D_FOLD_V2, acc, item) for every item
+/// Same formula as TypeScript `hFoldV2`. Note commitments stay on H_LEAF.
+pub fn h_fold_v2<H: Hash2>(domain: u64, items: &[Fr]) -> Fr {
+    let mut acc = domain_hash::<H>(D_FOLD_V2, Fr::from(FOLD_V2_VERSION), Fr::from(domain));
+    acc = domain_hash::<H>(D_FOLD_V2, acc, Fr::from(items.len() as u64));
+    for x in items {
+        acc = domain_hash::<H>(D_FOLD_V2, acc, *x);
+    }
+    acc
+}
+
 /// Canonical transaction commitment (public-input binding).
-/// Fold order: ENCODING_VERSION=1 then the first 11 public fields (excl. commitment itself).
+/// Frozen on hFoldV2 (UEP-26.3). Item order is unchanged from v4:
+/// ENCODING_VERSION then the public fields except the commitment itself.
 pub const ENCODING_VERSION: u64 = 2;
 
 pub fn tx_commitment<H: Hash2>(
@@ -112,7 +133,7 @@ pub fn tx_commitment<H: Hash2>(
     nullifier: Fr,
     domain_id: Fr,
 ) -> Fr {
-    h_fold::<H>(
+    h_fold_v2::<H>(
         D_TX,
         &[
             Fr::from(ENCODING_VERSION),
@@ -167,7 +188,24 @@ pub fn enforce_domain_hash<G: Hash2Gadget>(
     computed.enforce_equal(out)
 }
 
-/// In-circuit left-fold under a domain.
+/// In-circuit hFoldV2. Same length prefix and version domain as `h_fold_v2`.
+pub fn h_fold_v2_gadget<G: Hash2Gadget>(
+    cs: ConstraintSystemRef<Fr>,
+    domain: u64,
+    items: &[FpVar<Fr>],
+) -> Result<FpVar<Fr>, SynthesisError> {
+    let version = FpVar::new_constant(cs.clone(), Fr::from(FOLD_V2_VERSION))?;
+    let domain_fr = FpVar::new_constant(cs.clone(), Fr::from(domain))?;
+    let mut acc = domain_hash_gadget::<G>(cs.clone(), D_FOLD_V2, &version, &domain_fr)?;
+    let len = FpVar::new_constant(cs.clone(), Fr::from(items.len() as u64))?;
+    acc = domain_hash_gadget::<G>(cs.clone(), D_FOLD_V2, &acc, &len)?;
+    for x in items {
+        acc = domain_hash_gadget::<G>(cs.clone(), D_FOLD_V2, &acc, x)?;
+    }
+    Ok(acc)
+}
+
+/// In-circuit left-fold under a domain. Historical; not the frozen commitment.
 pub fn h_fold_gadget<G: Hash2Gadget>(
     cs: ConstraintSystemRef<Fr>,
     domain: u64,
@@ -192,7 +230,7 @@ pub fn enforce_tx_commitment<G: Hash2Gadget>(
     expected: &FpVar<Fr>,
     parts: &[FpVar<Fr>], // already includes Fr(ENCODING_VERSION) as first element or we prepend
 ) -> Result<(), SynthesisError> {
-    let computed = h_fold_gadget::<G>(cs, D_TX, parts)?;
+    let computed = h_fold_v2_gadget::<G>(cs, D_TX, parts)?;
     computed.enforce_equal(expected)
 }
 

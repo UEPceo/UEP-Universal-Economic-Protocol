@@ -37,7 +37,7 @@ parentPort!.on("message", (msg: { id: number; op: string; args: unknown[] }) => 
         value = outResult(ledger.submitBatch((msg.args[0] as never[]).map((t) => deserializeTx(t))) as never);
         break;
       case "faucet":
-        ledger.faucet(new Fr(msg.args[0] as string), msg.args[1] as string, BigInt(msg.args[2] as string));
+        ledger.faucet(new Fr(msg.args[0] as string), msg.args[1] as string, BigInt(msg.args[2] as string), new Fr(msg.args[3] as string));
         value = true;
         break;
       case "status":

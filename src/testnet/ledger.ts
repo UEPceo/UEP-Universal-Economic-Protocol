@@ -13,19 +13,22 @@ import { anchorChainProblem, buildSettlementAnchor, GENESIS_ANCHOR_HASH, settlem
 import type { SettlementReceipt } from "../settlement/types.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 import { migrateSnapshotPayload, snapshotFormatSupport } from "./snapshot-migrations.ts";
-import { hAccount, hLeaf } from "../core/hash.ts";
+import { Domain, hAccount, hFoldV2, hLeaf } from "../core/hash.ts";
 import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
-import { deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, type Note } from "../core/note.ts";
+import { deriveNoteBlinding, deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, walletDomainSeparator, type Note } from "../core/note.ts";
 import { assertVerifierAllowed, CircuitTreeProjection, circuitBalanceLeaf, ledgerBalanceKey, ledgerBalanceLeaf, parseZkSpendPayload, zkBindingMismatches, zkLedgerTransition, zkRootMismatches, type ZkLedgerTransition, type ZkRootBindingMode, type ZkSpendVerifier } from "../core/zk-tx-adapter.ts";
 import { canonicalSerializedTx, computeTxCommitment, deserializeTx, MAX_TX_INPUTS, MULTI_INPUT_TX_VERSION, multiInputShapeError, serializeTx, txCommitmentOf, txIdFromCommitment, txNonces, txNullifiers, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
 import { u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
 import { TREASURY_ID } from "../network/profiles.ts";
-import { SecurityPolicy, toPolicyBigint, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
+import { PROTOCOL_ID, assertNetworkId, assertProtocolVersion, networkTag } from "../core/network-tag.ts";
+import { PreparedOutputLifecycle } from "./prepared-outputs.ts";
+import { SecurityPolicy, toPolicyBigint, type PolicyWindowSnapshot, type SecurityPolicy as SecurityPolicyType, type RiskTier } from "../core/security-policy.ts";
 import { DevelopmentSpendProofProvider, SENDER_SIGNATURE_PROOF, verifyDevelopmentMac, type SpendPublicInputs } from "../core/spend-proof.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
-import type { KeyObject } from "node:crypto";
+import { openClientNote, walletOutputBlinding } from "../core/client-note.ts";
+import { type KeyObject } from "node:crypto";
 import { generateEd25519KeyPair, publicKeyHexOf, sha256Hex, signEd25519, stableStringify, toPrivateKey, verifyEd25519, type PrivateKeyLike, type PublicKeyLike } from "../core/ed25519.ts";
 import { NoteCommitmentTree } from "../core/note-tree.ts";
 import { testOnlyOption } from "../core/test-only.ts";
@@ -76,7 +79,7 @@ interface CheckedSpend { inputs: Note[]; outputs: Note[]; next: { sender: bigint
  * node verifies with the public key only. "development-mac": LOCAL /
  * IN-PROCESS DEVELOPMENT ONLY, verification needs the sender's secret.
  */
-export type SpendBuildOptions = { authorization?: "sender-signature" | "development-mac" };
+export type SpendBuildOptions = { authorization?: "sender-signature" | "development-mac"; outputBlinding?: Fr; changeBlinding?: Fr };
 
 /** v0.4.7: result of preparePayment() / submitBatch(). `index` is the failing part, when known. */
 export type BatchResult = { txs: UepTransaction[] } | { error: SubmitError; index?: number };
@@ -115,7 +118,7 @@ function ak(account: Fr, asset: Fr): AccountKey {
  * `assetRegistry` = { networkId, version, hash } of the
  * signed asset manifest the ledger enforces, or null for a template-only ledger.
  */
-export const SNAPSHOT_FORMAT_VERSION = 9;
+export const SNAPSHOT_FORMAT_VERSION = 10;
 /** Default bound of the pending (offline / conflict) queue. */
 export const DEFAULT_MAX_PENDING_TRANSACTIONS = 1024;
 /** Upper limit accepted for `maxPendingTransactions`. */
@@ -438,6 +441,8 @@ export class UepLedger {
     if (value !== this.proofRequired) throw new Error("REQUIRE_PROOF_IMMUTABLE: requireProof is fixed at construction (testOnlyDisableProof is test-only)");
   }
   private readonly proofRequired: boolean;
+  private allowDevelopmentMac = false;
+  noteBlindingDomain = 0n;
   private unboundedHeightAdvance: boolean;
   /** v0.5.1: set when a restore with `replaces` took over this ledger; it no longer advances. */
   private retired = false;
@@ -543,6 +548,13 @@ export class UepLedger {
     /** v0.4.7 TEST-ONLY: build a ledger with requireProof = false. Never set outside tests. */
     testOnlyDisableProof?: boolean;
     /**
+     * v0.5.11 TEST-ONLY: accept a development-mac spend. A node ledger refuses
+     * that proof (docs/DEV-MAC-RETIREMENT.md step 1). Never set outside tests.
+     */
+    testOnlyAllowDevelopmentMac?: boolean;
+    /** Mixed into default output blinding. 0 keeps the historical counter formula. */
+    noteBlindingDomain?: bigint;
+    /**
      * v0.5.3: verifier for `zk-spend` proofs on the transaction path (crypto
      * alignment). The ledger first binds public inputs 4..11 to the transaction;
      * development keys are refused under NODE_ENV=production. Without it a
@@ -560,6 +572,7 @@ export class UepLedger {
     testOnlyUnboundedHeightAdvance?: boolean;
   }) {
     if ((opts as { snapshotAuthoritySecret?: unknown }).snapshotAuthoritySecret !== undefined) throw new Error("SNAPSHOT_SECRET_UNSUPPORTED: v0.4.3 uses Ed25519 snapshotSigningKeys");
+    assertNetworkId(opts.networkId);
     this.networkId = opts.networkId;
     this.domainId = opts.domainId;
     this.connected = opts.connected;
@@ -568,6 +581,8 @@ export class UepLedger {
     if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > MAX_PENDING_TRANSACTIONS_LIMIT) throw new Error("INVALID_MAX_PENDING_TRANSACTIONS");
     this.maxPendingTransactions = maxPending;
     this.proofRequired = !testOnlyOption("testOnlyDisableProof", opts.testOnlyDisableProof);
+    this.allowDevelopmentMac = testOnlyOption("testOnlyAllowDevelopmentMac", opts.testOnlyAllowDevelopmentMac);
+    this.noteBlindingDomain = opts.noteBlindingDomain ?? 0n;
     if (opts.zkSpendVerifier) {
       assertVerifierAllowed(opts.zkSpendVerifier);
       this.zkSpendVerifier = opts.zkSpendVerifier;
@@ -737,6 +752,8 @@ export class UepLedger {
     if (blocks === 0) return this.blockHeight;
     this.blockHeight += blocks;
     this.tickCount++;
+    this.preparedOutputs.sweep(this.blockHeight);
+    this.sweepMintReservations();
     return this.blockHeight;
   }
 
@@ -776,7 +793,14 @@ export class UepLedger {
   }
 
   notesOf(account: Fr, unspentOnly = true): Note[] {
-    return this.notes.filter((n) => n.owner.eq(account) && (!unspentOnly || !n.spent));
+    const idxs = this.notesByOwner.get(account.toHex());
+    if (!idxs) return [];
+    const out: Note[] = [];
+    for (const i of idxs) {
+      const n = this.notes[i];
+      if (n && (!unspentOnly || !n.spent)) out.push(n);
+    }
+    return out;
   }
 
   /** Root of the note-commitment tree (every note ever created on this ledger). */
@@ -793,7 +817,21 @@ export class UepLedger {
   /** The only way notes enter the ledger: the tree and `notes` stay index-aligned. */
   private addNote(note: Note): void {
     this.noteTree.append(note.commitment);
+    const idx = this.notes.length;
     this.notes.push(note);
+    this.indexOwnerNote(note.owner, idx);
+  }
+
+  private indexOwnerNote(owner: Fr, idx: number): void {
+    const k = owner.toHex();
+    const arr = this.notesByOwner.get(k);
+    if (arr) arr.push(idx);
+    else this.notesByOwner.set(k, [idx]);
+  }
+
+  private rebuildOwnerIndex(): void {
+    this.notesByOwner.clear();
+    for (let i = 0; i < this.notes.length; i++) this.indexOwnerNote(this.notes[i]!.owner, i);
   }
 
   /** v0.4.5: v2 address (UEP-ADDR-002) of a key-derived account on this ledger's network. */
@@ -991,7 +1029,7 @@ export class UepLedger {
    * applies it. The request is bound to the next mint index and note, so it
    * is valid only until the next mint or note on this ledger.
    */
-  prepareIssuerMint(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint): IssuerMintRequest {
+  prepareIssuerMint(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint, opening: Fr | Note): IssuerMintRequest {
     if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
     const reg = this.assetRegistry;
     if (!reg) throw new Error("MINT_REGISTRY_REQUIRED: issuer mints need a ledger built with an asset registry");
@@ -1006,9 +1044,12 @@ export class UepLedger {
     const assetId = ledgerAssetIdToFr(assetIdStr);
     if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("MINT_AMOUNT_INVALID");
     this.assertSupplyCap(rec.assetId, assetId, amount);
-    const blinding = hLeaf(account, new Fr(this.noteCounter + 1n));
-    const note = makeNote(account, assetId, amount, blinding);
-    return { index: this.mints.length, networkId: this.networkId, domainId: this.domainId, account: account.toHex(), assetId: assetId.toHex(), amount: amount.toString(), commitment: note.commitment.toHex(), registryVersion: reg.version };
+    this.sweepMintReservations();
+    const offset = this.mintReservations.length;
+    const note = this.acceptClientNote(account, assetId, amount, opening);
+    const request: IssuerMintRequest = { index: this.mints.length + offset, networkId: this.networkId, domainId: this.domainId, account: account.toHex(), assetId: assetId.toHex(), amount: amount.toString(), commitment: note.commitment.toHex(), registryVersion: reg.version };
+    this.mintReservations.push({ request, expiresAtHeight: this.blockHeight + this.policy.config.windowHeights });
+    return request;
   }
 
   /**
@@ -1016,7 +1057,7 @@ export class UepLedger {
    * keys of the asset's issuer key set in the current manifest (M-of-N).
    * Only valid signatures by listed keys are stored.
    */
-  mintWithIssuerSignatures(request: IssuerMintRequest, signatures: RegistrySignature[]): Note {
+  mintWithIssuerSignatures(request: IssuerMintRequest, signatures: RegistrySignature[], opening: Fr | Note): Note {
     const reg = this.assetRegistry;
     if (!reg) throw new Error("MINT_REGISTRY_REQUIRED: issuer mints need a ledger built with an asset registry");
     if (!request || typeof request !== "object") throw new Error("MINT_REQUEST_INVALID");
@@ -1027,8 +1068,11 @@ export class UepLedger {
       assetIdStr = this.assetRecordByFr(new Fr(request.assetId))?.assetId;
     } catch { throw new Error("MINT_REQUEST_INVALID"); }
     if (!assetIdStr || !/^[0-9]+$/.test(String(request.amount))) throw new Error("MINT_REQUEST_INVALID");
-    const expected = this.prepareIssuerMint(account, assetIdStr, BigInt(request.amount));
-    if (issuerMintMessage(expected) !== issuerMintMessage(request)) throw new Error("MINT_REQUEST_STALE: the request does not match the next mint of this ledger (index, note or manifest version changed)");
+    this.sweepMintReservations();
+    const heldIdx = this.mintReservations.findIndex((r) => issuerMintMessage(r.request) === issuerMintMessage(request));
+    if (heldIdx < 0) throw new Error("MINT_REQUEST_STALE: the request does not match a live issuer-mint reservation (index, note or manifest version changed)");
+    if (heldIdx !== 0) throw new Error("MINT_RESERVATION_HELD: an earlier issuer mint is reserved; apply or release it first");
+    const expected = this.mintReservations[0]!.request;
     const ks = reg.issuerAt(expected.registryVersion, assetIdStr);
     if (!ks) throw new Error("MINT_ISSUER_UNKNOWN");
     const message = issuerMintMessage(expected);
@@ -1043,9 +1087,14 @@ export class UepLedger {
     kept.sort((a, b) => (a.publicKey < b.publicKey ? -1 : a.publicKey > b.publicKey ? 1 : 0));
     const assetId = ledgerAssetIdToFr(assetIdStr);
     const amount = BigInt(expected.amount);
-    const blinding = hLeaf(account, new Fr(++this.noteCounter));
-    const note = makeNote(account, assetId, amount, blinding);
+    // Audit C1: checks done at prepare time are repeated at apply time (state may have moved).
+    this.assertMintable(assetIdStr);
+    this.assertSupplyCap(assetIdStr, assetId, amount, false);
+    if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("MINT_AMOUNT_INVALID");
+    const note = this.acceptClientNote(account, assetId, amount, opening);
     if (note.commitment.toHex() !== expected.commitment) throw new Error("MINT_REQUEST_STALE");
+    this.mintReservations.shift();
+    this.noteCounter++;
     this.addNote(note);
     this.mints.push({ ...expected, signature: "", issuerSignatures: kept });
     this.setBalance(account, assetId, this.balanceOf(account, assetId) + amount);
@@ -1054,16 +1103,23 @@ export class UepLedger {
   }
 
   /** v0.5.3: under a registry, total issuance of an asset may not exceed its supplyCap. */
-  private assertSupplyCap(assetIdStr: string, assetId: Fr, amount: bigint): void {
+  private assertSupplyCap(assetIdStr: string, assetId: Fr, amount: bigint, includeReservations = true): void {
     const reg = this.assetRegistry?.find(assetIdStr);
     if (!reg) return;
     let total = 0n;
     for (const enc of assetEncodings(assetIdStr)) total += this.supply.get(enc.toHex()) ?? 0n;
+    // Audit C1: outstanding issuer-mint reservations count against the cap, otherwise
+    // N reservations prepared before the first is applied can each pass the check alone.
+    if (includeReservations) {
+      for (const r of this.mintReservations) {
+        if (assetEncodings(assetIdStr).some((enc) => enc.toHex() === r.request.assetId)) total += BigInt(r.request.amount);
+      }
+    }
     if (total + amount > reg.supplyCap) throw new Error(`MINT_SUPPLY_CAP: issuance would exceed the registry supplyCap of ${assetIdStr}`);
     void assetId;
   }
 
-  faucet(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint): Note {
+  faucet(accountOrAddress: Fr | string, assetIdStr: string, amount: bigint, opening: Fr | Note): Note {
     if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
     if (!this.allowFaucet) throw new Error("Faucet is TESTNET-only");
     assetIdStr = resolveAssetIdAlias(assetIdStr);
@@ -1083,8 +1139,8 @@ export class UepLedger {
     const assetId = ledgerAssetIdToFr(assetIdStr);
     if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("FAUCET_AMOUNT_INVALID");
     this.assertSupplyCap(rec.assetId, assetId, amount);
-    const blinding = hLeaf(account, new Fr(++this.noteCounter));
-    const note = makeNote(account, assetId, amount, blinding);
+    const note = this.acceptClientNote(account, assetId, amount, opening);
+    this.noteCounter++;
     this.addNote(note);
     const unsigned = { index: this.mints.length, networkId: this.networkId, domainId: this.domainId, account: account.toHex(), assetId: assetId.toHex(), amount: amount.toString(), commitment: note.commitment.toHex() };
     this.mints.push({ ...unsigned, signature: signEd25519(mintMessage(unsigned), signer) });
@@ -1130,6 +1186,25 @@ export class UepLedger {
   /** v0.4.7: issuer public keys of this node, asset id -> hex SPKI DER. */
   issuerPublicKeys(): Record<string, string> {
     return Object.fromEntries([...this.issuerSigners.entries()].map(([a, k]) => [a, publicKeyHexOf(k)]));
+  }
+
+  /** Replace the snapshot signers. Old snapshots stay valid under the keys that signed them. */
+  rotateSnapshotSigners(keys: PrivateKeyLike[]): void {
+    if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
+    if (keys.length === 0) throw new Error("SNAPSHOT_SIGNING_KEY_REQUIRED");
+    const signers = keys.map((key) => toPrivateKey(key));
+    const hexes = signers.map((key) => publicKeyHexOf(key));
+    if (new Set(hexes).size !== hexes.length) throw new Error("SNAPSHOT_SIGNING_KEYS_DUPLICATE");
+    if (this.faucetSigner && hexes.includes(publicKeyHexOf(this.faucetSigner))) throw new Error("FAUCET_KEY_NOT_DISTINCT");
+    this.snapshotSigners = signers;
+  }
+
+  /** Replace the faucet key. Mints already in a snapshot stay valid under the key that signed them. */
+  rotateFaucetKey(key: PrivateKeyLike): void {
+    if (this.retired) throw new Error(`LEDGER_RETIRED: ${RETIRED_MESSAGE}`);
+    const next = toPrivateKey(key);
+    if (this.snapshotAuthorityPublicKeys().includes(publicKeyHexOf(next))) throw new Error("FAUCET_KEY_NOT_DISTINCT");
+    this.faucetSigner = next;
   }
 
   /** Snapshot authority public keys of this node (hex SPKI DER). Share these with verifiers. */
@@ -1396,11 +1471,13 @@ export class UepLedger {
     const nullifier = mode === "sender-signature" ? signedSpendNullifier(senderId, nonce) : deriveNullifier(secrets.secret, nonce);
     const inputNonces = multi ? selected.map((n) => n.nonce) : undefined;
     const inputNullifiers = multi ? selected.map((n) => signedSpendNullifier(senderId, n.nonce)) : undefined;
-    const outBlinding = hLeaf(secrets.secret, new Fr(++this.noteCounter));
+    const outBlinding = opts.outputBlinding ?? walletOutputBlinding(this.noteCounter, 2n, this.noteBlindingDomain);
+    this.noteCounter++;
     const output = makeNote(recipient, assetId, amount, outBlinding);
     const outputs = [output];
     if (change > 0n) {
-      const chBlinding = hLeaf(secrets.secret, new Fr(++this.noteCounter));
+      const chBlinding = opts.changeBlinding ?? walletOutputBlinding(this.noteCounter, 3n, this.noteBlindingDomain);
+      this.noteCounter++;
       outputs.push(makeNote(senderId, assetId, change, chBlinding));
     }
 
@@ -1469,25 +1546,27 @@ export class UepLedger {
     tx.senderAuth = signSenderAuth(tx, secrets.secret, secrets.salt);
     tx.inputMembership = selected.map((n) => this.noteTree.prove(n.commitment));
 
-    // Stash outputs on the tx object via a side table
-    this.stashOutputs(tx.txId.toHex(), outputs, selected, debit, balancesAfter);
+    // v0.5.4: register the prepared outputs. Openings stay on the tx the wallet holds;
+    // the ledger keeps commitments and a status, and drops them on send, expiry or reject.
+    this.preparedOutputs.prepare(
+      tx.txId.toHex(),
+      outputs.map((o) => o.commitment.toHex()),
+      this.blockHeight,
+      this.policy.config.windowHeights,
+    );
     return tx;
   }
 
-  private outputStash = new Map<
-    string,
-    { outputs: Note[]; inputs: Note[]; debit: bigint; balances: { sender: bigint; recipient: bigint; treasury: bigint } }
-  >();
-
-  private stashOutputs(
-    txId: string,
-    outputs: Note[],
-    inputs: Note[],
-    debit: bigint,
-    balances: { sender: bigint; recipient: bigint; treasury: bigint },
-  ) {
-    this.outputStash.set(txId, { outputs, inputs, debit, balances });
-  }
+  /** v0.5.4: prepared outputs. Status only; blinding is never retained here. */
+  private readonly preparedOutputs = new PreparedOutputLifecycle();
+  /** v0.5.4: pending indexes (same pattern as the committed tx index). */
+  private readonly pendingByTxId = new Map<string, UepTransaction>();
+  private readonly pendingNullifierIndex = new Map<string, Set<string>>();
+  private readonly pendingValidation = new Map<string, { gen: string; ok: boolean }>();
+  /** v0.5.4: owner -> note indexes. */
+  private readonly notesByOwner = new Map<string, number[]>();
+  /** v0.5.4: issuer-mint reservations so concurrent prepares do not share an index. */
+  private mintReservations: Array<{ request: IssuerMintRequest; expiresAtHeight: number }> = [];
 
   /**
    * v0.5.2 (attack battery, concurrent double spend): check + nullifier insert +
@@ -1512,8 +1591,8 @@ export class UepLedger {
     }
   }
 
-  private submitUnguarded(tx: UepTransaction, secrets?: IdentitySecrets): SubmitResult {
-
+  /** Network, domain and protocol checks shared by submit() and validateSpend(). No state is read beyond identity of the ledger. */
+  private spendHeaderError(tx: UepTransaction): { error: SubmitError } | undefined {
     if (tx.amount <= 0n) {
       return { error: { code: "AMOUNT_MISMATCH", message: "Transaction amount must be greater than zero." } };
     }
@@ -1533,6 +1612,34 @@ export class UepLedger {
         },
       };
     }
+    try {
+      assertProtocolVersion(tx.protocol, tx.version);
+    } catch (e) {
+      return { error: { code: "WRONG_NETWORK", message: (e as Error).message } };
+    }
+    if (networkTag(tx.networkId, tx.protocol, 1) !== this.networkTag()) {
+      return { error: { code: "WRONG_NETWORK", message: "Transaction network tag does not match this ledger." } };
+    }
+    return undefined;
+  }
+
+  /**
+   * Phase 4: every rule of a connected submit, without mutating state. A peer
+   * calls it before it votes, so a spend that this ledger would reject never
+   * costs a vote (a vote is remembered per nullifier and is not released).
+   */
+  validateSpend(tx: UepTransaction): { ok: true } | { error: SubmitError } {
+    if (this.retired) return { error: { code: "LEDGER_RETIRED", message: RETIRED_MESSAGE } };
+    const header = this.spendHeaderError(tx);
+    if (header) return header;
+    const checked = this.checkSpend(tx, undefined, {});
+    if ("error" in checked) return { error: checked.error };
+    return { ok: true };
+  }
+
+  private submitUnguarded(tx: UepTransaction, secrets?: IdentitySecrets): SubmitResult {
+    const header = this.spendHeaderError(tx);
+    if (header) return header;
     if (!this.connected) {
       // v0.4.4: the offline queue only accepts authenticated, locally valid spends.
       const queued = this.enqueuePending(tx);
@@ -1662,6 +1769,9 @@ export class UepLedger {
       return { error: { code: "ASSET_MISMATCH", message: "Asset is not registered on this network." } };
     }
 
+    if (tx.spendProof?.kind === "development-mac" && !this.allowDevelopmentMac) {
+      return { error: { code: "PROOF", message: "Development spend MAC is not accepted on this ledger (docs/DEV-MAC-RETIREMENT.md)." } };
+    }
     if (tx.spendProof?.kind === "sender-signature") {
       // v0.5.0 remote path: public-key verification only (sender signature and
       // input owner keys are checked below); no secret is needed or used.
@@ -1740,13 +1850,8 @@ export class UepLedger {
     if (membershipError) return { error: membershipError };
     const senderError = this.checkSenderAuth(tx) ?? this.checkInputOwnerKeys(tx, inputs);
     if (senderError) return { error: senderError };
-    for (const n of inputs) {
-      // Amount/asset bind: recomputing commitment with a mutated amount must fail.
-      const mutated = noteCommitment(n.owner, n.assetId, n.amount + 1n, n.blinding);
-      if (mutated.eq(n.commitment)) {
-        return { error: { code: "AMOUNT_MISMATCH", message: "Commitment is not binding." } };
-      }
-    }
+    const bindError = this.bindSpendOpenings(tx, inputs, outputs);
+    if (bindError) return { error: bindError };
 
     const bal = (account: Fr) => opts.overlay?.get(ak(account, tx.assetId)) ?? this.balanceOf(account, tx.assetId);
     const tr = transition(
@@ -1779,7 +1884,7 @@ export class UepLedger {
 
     const accepted: UepTransaction = { ...tx, phase: "LOCAL_FINAL", inConflict: false };
     this.txs.push(accepted);
-    this.outputStash.delete(tx.txId.toHex());
+    this.preparedOutputs.markSent(tx.txId.toHex(), this.blockHeight);
     this.policy.check(
       {
         accountHex: tx.senderId.toHex(),
@@ -1815,6 +1920,7 @@ export class UepLedger {
     if ("error" in check) return check;
     const queued: UepTransaction = { ...tx, phase: "LOCAL_VALID", inConflict: false };
     this.pending.push(queued);
+    this.reindexPending();
     return { tx: { ...queued } };
   }
 
@@ -1848,6 +1954,8 @@ export class UepLedger {
     // Same input/output binding rules as submit(), on the canonical inputs.
     const shapeError = checkSpendShape(tx, resolved.inputs, outs, (id) => this.acceptsRecipient(id));
     if (shapeError) return { error: shapeError };
+    const bindError = this.bindSpendOpenings(tx, resolved.inputs, outs);
+    if (bindError) return { error: bindError };
     if (outs.some((o) => this.noteTree.indexOf(o.commitment) !== undefined)) return { error: { code: "OUTPUT_BINDING", message: "Pending output note already exists on this ledger." } };
     const membershipError = this.checkMembership(tx, resolved.inputs);
     if (membershipError) return { error: membershipError };
@@ -1892,6 +2000,7 @@ export class UepLedger {
       phase: "LOCAL_VALID" as const,
     }));
     this.pending = queued;
+    this.reindexPending();
     this.lastReconcileAt = this.blockHeight;
     const settlements: ReturnType<typeof reconcile> = [];
     return { settlements, root: settlementRoot(settlements), queued: queued.map((t) => ({ ...t })), rejected };
@@ -1915,7 +2024,7 @@ export class UepLedger {
       notes: this.notes.map(serializeNote),
       txs: this.txs.map(serializeTx),
       // Entries that no longer validate (e.g. input spent since queuing) are not exported.
-      pending: this.pending.filter((t) => "tx" in this.validatePending(t)).map(serializeTx),
+      pending: this.exportPending(),
       maxPendingTransactions: this.maxPendingTransactions,
       noteRoot: this.noteTree.root().toHex(),
       noteCount: this.noteTree.size,
@@ -1925,6 +2034,11 @@ export class UepLedger {
       ticks: this.heightAdvanceRecord(),
       assetRegistry: this.assetRegistryBinding(),
       settlementAnchors: this.settlementAnchors.map((a) => ({ ...a, settlementIds: [...a.settlementIds], totals: { ...a.totals } })),
+      policyWindows: this.policy.exportWindows(),
+      protocol: PROTOCOL_ID,
+      protocolVersion: 1,
+      foldVersion: 2,
+      networkTag: this.networkTag(),
     };
   }
 
@@ -2051,6 +2165,9 @@ export class UepLedger {
       }
       deprecate(DEPRECATIONS.SNAPSHOT_MIGRATED, `restored a format ${String(sourceFormat)} snapshot through the migration registry; the next snapshot of this ledger is written in format ${SNAPSHOT_FORMAT_VERSION}`);
     }
+    const tagged = data as UepLedgerSnapshot & { networkTag?: unknown; protocol?: unknown; protocolVersion?: unknown; foldVersion?: unknown };
+    if (tagged.protocol !== PROTOCOL_ID || tagged.protocolVersion !== 1 || tagged.foldVersion !== 2) fail("PROTOCOL", "snapshot protocol, version or fold version is not accepted");
+    if (tagged.networkTag !== networkTag(data.networkId, PROTOCOL_ID, 1)) fail("NETWORK_TAG", "snapshot network tag does not match networkId");
 
     let l!: UepLedger;
     try {
@@ -2115,6 +2232,7 @@ export class UepLedger {
     l.state = SparseMerkleTree.fromJSON(data.state);
     l.balances = new Map(data.balances.map(([k, v]) => [k, BigInt(v)]));
     l.notes = data.notes.map(deserializeNote);
+    l.rebuildOwnerIndex();
     l.txs = data.txs.map(deserializeTx);
     l.noteCounter = BigInt(data.noteCounter);
     // v0.5.1 (format 7): the block height is a non-negative safe integer and not below the last reconcile height.
@@ -2153,6 +2271,7 @@ export class UepLedger {
     // Policy amounts may arrive as "<digits>n" strings when a snapshot was read with plain JSON.parse (same hash).
     for (const k of ["maxTransferAmount", "maxTransferPerWindow", "minFee"]) if (p[k] !== undefined) { try { p[k] = toPolicyBigint(p[k]); } catch { fail("POLICY", `${k} is not an amount`); } }
     l.policy = new SecurityPolicy({ ...p, blockedAccounts: new Set(p.blockedAccounts ?? []), assetTier: { ...(p.assetTier ?? {}) } });
+    l.policy.importWindows((data as { policyWindows?: PolicyWindowSnapshot[] }).policyWindows);
 
     // 1. Account state root is re-derived from balances.
     const rebuiltState = new SparseMerkleTree(ACCOUNT_DEPTH);
@@ -2333,6 +2452,204 @@ export class UepLedger {
     return l;
   }
 
+
+  /** Audit I1: the client supplies the opening. The ledger checks it and does not invent a commitment. */
+  private acceptClientNote(account: Fr, assetId: Fr, amount: bigint, opening: Fr | Note): Note {
+    const note = opening instanceof Fr ? openClientNote(account, assetId, amount, opening) : opening;
+    if (!note.owner.eq(account) || !note.assetId.eq(assetId) || note.amount !== amount || !openNote(note)) {
+      throw new Error("CLIENT_NOTE_INVALID");
+    }
+    if (this.noteTree.indexOf(note.commitment) !== undefined) throw new Error("CLIENT_NOTE_DUPLICATE");
+    return note;
+  }
+
+  /** v0.5.4: domain-separated tag of this ledger (networkId + protocol + version). */
+  networkTag(): string {
+    return networkTag(this.networkId, PROTOCOL_ID, 1);
+  }
+
+  /** Drop expired issuer-mint reservations from the first expired slot to the tail. */
+  private sweepMintReservations(): void {
+    const i = this.mintReservations.findIndex((r) => this.blockHeight >= r.expiresAtHeight);
+    if (i >= 0) {
+      this.mintReservations.splice(i);
+    }
+  }
+
+  /**
+   * v0.5.4: release an issuer-mint reservation and every reservation after it
+   * (their indexes were allocated behind it). Blinding is wiped.
+   */
+  releaseIssuerMint(request: IssuerMintRequest): number {
+    this.sweepMintReservations();
+    const i = this.mintReservations.findIndex((r) => issuerMintMessage(r.request) === issuerMintMessage(request));
+    if (i < 0) throw new Error("MINT_REQUEST_STALE: no live reservation for this request");
+    const dropped = this.mintReservations.splice(i);
+    void dropped;
+    return dropped.length;
+  }
+
+  /** Prepared-output lifecycle (no blinding). */
+  preparedOutput(txId: string) {
+    return this.preparedOutputs.get(txId);
+  }
+
+  rejectPrepared(txId: string): void {
+    this.preparedOutputs.markRejected(txId, this.blockHeight);
+  }
+
+  /**
+   * v0.5.4: real binding. Opens notes, recomputes commitments and nonces,
+   * checks the nullifier vector is bound to those nonces, and checks value conservation.
+   */
+  private bindSpendOpenings(tx: UepTransaction, inputs: Note[], outputs: Note[]): SubmitError | undefined {
+    if (inputs.length !== tx.inputCommitments.length || outputs.length !== tx.outputCommitments.length) {
+      return { code: "NOTE_OPENING", message: "Opening count does not match the transaction." };
+    }
+    if (inputs.some((n) => !openNote(n)) || outputs.some((n) => !openNote(n))) {
+      return { code: "NOTE_OPENING", message: "Note opening does not recompute its commitment." };
+    }
+    for (let i = 0; i < inputs.length; i++) {
+      const n = inputs[i]!;
+      const recomputed = noteCommitment(n.owner, n.assetId, n.amount, n.blinding);
+      if (!recomputed.eq(n.commitment) || !n.commitment.eq(tx.inputCommitments[i]!)) {
+        return { code: "AMOUNT_MISMATCH", message: "Input commitment does not match the opening." };
+      }
+      if (!n.nonce.eq(noteNonce(n.commitment, n.blinding))) return { code: "NOTE_NONCE", message: "Input nonce does not match the opening." };
+    }
+    for (let i = 0; i < outputs.length; i++) {
+      const o = outputs[i]!;
+      const recomputed = noteCommitment(o.owner, o.assetId, o.amount, o.blinding);
+      if (!recomputed.eq(o.commitment) || !o.commitment.eq(tx.outputCommitments[i]!)) {
+        return { code: "OUTPUT_BINDING", message: "Output commitment does not match the opening." };
+      }
+    }
+    const nfs = txNullifiers(tx);
+    const nonces = txNonces(tx);
+    if (nfs.length !== inputs.length || nonces.length !== inputs.length) {
+      return { code: "AMOUNT_MISMATCH", message: "Nullifier vector does not match the inputs." };
+    }
+    for (let i = 0; i < inputs.length; i++) {
+      if (!nonces[i]!.eq(inputs[i]!.nonce)) return { code: "NOTE_NONCE", message: "Nullifier is not bound to the consumed note nonce." };
+    }
+    let inputSum = 0n;
+    let outputSum = 0n;
+    for (const n of inputs) inputSum += n.amount;
+    for (const o of outputs) outputSum += o.amount;
+    // Outputs already include the recipient payment and the change note. The fee is not a note.
+    if (inputSum !== outputSum + tx.fee) {
+      return { code: "AMOUNT_MISMATCH", message: "Value is not conserved (inputs must equal outputs plus fee)." };
+    }
+    return undefined;
+  }
+
+  private pendingGeneration(): string {
+    return `${this.txs.length}:${this.nullifiers.size}:${this.blockHeight}:${this.noteTree.size}`;
+  }
+
+  private reindexPending(): void {
+    this.pendingByTxId.clear();
+    this.pendingNullifierIndex.clear();
+    const live = new Set<string>();
+    for (const tx of this.pending) {
+      const id = tx.txId.toHex();
+      live.add(id);
+      this.pendingByTxId.set(id, tx);
+      for (const nf of txNullifiers(tx)) {
+        const k = nf.toHex();
+        let set = this.pendingNullifierIndex.get(k);
+        if (!set) { set = new Set(); this.pendingNullifierIndex.set(k, set); }
+        set.add(id);
+      }
+    }
+    for (const id of [...this.pendingValidation.keys()]) if (!live.has(id)) this.pendingValidation.delete(id);
+  }
+
+  pendingTx(txId: string): UepTransaction | undefined {
+    return this.pendingByTxId.get(txId);
+  }
+
+  /** Pending tx ids that spend this nullifier (reconciliation index). */
+  pendingByNullifier(nf: Fr): string[] {
+    return [...(this.pendingNullifierIndex.get(nf.toHex()) ?? [])];
+  }
+
+  /**
+   * Export pending without re-validating entries whose generation is unchanged.
+   * Does not re-sign the queue.
+   */
+  private exportPending() {
+    const gen = this.pendingGeneration();
+    const out = [];
+    for (const tx of this.pending) {
+      const id = tx.txId.toHex();
+      let cached = this.pendingValidation.get(id);
+      if (!cached || cached.gen !== gen) {
+        const check = this.validatePending(tx);
+        cached = { gen, ok: "tx" in check };
+        this.pendingValidation.set(id, cached);
+      }
+      if (cached.ok) out.push(serializeTx(tx));
+    }
+    return out;
+  }
+
+  /**
+   * v0.5.4: checkpoint delta. Carries only the suffix after `base` plus the
+   * policy windows. A full snapshot remains the signed authority record.
+   */
+  snapshotDelta(base?: { sequence: number; snapshotHash: string; txCount: number; mintCount: number; noteCount: number }) {
+    const full = this.snapshotPayload();
+    const txFrom = base?.txCount ?? 0;
+    const mintFrom = base?.mintCount ?? 0;
+    const noteFrom = base?.noteCount ?? 0;
+    return {
+      formatVersion: SNAPSHOT_FORMAT_VERSION,
+      kind: "delta" as const,
+      baseSequence: base?.sequence ?? 0,
+      baseHash: base?.snapshotHash ?? full.prevSnapshotHash,
+      sequence: full.sequence,
+      networkId: full.networkId,
+      protocol: full.protocol,
+      foldVersion: full.foldVersion,
+      networkTag: full.networkTag,
+      height: full.height,
+      txs: full.txs.slice(txFrom),
+      mints: full.mints.slice(mintFrom),
+      notes: full.notes.slice(noteFrom),
+      policyWindows: full.policyWindows,
+      fold: hFoldV2(Domain.FoldV2, [new Fr(full.txs.length), new Fr(full.mints.length)]).toHex(),
+    };
+  }
+
+  /** Hash, k-of-n signatures and checkpoint link. Does not rebuild ledger state. */
+  private static assertSnapshotLink(data: UepLedgerSnapshot, trust: SnapshotTrust): void {
+    const fail = (code: string, detail?: string): never => { throw new Error(`INVALID_SNAPSHOT_${code}${detail ? `: ${detail}` : ""}`); };
+    if (!data || typeof data !== "object" || !Array.isArray(data.signatures)) fail("SHAPE");
+    const hash = snapshotHash(data);
+    if (data.snapshotHash !== hash) fail("HASH");
+    if (trust.previousSnapshotHash !== undefined && data.prevSnapshotHash !== trust.previousSnapshotHash) fail("CHAIN", "prevSnapshotHash mismatch");
+    const authorities = trust.authorities.map((k) => publicKeyHexOf(k));
+    let ok = 0;
+    const seen = new Set<string>();
+    for (const sig of data.signatures) {
+      let hex: string;
+      try { hex = publicKeyHexOf(sig.publicKey); } catch { continue; }
+      if (!authorities.includes(hex) || seen.has(hex)) continue;
+      if (!verifyEd25519(hash, sig.signature, hex)) fail("SIGNATURE");
+      seen.add(hex);
+      ok++;
+    }
+    const need = trust.threshold ?? 1;
+    if (ok < need) fail("SIGNATURE", `need ${need} authority signature(s)`);
+    const cp = trust.checkpoint;
+    if (cp) {
+      if (data.sequence !== cp.sequence + 1 || data.prevSnapshotHash !== cp.snapshotHash) fail("CHAIN", "snapshot does not extend the trusted checkpoint");
+      if (data.txs.length < cp.txCount || txChainHash(data.txs, cp.txCount) !== cp.txChainHash) fail("HISTORY", "transaction history diverges from the trusted checkpoint");
+      if (data.mints.length < cp.mintCount || mintChainHash(data.mints, cp.mintCount) !== cp.mintChainHash) fail("HISTORY", "mint history diverges from the trusted checkpoint");
+    }
+  }
+
   /** v0.5.1: retire this ledger (called by restore(..., { replaces: this })); advanceHeight then throws LEDGER_RETIRED. */
   retire(): void {
     this.retired = true;
@@ -2345,15 +2662,19 @@ export class UepLedger {
    */
   static restoreChain(snapshots: UepLedgerSnapshot[], trust: SnapshotTrust, keys: LedgerSigningKeys = {}, opts: RestoreOptions = {}): UepLedger {
     if (!Array.isArray(snapshots) || snapshots.length === 0) throw new Error("INVALID_SNAPSHOT_CHAIN: empty chain");
-    let restored: UepLedger | undefined;
     let prev: UepLedgerSnapshot | undefined;
     for (const [i, snap] of snapshots.entries()) {
-      const linkTrust: SnapshotTrust = prev ? { ...trust, previousSnapshotHash: snapshotHash(prev), checkpoint: checkpointOf(prev) } : trust;
       if (prev && snap?.sequence !== prev.sequence + 1) throw new Error("INVALID_SNAPSHOT_CHAIN: sequence gap or reorder");
+      const linkTrust: SnapshotTrust = prev ? { ...trust, previousSnapshotHash: snapshotHash(prev), checkpoint: checkpointOf(prev) } : trust;
       const last = i === snapshots.length - 1;
-      restored = UepLedger.restore(snap, linkTrust, last ? keys : {}, last ? opts : { allowHeightRegression: opts.allowHeightRegression, testOnlyUnboundedHeightAdvance: opts.testOnlyUnboundedHeightAdvance });
+      if (!last) {
+        // v0.5.4: verify the link (hash, signatures, checkpoint, history prefix) without rebuilding state.
+        UepLedger.assertSnapshotLink(snap, linkTrust);
+      } else {
+        return UepLedger.restore(snap, linkTrust, keys, opts);
+      }
       prev = snap;
     }
-    return restored!;
+    throw new Error("INVALID_SNAPSHOT_CHAIN: empty chain");
   }
 }

@@ -19,6 +19,7 @@
  * all three exist.
  */
 import { heightsForMs } from "../core/height.ts";
+import { networkTag } from "../core/network-tag.ts";
 import { resolveAssetIdAlias, isLegacyAssetIdAlias } from "../core/assets.ts";
 
 export type SnapshotPayloadRecord = Record<string, unknown>;
@@ -122,8 +123,30 @@ const step8to9: SnapshotMigrationStep = {
   },
 };
 
+
+const step9to10: SnapshotMigrationStep = {
+  from: 9,
+  to: 10,
+  title: "policy windows, network tag and hFoldV2 marker",
+  derivation: [
+    "policyWindows = []: format 9 did not persist rolling policy windows; a restore starts with empty windows and the next spend rebuilds them",
+    "protocol = UEP-25-prototype, protocolVersion = 1, foldVersion = 2: format 10 records the protocol and the hFoldV2 opt-in. Existing note, nullifier and transaction commitments stay on hFold (UEP-26)",
+    "networkTag = SHA-256(UEP-NET-TAG-V1 || networkId || protocol || 1): derived from the snapshot networkId, not from a new parameter",
+    "transactions, mints, notes, state and balances are unchanged",
+  ],
+  fixtures: ["v9-v0.5.3.json"],
+  migrate(p) {
+    const name = "MIGRATION_9_10";
+    if (p.formatVersion !== 9) fail(name, "expected formatVersion 9");
+    if ("policyWindows" in p || "networkTag" in p || "foldVersion" in p) fail(name, "format 9 has no policyWindows, networkTag or foldVersion");
+    const networkId = p.networkId;
+    if (typeof networkId !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(networkId)) fail(name, "networkId is not a hardened network tag input");
+    return { ...p, formatVersion: 10, policyWindows: [], protocol: "UEP-25-prototype", protocolVersion: 1, foldVersion: 2, networkTag: networkTag(networkId) };
+  },
+};
+
 /** Registered steps, in order. Append only. */
-export const SNAPSHOT_MIGRATIONS: readonly SnapshotMigrationStep[] = Object.freeze([step6to7, step7to8, step8to9]);
+export const SNAPSHOT_MIGRATIONS: readonly SnapshotMigrationStep[] = Object.freeze([step6to7, step7to8, step8to9, step9to10]);
 
 /** Oldest format that can still be restored (through migration). */
 export const OLDEST_MIGRATABLE_SNAPSHOT_FORMAT = 6;

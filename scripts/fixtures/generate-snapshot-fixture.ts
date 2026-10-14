@@ -1,3 +1,4 @@
+import { clientBlinding } from "../../src/core/client-note.ts";
 /**
  * Generate a golden ledger-snapshot fixture from a historical source tree
  * (docs/COMPATIBILITY.md). Run once per historical snapshot format and commit
@@ -62,9 +63,9 @@ async function main() {
   };
   // Formats with a block height (7+): advance it between steps so the fixture carries non-zero heights.
   const advance = (n: number) => { if (typeof ledger.advanceHeight === "function") ledger.advanceHeight(n); };
-  ledger.faucet(alice.accountId, eur, 1_000_000n);
+  ledger.faucet(alice.accountId, eur, 1_000_000n, clientBlinding(1n));
   advance(2);
-  ledger.faucet(alice.accountId, energy, 500n);
+  ledger.faucet(alice.accountId, energy, 500n, clientBlinding(2n));
   submit(ledger.prepareSpend(alice, bob.accountId, eur, 250_000n), alice);
   advance(3);
   ledger.reconcilePending();

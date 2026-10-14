@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3 (external review 2026-10-08): the replay checks of submit() and
  * reconcilePending() use O(1) txId / nullifier indexes over the committed
@@ -23,7 +24,7 @@ test("a committed transaction is found through the index; replay is refused befo
   const l = mk();
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const b = await identityFromMnemonic(await generateMnemonic(128));
-  l.faucet(a.accountId, ASSET, 10_000n);
+  l.faucet(a.accountId, ASSET, 10_000n, clientBlinding(6347764783n));
   const p = l.prepareSpend(a, b.accountId, ASSET, 100n);
   assert.ok("tx" in p);
   assert.equal(l.hasCommittedTx(p.tx.txId), false);

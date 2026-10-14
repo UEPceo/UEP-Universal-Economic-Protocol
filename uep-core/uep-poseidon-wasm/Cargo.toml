@@ -1,0 +1,12 @@
+[package]
+name = "uep-poseidon-wasm"
+version = "0.5.4"
+edition = "2021"
+license = "Apache-2.0"
+description = "UEP Poseidon BN254 t=3 alpha=5 with the same constants as src/core/poseidon-bn254-params.ts"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.4.3 snapshot authority (UEP-B05): Ed25519 authority signatures, k-of-n
  * threshold, hash chain / checkpoints, and a dedicated faucet (mint) key.
@@ -47,9 +48,9 @@ function snapshotWithFakeMint(l: UepLedger, owner: Fr, sign: (message: string) =
 test("B05: honest 1-of-1 restore needs only public keys; a verify-only restore cannot sign or mint", async () => {
   const a = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(746461811759n));
   const snap = l.snapshot();
-  assert.equal(snap.formatVersion, 9);
+  assert.equal(snap.formatVersion, 10);
   assert.equal(snap.sequence, 1);
   assert.equal(snap.prevSnapshotHash, "0".repeat(64));
   assert.deepEqual(l.snapshotAuthorityPublicKeys(), [S1.publicKeyHex]);
@@ -58,13 +59,13 @@ test("B05: honest 1-of-1 restore needs only public keys; a verify-only restore c
   assert.equal(restored.balanceOf(a.accountId, asset), 1_000n);
   assert.equal(restored.supply.get(asset.toHex()), 1_000n);
   assert.throws(() => restored.snapshot(), /SNAPSHOT_SIGNING_KEY_REQUIRED/);
-  assert.throws(() => restored.faucet(a.accountId, EUR, 1n), /FAUCET_KEY_REQUIRED/);
+  assert.throws(() => restored.faucet(a.accountId, EUR, 1n, clientBlinding(215758930991n)), /FAUCET_KEY_REQUIRED/);
 });
 
 test("B05: a snapshot signed by the wrong key is rejected", async () => {
   const a = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(86733153327n));
   const snap = l.snapshot();
   assert.throws(() => UepLedger.restore(snap, { ...TRUST, authorities: [S2.publicKeyHex] }), /INVALID_SNAPSHOT_THRESHOLD/);
   // A listed authority whose signature does not verify is an explicit signature failure.
@@ -76,7 +77,7 @@ test("B05: a snapshot signed by the wrong key is rejected", async () => {
 test("B05: 2-of-3 threshold rejects a single signature and accepts two distinct signers", async () => {
   const a = await identity();
   const l = ledger([S1.privateKey]);
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(867859309615n));
   const snap = l.snapshot();
   const trust = { authorities: [S1.publicKeyHex, S2.publicKeyHex, S3.publicKeyHex], threshold: 2, faucetPublicKeys: [FAUCET.publicKeyHex] };
   assert.throws(() => UepLedger.restore(snap, trust), /INVALID_SNAPSHOT_THRESHOLD: 1 distinct valid authority signature\(s\), 2 required/);
@@ -87,7 +88,7 @@ test("B05: 2-of-3 threshold rejects a single signature and accepts two distinct 
 test("B05: a duplicate signer counts once toward the threshold", async () => {
   const a = await identity();
   const l = ledger([S1.privateKey]);
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(376334140463n));
   const snap = l.snapshot();
   const trust = { authorities: [S1.publicKeyHex, S2.publicKeyHex, S3.publicKeyHex], threshold: 2, faucetPublicKeys: [FAUCET.publicKeyHex] };
   const duplicated = cosignSnapshot(snap, S1.privateKey);
@@ -102,7 +103,7 @@ test("B05: a duplicate signer counts once toward the threshold", async () => {
 test("B05: a chain break or reordered chain is rejected even when every snapshot is correctly signed", async () => {
   const [a, b] = await Promise.all([identity(), identity()]);
   const l = ledger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(12964258863n));
   const s1 = l.snapshot();
   pay(l, a, b.accountId, 1_000n);
   const s2 = l.snapshot();
@@ -123,12 +124,12 @@ test("B05: a chain break or reordered chain is rejected even when every snapshot
 test("B05: a rewritten history signed by the snapshot key is rejected against a known checkpoint", async () => {
   const [a, b, c] = await Promise.all([identity(), identity(), identity()]);
   const honest = ledger();
-  honest.faucet(a.accountId, EUR, 10_000n);
+  honest.faucet(a.accountId, EUR, 10_000n, clientBlinding(464855819311n));
   pay(honest, a, b.accountId, 1_000n);
   const checkpoint = checkpointOf(honest.snapshot());
   // Same keys, same mint, different history: the payment goes to c instead of b.
   const rewritten = ledger();
-  rewritten.faucet(a.accountId, EUR, 10_000n);
+  rewritten.faucet(a.accountId, EUR, 10_000n, clientBlinding(635517424687n));
   pay(rewritten, a, c.accountId, 1_000n);
   rewritten.snapshot();
   rewritten.snapshot();
@@ -140,7 +141,7 @@ test("B05: a rewritten history signed by the snapshot key is rejected against a 
 test("B05: an unsigned faucet mint is rejected", async () => {
   const a = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(603813434415n));
   const forged = snapshotWithFakeMint(l, a.accountId, () => "");
   assert.throws(() => UepLedger.restore(forged, TRUST), /INVALID_SNAPSHOT_MINT_SIGNATURE/);
 });
@@ -148,7 +149,7 @@ test("B05: an unsigned faucet mint is rejected", async () => {
 test("B05: a faucet mint signed by a foreign key is rejected", async () => {
   const a = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(259175498799n));
   const foreign = generateEd25519KeyPair();
   const forged = snapshotWithFakeMint(l, a.accountId, (m) => signEd25519(m, foreign.privateKey));
   assert.throws(() => UepLedger.restore(forged, TRUST), /INVALID_SNAPSHOT_MINT_SIGNATURE/);
@@ -157,7 +158,7 @@ test("B05: a faucet mint signed by a foreign key is rejected", async () => {
 test("B05: a forged history signed by the snapshot key with a fake mint is rejected (snapshot key cannot issue)", async () => {
   const [a, b] = await Promise.all([identity(), identity()]);
   const l = ledger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(742771049519n));
   pay(l, a, b.accountId, 1_000n);
   const forged = snapshotWithFakeMint(l, b.accountId, (m) => signEd25519(m, S1.privateKey));
   assert.ok(forged.signatures.length === 1 && forged.signatures[0]!.publicKey === S1.publicKeyHex);
@@ -176,10 +177,10 @@ test("B05: faucet key must be distinct from snapshot keys; legacy shared secret 
 test("B05: an authority node resumes its chain after restore with its private keys", async () => {
   const [a, b] = await Promise.all([identity(), identity()]);
   const l = ledger();
-  l.faucet(a.accountId, EUR, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(508701463599n));
   const s1 = l.snapshot();
   const node = UepLedger.restore(s1, TRUST, { snapshotSigningKeys: [S1.privateKey], faucetSigningKey: FAUCET.privateKey });
-  node.faucet(b.accountId, EUR, 500n);
+  node.faucet(b.accountId, EUR, 500n, clientBlinding(22896096303n));
   pay(node, a, b.accountId, 1_000n);
   const s2 = node.snapshot();
   assert.equal(s2.sequence, 2);

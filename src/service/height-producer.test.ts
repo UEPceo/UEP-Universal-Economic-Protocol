@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * Height producer acceptance (ADR 0002): the single-node testnet gets
  * heights from real time, outside the transitions. A simulated wall clock is
@@ -27,7 +28,7 @@ describe("height producer", () => {
     const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, faucetSigningKey: faucet.privateKey });
     const a = await identityFromMnemonic(await generateMnemonic(128)); // in memory only
     const b = await identityFromMnemonic(await generateMnemonic(128));
-    ledger.faucet(ledger.addressOf(a.accountId), "uep-test/teur", 10_000_000n);
+    ledger.faucet(ledger.addressOf(a.accountId), "uep-test/teur", 10_000_000n, clientBlinding(723070030895n));
     let wall = 1_800_000_000_000;
     const producer = new HeightProducer({ ledger, clock: () => wall });
     const heights = new Set<number>();

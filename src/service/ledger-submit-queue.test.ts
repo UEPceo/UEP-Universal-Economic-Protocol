@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3 (external review 2026-10-08): bounded FIFO submit queue with
  * timeout and backpressure in front of the ledger; HTTP 503 + Retry-After.
@@ -26,7 +27,7 @@ async function signedSpends(ledger: UepLedger, n: number): Promise<UepTransactio
   const out: UepTransaction[] = [];
   for (let i = 0; i < n; i++) {
     const sender = await identityFromMnemonic(await generateMnemonic(128));
-    ledger.faucet(sender.accountId, ASSET, 10_000n);
+    ledger.faucet(sender.accountId, ASSET, 10_000n, clientBlinding(249461707823n));
     const p = ledger.prepareSpend(sender, recipient.accountId, ASSET, 100n);
     assert.ok("tx" in p);
     out.push(p.tx);

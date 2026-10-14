@@ -520,6 +520,7 @@ export class IoTM2MService {
     const verification: IoTVerification = { ok: true, telemetryHash: hash(telemetry), verifiedAt: this.now(), machineId: machine.machineId, sequence: telemetry.sequence, authentication: "ED25519", unitsDelivered, fullyDelivered: unitsDelivered === contract.quantity, deliveryHash };
     this.verifiedMachineSequences.set(machine.machineId, telemetry.sequence);
     this.verifiedNonces.set(tupleKey(machine.machineId, telemetry.nonce), this.now());
+    this.marketplace.events.emit("iot.telemetry", telemetry.telemetryId, this.now());
     this.verified.set(requestId, verification);
     return verification;
   }
@@ -586,6 +587,7 @@ export class IoTM2MService {
     const contract = this.contractForRequest(requestId);
     if (!this.verified.get(requestId)) throw new Error("IOT_VERIFICATION_REQUIRED");
     const settlement = this.marketplace.settle(contract.orderId, auth);
+    this.marketplace.events.emit("iot.settled", contract.orderId, this.now());
     return { ...settlement, requestId, contractId: contract.contractId, machineId: request.machineId };
   }
 
