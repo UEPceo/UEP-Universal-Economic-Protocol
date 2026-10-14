@@ -1,3 +1,4 @@
+import { clientBlinding } from "../../src/core/client-note.ts";
 /**
  * Generate the v2 receive-only wallet fixture (public data only):
  *
@@ -48,7 +49,7 @@ async function main() {
     const r = ledger.submit(p.tx);
     if ("error" in r) throw new Error(JSON.stringify(r.error));
   };
-  ledger.faucet(payer.accountId, "uep-test/teur", 1_000_000n);
+  ledger.faucet(payer.accountId, "uep-test/teur", 1_000_000n, clientBlinding(1n));
   pay(300_000n);
   pay(200_000n);
   const snap = ledger.snapshot();

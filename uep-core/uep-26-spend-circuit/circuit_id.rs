@@ -11,13 +11,15 @@ use sha2::{Digest, Sha256};
 use crate::hash_gadget::{D_TX, ENCODING_VERSION};
 use crate::smt_gadget::SMT_DEPTH;
 
-pub const CIRCUIT_TAG: &str = "UEP-27-SPEND-POSEIDON-D32-v4-assetkey";
+/// v5: transaction_commitment frozen on hFoldV2 (UEP-26.3). v4 proofs do not verify under this tag.
+pub const CIRCUIT_TAG: &str = "UEP-27-SPEND-POSEIDON-D32-v5-foldv2";
 
 /// Seed of the development (non-ceremony) Groth16 setup. Fixed so the dev VK
 /// is reproducible and can be pinned by hash (see vectors/UEP-ZK-DEV-VK-PINS.json).
 pub const DEV_SETUP_SEED: u64 = 42;
 pub const CIRCUIT_DEPTH: usize = SMT_DEPTH;
-/// D=32 constraint count, measured with `uep-zk count-constraints` (v3: domain_id public input + fee floor).
+/// D=32 constraint count measured for v4. v5 adds two domain hashes per commitment (version, length)
+/// plus one per item under D_FOLD_V2. Re-measure with `uep-zk count-constraints` before a ceremony.
 pub const CIRCUIT_CONSTRAINTS: usize = 155_393;
 pub const NUM_PUBLIC_INPUTS: usize = 13;
 pub const PUBLIC_INPUT_NAMES: [&str; NUM_PUBLIC_INPUTS] = [

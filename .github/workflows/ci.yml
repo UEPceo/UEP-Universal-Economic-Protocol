@@ -73,6 +73,9 @@ jobs:
       - name: Core suites (npm run test:core)
         run: npm run test:core
 
+      - name: Index benches
+        run: node --experimental-strip-types scripts/bench-indexes.ts
+
   # Blocking (v0.5.3): every lab file EXCEPT those listed in
   # scripts/lab-known-issues.json, including the 12 labs fixed in v0.5.3
   # (TCP mesh tie-break, full-mesh wait, uep35.7.1 economic commitment).

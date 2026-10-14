@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.1 compatibility shims (docs/COMPATIBILITY.md): pre-v0.5.1 inputs keep
  * working through deterministic conversions, with deprecation warnings.
@@ -32,7 +33,7 @@ describe("v0.5.1 compatibility shims", () => {
     const ledger = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true });
     const a = await identityFromMnemonic(await generateMnemonic(128));
     const b = await identityFromMnemonic(await generateMnemonic(128));
-    ledger.faucet(a.accountId, "asset:test:eur", 10_000n);
+    ledger.faucet(a.accountId, "asset:test:eur", 10_000n, clientBlinding(891031409711n));
     assert.equal(ledger.balanceOfAsset(a.accountId, "uep-test/teur"), 10_000n);
     assert.equal(ledger.balanceOf(a.accountId, ledgerAssetIdToFr("uep-test/teur")), 10_000n);
     const p = ledger.prepareSpend(a, b.accountId, "asset:test:eur", 1_000n);
@@ -67,7 +68,7 @@ describe("v0.5.1 compatibility shims", () => {
     ledger.advanceHeight(4);
     const a = await identityFromMnemonic(await generateMnemonic(128));
     const b = await identityFromMnemonic(await generateMnemonic(128));
-    ledger.faucet(a.accountId, "uep-test/teur", 10_000n);
+    ledger.faucet(a.accountId, "uep-test/teur", 10_000n, clientBlinding(839052244015n));
     const p = ledger.prepareSpend(a, b.accountId, "uep-test/teur", 100n, 1_791_000_000_000);
     assert.ok("tx" in p);
     assert.equal(p.tx.createdAt, 4);

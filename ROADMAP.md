@@ -18,8 +18,8 @@ For the layer-by-layer architecture and the current status of each layer, see [`
 
 | Item | Status |
 |---|---|
-| Current version | `0.5.3` (2026-10-08, Latest GitHub Release `v0.5.3`): asset registry wired into the ledger, settlement anchors, multi-input transactions, oracle gate, category fixes; on top of `0.5.2-public-iot-m2m` (included in 0.5.3, not released separately: settlement engine, category modules hashlock swap/relay/dispute/drip, oracle policy layer) and `0.5.1` |
-| Tests | Per-suite counts in the [CHANGELOG 0.5.3 entry](./CHANGELOG.md) and [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md) (`npm run test:all` runs everything) |
+| Current version | `0.5.80` (2026-10-14): experimental BFT safety kernel, authenticated PeerNet transport and certified ledger application with crash-consistent single-process recovery; development ZK verifying-key pins for circuit v5-foldv2. Not production. GitHub Release `v0.5.80`. Snapshot format 10. Protocol fee 0.1 %, Marketplace fee 3 %. |
+| Tests | Run results must be regenerated from this exact tree; see [`docs/REPRODUCIBILITY.md`](./docs/REPRODUCIBILITY.md). |
 | Simulation | `npm run simulate:20k`: 20,000 signed, funded settlements, 0 errors, value conserved (in-process, not a throughput claim) |
 | CI | GitHub Actions: `npm run test:all` on Node.js 22.x and 24.x (blocking); 14 lab files with known issues in a separate non-blocking job |
 | Network | Local, single-node, in-process testnet |
@@ -27,12 +27,12 @@ For the layer-by-layer architecture and the current status of each layer, see [`
 
 ```text
 Phase 0  Foundation                      done
-Phase 1  Hardened public testnet         closing          ← we are here
+Phase 1  Hardened public testnet         engineering closed (0.5.11); external assessment still open
          Multi-asset                     ADR 0001 + signed registry manifest (v0.5.0); ledger wiring next
-Phase 2  Service economy                 in progress      ← and here
-Phase 3  Public developer platform       planned
-Phase 4  Multi-node testnet              planned
-Phase 5  Public testnet                  planned
+Phase 2  Service economy                 slices in tree (2.1–2.10); assessment open
+Phase 3  Public developer platform       engineering in tree; external service and assessment still open
+Phase 4  Multi-node testnet              started (scope + two-node harness)  ← we are here
+Phase 5  Public testnet                  started (0.5.67, onboarding)
 Phase 6  Economic network                future
 Phase 7  Production protocol             future
 Phase 8  Autonomous economic infra       future
@@ -49,7 +49,7 @@ Phase 9  Interplanetary economic network research
 
 ---
 
-## Phase 1 — Hardened public testnet · Closing
+## Phase 1 — Hardened public testnet · Engineering closed (0.5.11)
 
 **Goal:** anyone can run UEP and check that the economic system works without depending on the team.
 
@@ -75,9 +75,9 @@ Phase 9  Interplanetary economic network research
 - UEP-C04: one input note per transaction (deliberate for now). Since v0.4.7 a payment can use several notes as an atomic batch of single-input spends.
 - Trust assumptions: the settlement arbiter, operator-attached category hooks, and machine keys (signed telemetry is not physical proof).
 
-**Next milestone — close Phase 1:**
+**Phase 1 engineering close (0.5.11):** see [`docs/PHASE-1-CLOSE.md`](docs/PHASE-1-CLOSE.md). The external assessment remains open.
 
-- *Deliverables:* `requireProof` cannot be disabled outside tests (done in v0.4.7); a written plan to retire the development MAC; public architecture and roadmap documents (this file); a from-scratch reproduction guide.
+- *Deliverables:* `requireProof` cannot be disabled outside tests (done in v0.4.7); a written plan to retire the development MAC (done in v0.5.8, [`docs/DEV-MAC-RETIREMENT.md`](docs/DEV-MAC-RETIREMENT.md)); public architecture and roadmap documents (this file); a from-scratch reproduction guide.
 - *Exit criteria:* CI green on Node.js 22 and 24; an independent assessment with no new critical or high-severity findings; a third party reproduces `npm run test:all` (which includes `npm test` and `npm run simulate:20k`) from a clean clone using only the documentation.
 
 ---
@@ -143,7 +143,7 @@ Node D
 ```
 
 - *Starting point:* the local consensus experiments in `src/lab/` (leader election, quorum and commit certificates, BFT configuration gate, DAG dissemination, partitions, view change; see [`docs/LABS.md`](./docs/LABS.md)). They are research inputs, not the deliverable, and several of them have known failures (`scripts/lab-known-issues.json`).
-- *Prerequisites:* validity rules that do not depend on local configuration; key rotation and revocation; a written consensus scope.
+- *Prerequisites:* validity rules that do not depend on local configuration; key rotation and revocation; a written consensus scope; client-supplied note openings on every replicated transition (v0.5.8, audit I1) so two nodes cannot invent different commitments.
 - *To test:* state replication, conflicting transactions, leader failure, view change, network partitions, snapshot exchange, recovery, Byzantine behaviour, cross-node replay, duplicate settlement, censorship until expiry, clock drift.
 - *Exit criteria:* a reproducible multi-node test harness in CI; nodes with different local configurations accept exactly the same transactions; an independent assessment of consensus.
 

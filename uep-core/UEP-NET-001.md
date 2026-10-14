@@ -10,7 +10,7 @@ This is the lab profile. It is not a testnet.
 | domainId | lab-earth-0 |
 | depth | 32 |
 | hash | BN254 Poseidon t=3 alpha=5 |
-| circuit | UEP-27-SPEND-POSEIDON-D32-v4-assetkey |
+| circuit | UEP-27-SPEND-POSEIDON-D32-v5-foldv2 (v5, fold v2; v4 `UEP-27-SPEND-POSEIDON-D32-v4-assetkey` before 0.5.5) |
 | keys | DEV-TEST-KEYS |
 | ceremony | no |
 | fee | 10 bps, experimental |

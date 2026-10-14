@@ -65,6 +65,8 @@ test("format 4 snapshot restores balances, holds, active orders and treasury; a 
   assert.deepEqual(restarted.valueAccounting(EUR), m.valueAccounting(EUR));
   assert.deepEqual(balances(restarted, ["prov", "b1", "b2", "b3"]), balances(m, ["prov", "b1", "b2", "b3"]));
   assert.equal(restarted.orderCount(), m.orderCount());
+  assert.ok(m.orderIdsOf("b2").length > 0);
+  assert.deepEqual(restarted.orderIdsOf("b2").sort(), m.orderIdsOf("b2").sort(), "buyer index is rebuilt after restore");
   assert.equal(restarted.getListing(listing.listingId).available, m.getListing(listing.listingId).available);
   assert.equal(getOrder(restarted, funded.orderId, "b2").status, "HELD");
   assert.equal(getOrder(restarted, reserved.orderId, "b3").status, getOrder(m, reserved.orderId, "b3").status);

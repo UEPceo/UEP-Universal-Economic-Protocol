@@ -1,3 +1,4 @@
+import { clientBlinding } from "../src/core/client-note.ts";
 /**
  * Reproducible local UEP TESTNET smoke test.
  *
@@ -30,7 +31,7 @@ async function main() {
   const producer = new HeightProducer({ ledger: node }).start();
 
   const asset = "uep-test/tenergy";
-  node.faucet(alice.accountId, asset, 1_000_000n);
+  node.faucet(alice.accountId, asset, 1_000_000n, clientBlinding(1n));
 
   const sendAmount = 250_000n;
   const prepared = node.prepareSpend(alice, bob.accountId, asset, sendAmount);

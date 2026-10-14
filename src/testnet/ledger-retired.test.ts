@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3: a ledger replaced by restore(..., { replaces }) is retired: it
  * refuses spends (submit, submitBatch, prepare*), faucet mints, issuer-key
@@ -19,7 +20,7 @@ test("retired ledger: spend, batch, faucet, issuer key, height and snapshot are 
   const L = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, faucetSigningKey: F.privateKey, snapshotSigningKeys: [S.privateKey] });
   const id = async (b: number) => identityFromMnemonic(await entropyToMnemonic(new Uint8Array(16).fill(b)));
   const a = await id(0x81), b = await id(0x82), c = await id(0x83);
-  L.faucet(a.accountId, EUR, 1000n);
+  L.faucet(a.accountId, EUR, 1000n, clientBlinding(692801348655n));
   L.advanceHeight(2);
   // Prepared before the restore: submitting it afterwards must still be refused.
   const early = L.prepareSpend(a, b.accountId, EUR, 50n);
@@ -35,7 +36,7 @@ test("retired ledger: spend, batch, faucet, issuer key, height and snapshot are 
   assert.ok("error" in batch && batch.error.code === "LEDGER_RETIRED");
   const pay = L.preparePayment(a, b.accountId, EUR, 10n);
   assert.ok("error" in pay && pay.error.code === "LEDGER_RETIRED");
-  assert.throws(() => L.faucet(b.accountId, EUR, 5n), /LEDGER_RETIRED/);
+  assert.throws(() => L.faucet(b.accountId, EUR, 5n, clientBlinding(348482298927n)), /LEDGER_RETIRED/);
   assert.throws(() => L.setIssuerSigningKey(EUR, null), /LEDGER_RETIRED/);
   assert.throws(() => L.advanceHeight(1), /LEDGER_RETIRED/);
   assert.throws(() => L.snapshot(), /LEDGER_RETIRED/);

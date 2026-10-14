@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3 (external review 2026-10-08): the ledger's Poseidon / SMT work runs on
  * a worker thread, so the service event loop is not blocked by submits; the
@@ -24,7 +25,7 @@ async function preparedLedger(n: number) {
   const senders = [];
   for (let i = 0; i < n; i++) {
     const s = await identityFromMnemonic(await generateMnemonic(128));
-    l.faucet(s.accountId, ASSET, 10_000n);
+    l.faucet(s.accountId, ASSET, 10_000n, clientBlinding(959393559599n));
     senders.push(s);
   }
   const snapshot = l.snapshot();

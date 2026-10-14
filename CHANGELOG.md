@@ -1,4 +1,638 @@
+## 0.5.80 — 2026-10-13
+
+- Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.
+- The write-ahead record is persisted before ledger mutation; the BFT kernel records the commit only after the exact transaction is present in the ledger. Recovery reconciles a crash after ledger application but before the kernel commit/applied marker, without applying the transaction twice.
+- Journal replacement uses exclusive temporary-file creation, file `fsync`, atomic rename, and directory `fsync`; malformed journal records are rejected at startup.
+- This is crash-consistent single-process commit/recovery, not a true cross-database atomic transaction: the ledger remains in-memory unless the operator persists/restores snapshots, and multiple processes must not share this local journal.
+- No change to snapshot format 10, protocol fee 0.1%, Marketplace fee 3%, or the no-native-token policy.
+- Integration fixes (repository release of 0.5.80):
+  - ZK development verifying-key pins for circuit `UEP-27-SPEND-POSEIDON-D32-v5-foldv2` (depths 4 and 32, domain 1) added to `uep-core/vectors/UEP-ZK-DEV-VK-PINS.json`. The circuit tag changed in 0.5.5 but the pin file still listed only v4, so every pinned verification in the lab failed with `VK_NOT_PINNED` (ZK, P4/BFT mesh, spend queue and quorum lab suites). Pinning and domain binding stay strict; the v4 pins are kept. The pins were generated with the new `scripts/gen-zk-dev-vk-pins.mjs` from `uep-zk dev-vk` (public fixed seed `DEV_SETUP_SEED`, development keys, no ceremony, no secret). `npm run check:zk-pins` (in `test:all`) fails when the built circuit tag has no pin.
+  - `src/lab/uep-network-profile.ts` names the current circuit tag; the UEP-37.2 golden test expects it.
+  - Six node and SDK test files that no script ran (`sdk/cli.test.ts`, `src/node/{bridge-api,categories-oracle,node-e2e,paymaster-ledger,persist}.test.ts`) now run in `test:core` as `npm run test:node`.
+  - README version line, status table and module table; `docs/MODULES.md` (reference node / BFT kernel / PeerNet, SDK, configuration and examples); ROADMAP, BUG-BOUNTY, REPRODUCIBILITY and PHASE-4-ASSESSMENT headers updated to 0.5.80.
+  - `src/service/ledger-worker-host.test.ts` (event-loop gap under 150 ms) is timing-sensitive and failed once on a heavily loaded machine; it passed in isolation and on a quiet machine. The threshold is unchanged.
+- Test counts for this tree (`npm run test:all`, Node.js 22.23.3 and 24.21.0, identical on both, 0 failed, 0 skipped): protocol 214, Marketplace 220, settlement 20, oracle 38, category 24, consensus 66, node 6, poisoned-clock 446, Rust 127; lab 126 files, 561 tests. v0.5.3 (CI): protocol 199, Marketplace 210, settlement 19, oracle 37, category 23, poisoned-clock 425, Rust 127; lab 116 files, 546 tests.
+
+## 0.5.79 — 2026-10-13
+
+- BFT proposals can now bind a transaction by requiring `blockId === tx.txId` and matching the local parent root and next ledger height.
+- A verified precommit certificate drives `UepLedger.submit()` on the proposer and participating validators; the old certificate-only `bftPropose(proposal)` mode remains available for kernel/transport testing.
+- Added local write-ahead `bft-commit-journal.json`: certified proposal, certificate and transaction are persisted before ledger mutation; `recoverBftCommits()` replays entries after restoring the matching ledger snapshot and configuring BFT.
+- Added a four-validator integration assertion that all ledger roots converge after certified application, plus restart/replay coverage from the pre-commit snapshot.
+- Recovery boundary remains explicit: ledger snapshot and BFT journal are not one atomic durable transaction; recovery must be invoked by the operator, and certified checkpoint sync/timeouts/replay-cache hardening remain open.
+- No changes to snapshot format 10, protocol fee 0.1%, Marketplace fee 3%, or the no-native-token policy.
+
+## 0.5.78 — 2026-10-13
+
+- Connected the experimental BFT kernel to the fixed-peer authenticated HTTP transport as an opt-in path.
+- Added proposal intake, prevote certificate validation/locking, precommit collection, commit-certificate verification and propagation.
+- Requires validator identity keys to match the pinned voter set and the BFT domain to match the local ledger domain.
+- Added a four-validator integration test for the proposal → prevote QC → precommit QC → commit certificate path.
+- Explicit boundary: BFT commit certificates are recorded in the kernel but are not yet atomically applied to the ledger; the legacy transaction quorum remains unchanged.
+- No change to snapshot format 10, 0.1% protocol fee, 3% Marketplace fee, or no-native-token policy.
+
+## 0.5.77 — 2026-10-13
+
+Persistencia durable y recuperación del núcleo BFT experimental. Sin cambios en las reglas económicas, fees (protocolo 0,1 %, Marketplace 3 %) ni formato de snapshot del ledger (10).
+
+- Añadido `src/node/bft-durable-store.ts`: almacén local con escritura temporal, `fsync` del archivo, `rename` atómico y `fsync` del directorio; permisos restrictivos en el archivo y directorio creados.
+- El estado persistido queda ligado a `networkId`, `domainId` y huella del conjunto de validadores; checksum SHA-256 para detectar corrupción accidental. El checksum no se presenta como protección frente a un atacante con capacidad de reescribir el archivo.
+- Votos anti-equivocación, locks certificados y commits se escriben antes de que la API de firma o mutación los haga efectivos. Los fallos de persistencia son fail-closed.
+- El estado pasa a formato BFT v3 e incluye intención de cambio de ronda para impedir firmar declaraciones de lock contradictorias tras reinicio.
+- Añadida fábrica `createDurableBftConsensusKernel(...)`, que valida y restaura el estado antes de devolver el kernel.
+- Pruebas de reinicio, anti-equivocación, lock durable, cambio de ronda conflictivo, corrupción, cambio de conjunto de validadores y fallo de escritura.
+- El núcleo sigue experimental, no conectado a PeerNet ni a la aplicación atómica del ledger. El almacén es local y de un solo proceso; no afirmar consenso BFT de producción.
+
+## 0.5.76 — 2026-10-13
+
+Primer endurecimiento de la máquina de estados BFT experimental. Sin cambios en reglas económicas, fees (protocolo 0,1 %, Marketplace 3 %) ni formato de snapshot (10).
+
+- `createVote(..., "precommit", ...)` ahora exige que el certificado de prevote válido esté registrado como lock actual de la misma altura, ronda y bloque; un certificado presentado sin transición previa se rechaza.
+- La restauración rechaza entradas duplicadas de lock, certificados de lock incoherentes y locks que contradicen un bloque ya registrado como committed; las validaciones se completan antes de reemplazar el estado activo.
+- Añadidas pruebas negativas para precommit sin lock, importación de locks duplicados, conflicto lock/commit y metadatos inconsistentes.
+- Documentadas las invariantes de seguridad, el perfil objetivo Tendermint-style (sin afirmar conformidad formal) y los límites de `exportState()`/`recordCommit()`.
+- `npm run test:consensus-bft`: validación pendiente de ejecución final en este paquete.
+- **Sigue siendo experimental y no está conectado a PeerNet ni al ledger.** No incluye persistencia durable/fsync; no usar para valor real ni afirmar BFT de producción.
+
+## 0.5.75 — 2026-10-11
+
+Primer cierre del diseño de locks y cambio de ronda del núcleo BFT experimental. Sin cambios en las reglas económicas, fees (protocolo 0,1 %, Marketplace 3 %) ni snapshot formato 10.
+
+- Añadido bloqueo por altura respaldado por certificado de prevote `2f+1`; una propuesta conflictiva no puede sustituir el lock sin un certificado válido de una ronda superior.
+- Añadido `BftRoundChange` firmado, certificado de cambio de ronda con quórum y selección del mayor lock certificado para restringir la propuesta de la nueva ronda.
+- Propuestas de ronda > 0 requieren certificado de cambio de ronda; si existe un lock en el quórum, la propuesta debe conservar el bloque y el valid-round certificados.
+- Votos incluyen una justificación criptográficamente vinculada; precommit exige certificado de prevote de la misma altura/ronda/bloque. `createVote` exige y verifica firma válida del líder.
+- El estado exportado/importado pasa a versión 2 e incluye locks; se verifica el certificado al restaurar. `recordCommit` rechaza certificados que no sean de precommit.
+- Pruebas BFT enfocadas: 13/13; suite de consenso completa: 57/57 en Node.js 22.16.0.
+- **Sigue siendo un núcleo experimental no conectado a PeerNet.** No se ha implementado persistencia durable/fsync, temporizadores/transporte, integración atómica con ledger ni revisión formal independiente. No afirmar todavía BFT completo ni usar para valor real.
+
+## 0.5.74 — 2026-10-11
+
+Inicio de la transición a consenso BFT con una capa de seguridad experimental, sin sustituir silenciosamente el harness multinodo anterior. Fees sin cambios (protocolo 0,1 %, Marketplace 3 %); snapshots siguen en formato 10.
+
+- Añadido `src/node/bft-consensus.ts`: validación de conjunto de validadores `n >= 3f+1`, quórum `2f+1`, líder determinista por altura/round, propuestas firmadas que incluyen raíz anterior y digest de bloque, votos ligados a red/dominio/altura/round/fase/validador/bloque, prevención de doble voto dentro de la misma ronda/fase y certificados de precommit.
+- Añadidas siete pruebas enfocadas de BFT y `npm run test:consensus-bft`.
+- Añadido `config/consensus-bft.example.json` como configuración de diseño para cuatro validadores, tolerancia `f=1` y quórum 3; usa claves de marcador y no debe arrancarse tal cual.
+- Añadido `docs/CONSENSUS-BFT-ROADMAP.md` que delimita lo implementado y bloqueos obligatorios: bloqueo seguro y cambio de ronda, persistencia atómica durable, transporte autenticado, aplicación atómica al ledger y checkpoints certificados.
+- `npm run test:consensus`: 51/51 pasa en Node.js 22.16.0.
+- **No es todavía consenso BFT completo ni está conectado a PeerNet.** El harness de tres nodos y su configuración permanecen intactos para evitar dar una falsa garantía de seguridad.
+
+## 0.5.73 — 2026-10-11
+
+Corrección de integración de las pruebas de consenso y documentación de validación. No cambia reglas económicas, formato de snapshot ni semántica de transacciones. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios.
+
+- Las peticiones de prueba a `/propose` incluyen `Content-Type: application/json`, como exige el servidor desde 0.5.72.
+- La prueba de autenticación sin firma incluye JSON válido y comprueba específicamente `401 PEER_AUTH`; una prueba separada comprueba `415 UNSUPPORTED_MEDIA_TYPE` cuando falta el Content-Type.
+- `npm run test:consensus`: 44/44; `npm run test:protocol`: 214/214; `npm run test:marketplace`: 220/220; settlement 20/20; oracle 38/38; category 24/24 pasan en Node.js 22.16.0.
+- El test sintético de 20k usuarios se separa del glob unitario y queda accesible mediante `npm run test:scale`; `test:core` ejecuta consenso de forma explícita.
+- La guía de reproducibilidad ya no presenta los conteos históricos de 0.5.3 como resultados actuales.
+- **No es consenso de producción.** No se han cerrado en este cambio los bloqueos arquitectónicos documentados: recuperación que confía en un único par anclado, ausencia de consenso bizantino/view change, y API local que puede aceptar transacciones sin quórum.
+
+## 0.5.72 — 2026-10-11
+
+Más endurecimiento de seguridad para nodos públicos. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Cabeceras de seguridad en todas las respuestas del peer server: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
+- Solo se aceptan GET y POST. Otros métodos → `METHOD_NOT_ALLOWED` (405).
+- POST exige `Content-Type: application/json`. Otro → `UNSUPPORTED_MEDIA_TYPE` (415).
+- Fallos de `PEER_AUTH` se registran en consola (from, path, ip).
+- El estado de quorum (`quorum-votes.json`) se firma con la clave de votante del nodo. Al cargar se verifica la firma; un archivo manipulado se ignora. El formato antiguo sin firma se acepta una vez y se reescribe firmado.
+- No es consenso de producción.
+
+## 0.5.71 — 2026-10-11
+
+Monitoring básico y proceso de bug bounty / assessment para Fase 5. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `GET /status` ahora incluye `version`, `startedAt`, `uptimeMs`, `peerCount`, `threshold` y contadores de rate-limit.
+- Nuevo `docs/BUG-BOUNTY.md`: alcance, fuera de alcance, guía de severidad, canal de reporte y qué espera una evaluación independiente.
+- El harness de consenso sigue siendo el mismo. No es consenso de producción.
+
+## 0.5.70 — 2026-10-11
+
+Hardening de seguridad para el arranque de Fase 5. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El servidor de peers limita el cuerpo de las peticiones POST a 2 MiB. Un cuerpo mayor se rechaza con `PAYLOAD_TOO_LARGE` (HTTP 413) 
+- Rate-limiting básico por dirección IP: 120 peticiones por ventana de 60 s. Exceso → `RATE_LIMITED` (HTTP 429).
+- El API principal (`uep-http-api`) ya tenía límite de cuerpo; el servidor de peers no. Esta es la brecha cerrada para nodos públicos.
+- No es consenso de producción. `npm run test:consensus` sigue siendo el harness.
+
+## 0.5.69 — 2026-10-10
+
+Del arnés al nodo real. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Un par no vota un gasto que su libro rechazaría. Antes `/tx` y `propose` votaban sin validar y el voto no se libera: un gasto inválido con el anulador de otro hacía fallar el gasto legítimo con `QUORUM_EQUIVOCATION`. Ahora `UepLedger.validateSpend` (solo lectura) corre antes del voto.
+- `peers.json` admite `snapshotPublicKeyHex` y `faucetPublicKeyHex` por par. `npm start` confía en las claves de snapshot y de faucet ancladas ahí, además de las suyas, tanto al reabrir el disco como en `catchUp`. Sin ancla no hay confianza: un par no puede anunciar su propia autoridad. Antes `catchUp` entre nodos reales siempre devolvía falso, porque cada nodo firma con su propia clave y confiaba solo en la local.
+- `cli.ts` hace `catchUp` antes de ensamblar el nodo, así que la API, la cola, el puente y el Marketplace sirven el libro que se conservó. Antes `Object.assign` cambiaba solo la propiedad y el resto seguía con el libro viejo. `PeerNet.ledger` deja de ser `readonly` (`TS2540`).
+- Prueba con tres procesos reales (`cluster-process.test.ts`): un nodo que arranca tarde no se pone al día sin anclas y sí con ellas.
+- `npm run test:consensus`: 40 en verde. El libro aún acepta un voto de un solo par firmante (umbral 1): `catchUp` confía en el par que sirve el snapshot. No es la evaluación independiente. `tsc` sigue sin bloquear: quedan unos 180 errores de tipo fuera de `src/node`.
+
+
+## 0.5.68 — 2026-10-10
+
+Lectura pública. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `GET /txs` no pide firma. Devuelve altura, raíz, cuenta y los últimos veinte identificadores. No devuelve aperturas.
+
+
+## 0.5.67 — 2026-10-10
+
+Autoevaluación y arranque de Fase 5. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `npm run test:consensus`: 32 en verde. No es la evaluación independiente.
+- `docs/ONBOARDING.md` es la entrada pública. `npm start` imprime la clave para anclarla.
+
+
+## 0.5.66 — 2026-10-10
+
+Nota de sesión que no evalúa el arnés. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- No corrió `test:consensus`. Repite que no es consenso de producción. No cambia el protocolo.
+
+
+## 0.5.65 — 2026-10-10
+
+Nota de evaluación inválida. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- La sesión que no extrajo el zip no evalúa el arnés. Queda registrada como inválida.
+
+
+## 0.5.64 — 2026-10-10
+
+Paquete para la evaluación independiente. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `docs/PHASE-4-ASSESSMENT.md` dice lo que el arnés afirma y lo que no. `npm run test:consensus` es el comando. No es la evaluación.
+
+
+## 0.5.63 — 2026-10-10
+
+Configuración local distinta. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Tres nodos con distinta cuenta de fee, admin y dominio de cegado aceptan el mismo gasto y llegan a la misma raíz.
+
+
+## 0.5.62 — 2026-10-10
+
+El libro local aplica después de la red. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El proponente aplica solo cuando `umbral - 1` pares confirman el commit. Si no, el libro local no toma el gasto.
+
+
+## 0.5.61 — 2026-10-10
+
+El commit tiene que llegar. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `propose` no da el gasto por aplicado si menos de `umbral - 1` pares confirman el commit. Eso es `COMMIT_NOT_ACKED`.
+
+
+## 0.5.60 — 2026-10-10
+
+Puesta al día a prueba de fallo. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Si el snapshot del par no restaura, `catchUp` devuelve falso y conserva el libro local. El arranque no cae.
+
+
+## 0.5.59 — 2026-10-10
+
+Disposición de la auditoría 0.5.58. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `/vote` persiste. `confirmed` se guarda con el voto. El ADR ya no contradice el aprendizaje de claves ni el timeout.
+
+
+## 0.5.58 — 2026-10-10
+
+Clave de votante anclada. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Una clave ya autorizada no se sustituye por `/status`. Si la lista trae `publicKeyHex`, esa es la ancla.
+
+
+## 0.5.57 — 2026-10-10
+
+Voto ligado al dominio. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El voto firma red y dominio. Un voto de otro dominio no confirma. El quórum se queda en el dominio.
+
+
+## 0.5.56 — 2026-10-10
+
+Partición y vuelta. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Dos pares confirman mientras el tercero está cerrado. Al volver, desde un snapshot anterior, llega a la misma raíz. No mezcla.
+
+
+## 0.5.55 — 2026-10-10
+
+Mensajes de pares firmados. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `/tx`, `/vote` y `/commit` llevan firma. Se comprueba contra la clave aprendida de ese id. Sin firma es `PEER_AUTH`. `/status` sigue sin firma para poder aprender la clave.
+
+
+## 0.5.54 — 2026-10-10
+
+Más gastos a la vez. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- La aplicación cede el turno entre gastos. Un voto o un commit perdido se reintenta. 8, 16, 24, 32, 48 y 64 convergen. Antes 16 rompía.
+
+
+## 0.5.53 — 2026-10-10
+
+Hito de concurrencia. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- En un proceso, tres pares: 2, 4 y 8 convergen. 12 es inestable. 16 rompe con `QUORUM_NOT_MET` y raíces distintas. No es un doble gasto. Es el arnés, no tres máquinas.
+
+
+## 0.5.52 — 2026-10-10
+
+El quórum recuerda el voto. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Los votos se guardan en `quorum-votes.json`. Un proceso nuevo los carga y rechaza un segundo voto del mismo anulador. Si el libro ya lo confirmó, tampoco vota.
+
+
+## 0.5.51 — 2026-10-10
+
+catchUp no retrocede. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Solo restaura de un par que va por delante: más altura, o la misma altura con más transacciones. Una raíz distinta que va por detrás se ignora.
+
+
+## 0.5.50 — 2026-10-10
+
+Censura hasta la ventana. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Un gasto que no consigue dos votos no bloquea la nota. Pasada la ventana, el cliente la gasta de otra forma. El gasto retenido se rechaza.
+
+
+## 0.5.49 — 2026-10-10
+
+Reloj movido. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Un nodo con `Date.now` clavado en 0 acepta el mismo gasto y llega a la misma raíz. La validez es la altura y el gasto firmado, no el reloj de pared.
+
+
+## 0.5.48 — 2026-10-10
+
+Doble liquidación. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Liquidar dos veces devuelve el mismo registro y no mueve saldos. Un Marketplace restaurado conserva el recibo y los saldos. Es local al dominio, no un recibo entre dominios.
+
+
+## 0.5.47 — 2026-10-10
+
+Puesta al día por raíz, y repetición. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `catchUp` compara raíces, no alturas. Si difieren, restaura el snapshot y sustituye el libro. No mezcla un fork. Repetir un gasto es `QUORUM_NULLIFIER_SPENT`. `npm run test:net` corre el arnés.
+
+
+## 0.5.46 — 2026-10-10
+
+Disposición de la auditoría de la red de tres. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Timeout de pares a 5 s. learnPeers no acepta un id que no esté en la lista. catchUp restaura. El anulador se marca después de aplicar. El threshold se lee del archivo.
+
+
+## 0.5.45 — 2026-10-10
+
+Menos espera en el voto. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El gasto y el voto van en una sola petición. Se confirma con dos votos, sin esperar al tercero. Confirmar y aplicar es un paso.
+
+
+## 0.5.44 — 2026-10-10
+
+Dos gastos a la vez. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Los votos de notas distintas viajan en paralelo. La aplicación va en cola, una cada vez. Dos gastos de la misma nota no confirman los dos.
+
+
+## 0.5.43 — 2026-10-10
+
+El voto sale del test y entra en `npm start`. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Con `UEP_NODE_ID` y `UEP_PEERS` el nodo abre el puerto de pares, guarda su clave y lee las otras en `/status`. `UEP_PORT` separa la API.
+
+
+## 0.5.42 — 2026-10-10
+
+Lista fija y disenso. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `config/peers.json` tiene tres direcciones y umbral 2. No hay descubrimiento. Un nodo que propone el otro gasto de la misma nota no consigue dos votos.
+
+
+## 0.5.41 — 2026-10-10
+
+Tres nodos por HTTP. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Lista fija, sin descubrimiento. Anuncian altura y raíz, se pasan el gasto y confirman con dos votos. Un nodo callado se salta. Uno solo no confirma. El atrasado pide el snapshot.
+
+
+## 0.5.40 — 2026-10-10
+
+Rotación de la clave de faucet. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `rotateFaucetKey` cambia la clave del siguiente mint. Un snapshot con mints de las dos claves solo restaura si la confianza lista las dos. Quitar la vieja rechaza el mint viejo.
+
+
+## 0.5.39 — 2026-10-10
+
+Rotación de la clave de snapshot. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `rotateSnapshotSigners` cambia la clave del siguiente snapshot. El anterior sigue válido con la clave que lo firmó. La clave vieja no firma el siguiente.
+
+
+## 0.5.38 — 2026-10-10
+
+Arnés de siete nodos. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `3f+1` con `f = 2`. Cinco votos confirman. Dos en disenso no. Los siete aplican el gasto confirmado y comparten la raíz. Sigue siendo un proceso.
+
+
+## 0.5.37 — 2026-10-10
+
+El quórum se aplica en el arnés. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Tres nodos aplican un gasto solo tras dos votos. El gasto en conflicto no llega al umbral y las tres raíces coinciden. Sigue siendo un proceso.
+
+
+## 0.5.36 — 2026-10-10
+
+Quórum del arnés. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Una transacción se confirma con el umbral de firmas distintas. Un votante firma como mucho un gasto por anulador. No es el BFT del laboratorio y no corre entre nodos.
+
+
+## 0.5.35 — 2026-10-10
+
+Recuperación por snapshot. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Un nodo atrasado restaura el snapshot firmado del nodo que va delante y llega a la misma raíz y altura. No hay líder. No mezcla un fork.
+
+
+## 0.5.34 — 2026-10-10
+
+Arnés de dos nodos: conflicto y repetición. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El mismo gasto da la misma raíz. Dos gastos de la misma nota divergen. La repetición es `REPLAY` y el otro gasto, una vez gastada la nota, es `DOUBLE_SPEND`.
+
+
+## 0.5.33 — 2026-10-10
+
+Apertura de la Fase 4. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- ADR 0006 fija qué se replica: el ledger UEP-25. El Marketplace, el puente y los laboratorios quedan fuera.
+- Dos nodos restaurados del mismo snapshot aceptan el mismo gasto firmado por el cliente y llegan a la misma raíz. No hay líder ni quórum.
+
+
+## 0.5.32 — 2026-10-10
+
+Disposición de VULN-UEP-08/09. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El texto se guarda en `docs/audit/`. No se implementa: no hay `releaseCollateral`, ni token sintético, ni cegado por `Date.now()`.
+
+
+## 0.5.31 — 2026-10-10
+
+Cierra lo que la nota de la 0.5.29 dejó abierto. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El blinding por defecto del nodo sale de un hash del dominio, el contador y el tag. Con dominio 0 se conserva la fórmula histórica.
+- Con `UEP_DATA_DIR` el nodo guarda claves, dominio y snapshots firmados, y al arrancar reabre el ledger y el Marketplace. Los secretos se escriben en modo 0600.
+- `GET /v1/categories` publica swap, relay, dispute y drip. Las acciones firmadas de cada categoría siguen en el nodo.
+
+
+## 0.5.30 — 2026-10-10
+
+Cierre de ingeniería de la nota sobre la 0.5.29. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El depósito acredita solo si el comprador firma el id de la transacción y su identidad es la dirección del emisor. `POST /v1/bridge/claim` recupera un gasto que entró por la ruta genérica.
+- La retirada firma semilla, nonce y caducidad. El nonce se guarda y no se repite.
+- El barrido de gas comprueba la custodia antes de gastar y baja la deuda por lo que sale.
+- El tope de identidades sale del núcleo y queda en la ruta HTTP. El seq del bus es monótono y `GET /v1/events` acepta `after` y `limit`.
+- `categoryContracts` y los enunciados de evidencia entran en el snapshot. El valor del oráculo tiene que ser un entero no negativo. La clave del árbitro queda en el nodo.
+
+
+## 0.5.29 — 2026-10-10
+
+Categorías en el nodo y alimento del oráculo. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El nodo instancia swap, relay, dispute y drip sobre los puertos del Marketplace. El árbitro es una identidad registrada, no el administrador.
+- `POST /v1/oracle/quotes` lo firma el administrador. La lectura sigue diciendo que no liquida.
+
+
+## 0.5.28 — 2026-10-10
+
+Depósito y retirada en la API local y en el SDK. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `GET /v1/bridge/info` publica la dirección de custodia. `POST /v1/bridge/deposit` aplica un gasto que el cliente ya firmó y acredita solo la nota que recibió la custodia. `POST /v1/bridge/withdraw` exige la firma del comprador y debita monto más fee.
+- `recover` busca el tx por el id de verdad. Un id inventado sigue sin acreditar.
+
+
+## 0.5.27 — 2026-10-10
+
+Arreglos de la nota sobre la 0.5.26. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- La retirada debita monto más fee de protocolo al que retira. `reconcile` exige que la custodia cubra la deuda del puente. `recover` rechaza un txId que el ledger no tiene.
+- Las categorías de siempre aceptan el nombre en minúsculas sin cambiar la firma. La suite de evidencia adjunta el enunciado antes de liquidar.
+- El alta por HTTP exige una firma de posesión. Hay un tope de 256 identidades. El bus de eventos corta a 1.024 y tiene `GET /v1/events`.
+- El disco recarga el índice y borra los bytes. Con `UEP_DATA_DIR` el nodo guarda las mnemotécnicas de custodia y fee.
+- `audit:surface` incluye `test:marketplace`.
+
+
+## 0.5.26 — 2026-10-09
+
+Superficie para la auditoría externa de la Fase 3. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `docs/audit/PHASE-3-SURFACE.md` dice qué correr y qué no se afirma. `npm run audit:surface` encadena sandbox, escenarios y el servicio de ejemplo.
+
+
+## 0.5.25 — 2026-10-09
+
+Fase 3, CLI de desarrollador. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `npm run cli -- height` y `listings` leen la API local. No importan el libro.
+
+
+## 0.5.24 — 2026-10-09
+
+Fase 3, servicio de ejemplo. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `examples/sample-service.ts` publica, reserva, fondea, entrega y liquida solo con el SDK. `npm run example:service` lo comprueba contra la API local.
+
+
+## 0.5.23 — 2026-10-09
+
+Disposición de la auditoría recibida y apertura de la Fase 3. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El texto y la disposición están en `docs/audit/`. No se acepta el apto para producción. No se añade una malla de nullifiers ni un token.
+- Política de compatibilidad de la API local en `docs/API-COMPATIBILITY.md`. Plantilla de servicio en `examples/service-template.ts`, solo con el SDK.
+
+
+## 0.5.22 — 2026-10-09
+
+Fase 2.10, simuladores. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Tres escenarios con semilla fija: proveedor, adversario y caída de máquina. Repiten el mismo resultado. Valor y capacidad quedan conservados. `npm run simulate:scenario` termina en `SCENARIO OK`.
+
+
+## 0.5.21 — 2026-10-09
+
+Fase 2.9, sandbox de un comando. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `npm run sandbox` levanta el nodo local, el Marketplace y el servicio IoT, y cierra un pedido de ejemplo. La última línea es `SANDBOX OK`. Guía en `docs/SANDBOX.md`.
+- `npm run sandbox:serve` deja el nodo en `127.0.0.1:8787`.
+
+
+## 0.5.20 — 2026-10-09
+
+Fase 2.8, SDK. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `sdk/client`, `sdk/marketplace` y `sdk/iot-m2m`. El ejemplo del README y `npm run test:sdk` completan un pedido por la API local. El cliente no llama al Marketplace.
+
+
+## 0.5.19 — 2026-10-09
+
+Fase 2.7, pasarela IoT. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `IoTGateway` valida el esquema, encola si el transporte cae y reintenta por número de intentos, no por reloj. El id de telemetría sigue siendo la clave de entrega: un reintento no liquida dos veces.
+
+
+## 0.5.18 — 2026-10-09
+
+Fase 2.6, API local. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- `POST /v1/marketplace/identities` registra una clave pública. `POST /v1/marketplace/credits` acredita con la firma del administrador.
+- Un comprador y un proveedor completan alta, crédito, anuncio, reserva, fondeo, entrega y liquidación solo por HTTP.
+
+
+## 0.5.17 — 2026-10-09
+
+Segunda nota de auditoría y Fase 2.5. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- El texto recibido está en `docs/audit/AUDIT-EXTERNA-2026-10-09-b.md`. No se crea el motor `uep-settlement`. El bus y la evidencia que pide ya estaban.
+- Una identidad tiene tipo (human, machine, service, provider, node) y estado (active, suspended, revoked). Suspendida o revocada no firma una acción nueva. El administrador firma `identity-status`.
+
+
+## 0.5.16 — 2026-10-09
+
+Fase 2.4, contrato de categoría. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot de ledger en formato 10.
+
+- Una categoría nueva se registra con esquema de entrada, esquema de salida, requisitos y SLA en alturas. El Marketplace no gana un caso. Las cinco de siempre siguen dadas de alta.
+- Revisión de estructura: el nodo no importa UEP-37. Relay y oracle del nodo son los adaptadores reales. Consta en `docs/NETWORK-STRUCTURE-0.5.16.md`.
+
+
+## 0.5.15 — 2026-10-09
+
+Fase 2.3, evidencia. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Snapshot del ledger en formato 10. El snapshot del Marketplace sigue en formato 4; un snapshot anterior sin enunciados restaura el mapa vacío.
+
+- Un pedido con política de evidencia no liquida sin un enunciado k-de-n ligado a ese pedido. El enunciado certifica el hash, no la verdad del dato. Los bytes no se guardan.
+- La espera de conjunción usa el `delayHeights` que ya tenía el anuncio. No hay parámetro nuevo.
+
+
+## 0.5.14 — 2026-10-09
+
+Fase 2.2, almacenamiento. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Formato de snapshot 10. El snapshot del Marketplace sigue en formato 4.
+
+- El restore rechaza un snapshot cuya capacidad no cuadra: disponible + reservado + consumido tiene que ser la capacidad del anuncio.
+- `DiskStorageProvider` guarda el cuerpo en disco. El registro que puede entrar en un snapshot lleva el hash, no los bytes. No es estado de consenso.
+
+
+## 0.5.13 — 2026-10-09
+
+Informe de auditoría externa y disposición. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Formato de snapshot 10.
+
+- Texto recibido en `docs/audit/AUDIT-EXTERNA-2026-10-09.md`. Disposición en `docs/audit/AUDIT-EXTERNA-DISPOSICION.md`. No se crea un segundo motor de liquidación ni un split de tesorería.
+- El tope de 4.096 recibos por ancla ya estaba. No se olvida un nonce: reabriría el replay.
+- Fase 2.1: la telemetría IoT y su liquidación emiten un evento cada una. La repetición no duplica.
+
+
+## 0.5.12 — 2026-10-09
+
+Paquete de auditoría de la 0.5.11 y primer entregable de la Fase 2. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Formato de snapshot 10.
+
+- A1: `ValueBridge.recover` repite el crédito o el débito de un movimiento cuyo ledger ya se aplicó, sin segunda nota.
+- Fase 2.1: bus en proceso. Un pedido emite un evento por transición (`accepted`, `held`, `delivered`, `settled`) y la repetición no duplica. El id es hash de tipo, pedido y altura. No entra en el snapshot.
+- La evaluación externa no se declara hecha. El paquete está en `docs/audit/AUDIT-v0.5.11.md`.
+
+
+## 0.5.11 — 2026-10-09
+
+Cierre de ingeniería de la Fase 1. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Formato de snapshot 10.
+
+- Un ledger de nodo rechaza el MAC de desarrollo. Los tests que aún lo ejercen pasan `testOnlyAllowDevelopmentMac`. Quickstart y smoke siguen en firma de emisor.
+- Criterio externo que no se declara hecho: una evaluación independiente sin hallazgos críticos o altos nuevos. Consta en `docs/PHASE-1-CLOSE.md`.
+
+
+## 0.5.10 — 2026-10-09
+
+Nodo de referencia y puente de valor. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Formato de snapshot 10. Estado canónico: UEP-25 (ADR 0005). UEP-37 sigue en laboratorio.
+
+- `src/node/assemble.ts` junta ledger, productor de altura, Marketplace, cola, serializador y HTTP. `npm start` lo arranca. El circuito de gasto se comprueba al arrancar por su tag.
+- Depósito y retiro entre una nota y un saldo del Marketplace. El ancla de recibos la llama el nodo. El gas capturado por el paymaster se gasta desde la custodia.
+- Un agente solo contrata dentro de su concesión; el pedido lo firma el titular. `/v1/relay` y `/v1/oracle` usan los módulos reales, no el stub de laboratorio.
+- `wallet-migration` se exporta. Los cinco registros de benchmark tienen consumidor (`npm run bench:lab`).
+
+
+## 0.5.9 — 2026-10-09
+
+Filtro LEI local y consulta GLEIF solo de pantalla. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Formato de snapshot 10. El LEI no entra en política, quote ni estado.
+
+- `isValidLei` rechaza los pares de control 00, 01 y 99, que ISO 7064 MOD 97-10 no genera, además del resto 1. Sigue sin red.
+- `GET /v1/display/lei` muestra nombre legal, estado de registro y fecha de consulta. Si GLEIF no responde, la página sigue con la suma offline. No escribe estado.
+
+
 # Changelog
+
+## 0.5.8 — 2026-10-09
+
+Parche de seguimiento de 0.5.7, compromiso de nota aportado por el cliente, y plan de retirada del MAC de desarrollo. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Formato de snapshot 10.
+
+- El índice `ordersByBuyer` no se persiste: se reconstruye al restaurar. El test de versión acepta cualquier semver numérico, no un pin a 0.5.3.
+- La API HTTP acepta el tamaño de objeto anunciado en PUT y compute, devuelve 400 en decimal o JSON inválido, y puede registrar el error interno por id sin devolverlo.
+- I1: `faucet`, `prepareIssuerMint` y `mintWithIssuerSignatures` exigen la apertura del cliente. La reserva ya no guarda `blindingHex`. Dos réplicas con la misma apertura registran la misma nota. El gasto local puede seguir poniendo la apertura en la transacción; la réplica aplica esa transacción y no inventa el compromiso.
+- Fase 1: plan de retirada del MAC de desarrollo en `docs/DEV-MAC-RETIREMENT.md`. El MAC no se apaga en esta release.
+
+
+## 0.5.7 — 2026-10-09
+
+Constancia de la auditoría técnica de v0.5.6 y cierre de los hallazgos confirmados de prioridad P0. Fee de protocolo 0,1 % y fee de Marketplace 3 % sin cambios. Formato de snapshot 10.
+
+- C1: las reservas vivas de mint cuentan contra `supplyCap`, y el apply repite tope, mintable y saldo. Test `src/testnet/ledger-mint-reservation-cap.test.ts`.
+- C2: `scale-sizes.ts` ya no lee el entorno. El blinding del ledger se deriva del `noteCounter` del snapshot; no hay `randomBytes` en la transición.
+- C3/C4: cuerpo HTTP por defecto 64 KiB, decimales canónicos de hasta 30 dígitos, y 500 sin mensaje interno.
+- Informe y disposición: `docs/audit/AUDIT-v0.5.6.md`. I1–I12 quedan registrados; no se cierran en este release salvo la decisión de entropía de I1.
+
+
+## 0.5.6 — 2026-10-08
+
+Marketplace load sizes. Protocol fee 0.1 % and Marketplace fee 3 % are unchanged.
+
+- The 20k settlement run accepts 20,000, 50,000, 100,000 and 500,000. CI stays on 20k.
+- `npm run simulate:20k|50k|100k|500k` and `npm run test:scale:50k|100k|500k|all`.
+- Listing capacity grows with the run (at least 100) so a larger size does not exhaust stock. The hot-listing check stays at capacity 100.
+
+
+## 0.5.5 — 2026-10-08
+
+SpendCircuit fold freeze (UEP-26.3). Protocol fee 0.1 %, Marketplace fee 3 %, Poseidon BN254 constants and the UEP-26 leaf encoding are unchanged.
+
+- Transaction commitment inside the spend circuit is frozen on `hFoldV2` (version domain 6, length prefix, fold version 2).
+- Circuit tag is `UEP-27-SPEND-POSEIDON-D32-v5-foldv2`. v4 proofs do not verify under this tag and must be re-proved.
+- Note commitments, nullifiers and the wallet `canonicalTxCommitment` stay on the previous composition.
+- Freeze record: `uep-core/UEP-26.3-FOLD-V2-FREEZE.md`. Wallet-side binding: `src/core/spend-circuit-freeze.ts`.
+- `CIRCUIT_CONSTRAINTS` remains the v4 measurement until `uep-zk count-constraints` is re-run. No ceremony key is cut in this release.
+
+
+## 0.5.4 — 2026-10-08
+
+Package version `0.5.4`. Hardening on top of 0.5.3. Protocol fee stays 0.1 %, Marketplace fee stays 3 %, time stays block height, Poseidon BN254 constants and the UEP-26 `hFold` used by note/tx commitments stay frozen.
+
+- H-1: removed `outputStash`. Prepared outputs have an explicit lifecycle (prepared → sent / expired / rejected) and the ledger does not retain blinding.
+- H-2: the tautological amount+1 binding check is replaced by `canonicalInputs` + `openNote` + shape + recomputed commitments/nullifiers + value conservation.
+- H-3: pending uses `pendingByTxId` and a nullifier index. Snapshot export reuses a generation cache and does not re-sign the queue.
+- M-1: issuer mints reserve an index and an ephemeral blinding. Two concurrent prepares no longer collide into `MINT_REQUEST_STALE`; a later reservation waits (`MINT_RESERVATION_HELD`) until the earlier one is applied or released.
+- M-2: `hFoldV2` (version domain + length prefix) and `migrateFold`. Existing commitments stay on `hFold`. Snapshot format 10 records `foldVersion: 2`.
+- M-3: mint and spend blinding come from an ephemeral secret mixed with a wallet-domain separator, not from the public account id.
+- M-4: `networkId`, `protocol` and `version` are checked; snapshots carry a domain-separated `networkTag` and persisted policy windows.
+- Indexes: owner → notes, pending nullifier, marketplace buyer → orderId. `restoreChain` verifies intermediate links without rebuilding their state. `snapshotDelta` exports a checkpoint suffix. Optional Poseidon WASM loader (`src/core/poseidon-wasm.ts`, `uep-core/uep-poseidon-wasm`) uses the same constants; JS remains the default.
+- Snapshot format 10. Format 9 migrates by derivation (`9->10`); transactions, mints and notes are not rewritten.
+
 
 ## 0.5.3 — 2026-10-08
 

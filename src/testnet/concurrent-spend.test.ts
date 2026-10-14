@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.2 attack battery (CRITICAL): two spends of one note submitted
  * concurrently. The ledger's check + nullifier insert + apply run in one
@@ -30,7 +31,7 @@ function prepared(l: UepLedger, from: IdentitySecrets, to: Fr, amount: bigint): 
 async function conflictingSpends() {
   const [a, b, c] = await Promise.all([identity(), identity(), identity()]);
   const l = newLedger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(598954914863n));
   const toB = prepared(l, a, b.accountId, 900n);
   const toC = prepared(l, a, c.accountId, 900n);
   assert.equal(toB.inputCommitments[0]!.toHex(), toC.inputCommitments[0]!.toHex(), "both spends use the same note");

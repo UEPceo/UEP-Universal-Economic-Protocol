@@ -19,7 +19,7 @@
  */
 import { Fr } from "./field.ts";
 import { hLeaf } from "./hash.ts";
-import { u64ToFr } from "./encoding.ts";
+import { encodeStringToFr, u64ToFr } from "./encoding.ts";
 
 export type Note = {
   assetId: Fr;
@@ -87,4 +87,21 @@ export function deserializeNote(data: ReturnType<typeof serializeNote>): Note {
     nonce: new Fr(data.nonce),
     spent: data.spent,
   };
+}
+
+/**
+ * v0.5.4: blinding is not derived from public material alone.
+ * `ephemeral` is a wallet- or issuer-held secret (never an account id or a
+ * public note counter). `walletDomain` separates network, domain and purpose
+ * so the same ephemeral cannot be replayed across wallets.
+ *   blinding = H_LEAF(ephemeral, walletDomain)
+ */
+export const BLINDING_DOMAIN = "UEP-BLINDING-V2";
+
+export function walletDomainSeparator(networkId: string, domainId: string, purpose: string): Fr {
+  return encodeStringToFr(`${BLINDING_DOMAIN}|${networkId}|${domainId}|${purpose}`);
+}
+
+export function deriveNoteBlinding(ephemeral: Fr, walletDomain: Fr): Fr {
+  return hLeaf(ephemeral, walletDomain);
 }

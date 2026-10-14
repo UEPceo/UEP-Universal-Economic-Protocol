@@ -83,10 +83,10 @@ test("height cap: a test-unbounded ledger's snapshot restores only with the test
 test("height cap: migration 8 -> 9 derives the smallest tick count consistent with the cap", () => {
   const l = make();
   for (let i = 0; i < 3; i++) l.advanceHeight(7);
-  const { snapshotHash: _h, signatures: _s, ticks: _t, ...p9 } = l.snapshot() as unknown as Record<string, unknown>;
+  const { snapshotHash: _h, signatures: _s, ticks: _t, policyWindows: _pw, protocol: _proto, protocolVersion: _pv, foldVersion: _fv, networkTag: _tag, ...p9 } = l.snapshot() as unknown as Record<string, unknown>;
   const p8 = { ...p9, formatVersion: 8 };
   const out = migrateSnapshotPayload(p8);
-  assert.deepEqual(out.steps, ["8->9"]);
+  assert.deepEqual(out.steps, ["8->9", "9->10"]);
   assert.deepEqual(out.payload.ticks, { count: 2, maxBlocksPerTick: 12, mode: "capped" }); // ceil(21 / 12)
   assert.throws(() => migrateSnapshotPayload({ ...p8, height: -1 }), /MIGRATION_8_9/);
 });

@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.4.4: authenticated, bounded pending queue (UEP-B06/A06, D01), note-commitment
  * tree membership (spends and restore) and the protocol fee floor (UEP-A16).
@@ -54,8 +55,8 @@ function rebuilt(base: UepTransaction, secrets: IdentitySecrets, outputs: Return
 test("pending: an unsigned spend or one signed by another key is refused", async () => {
   const a = await identity(); const b = await identity(); const z = await identity();
   const source = ledger();
-  source.faucet(a.accountId, EUR, 1_000n);
-  source.faucet(z.accountId, EUR, 1_000n);
+  source.faucet(a.accountId, EUR, 1_000n, clientBlinding(226899416111n));
+  source.faucet(z.accountId, EUR, 1_000n, clientBlinding(211889525807n));
   const l = replicaOf(source);
   const tx = prepared(source, a, b.accountId, 100n);
   const { senderAuth: _drop, ...unsigned } = tx;
@@ -73,7 +74,7 @@ test("pending: an unsigned spend or one signed by another key is refused", async
 test("pending: a replica authenticates a first-time sender from its key-derived account alone", async () => {
   const a = await identity(); const b = await identity();
   const source = ledger();
-  source.faucet(a.accountId, EUR, 1_000n);
+  source.faucet(a.accountId, EUR, 1_000n, clientBlinding(835542041647n));
   const l = replicaOf(source); // snapshot taken before a ever spent: no key was ever shared
   assert.equal((l as unknown as { registerSpendKey?: unknown }).registerSpendKey, undefined);
   assert.equal((l.snapshotPayload() as Record<string, unknown>).spendKeys, undefined);
@@ -85,11 +86,11 @@ test("pending: a replica authenticates a first-time sender from its key-derived 
 test("pending: inputs must be canonical unspent notes of this ledger, under the spend-shape rules", async () => {
   const a = await identity(); const b = await identity(); const z = await identity();
   const source = ledger();
-  source.faucet(a.accountId, EUR, 1_000n);
+  source.faucet(a.accountId, EUR, 1_000n, clientBlinding(602338628655n));
   const l = replicaOf(source);
   // Input note that only exists on another ledger.
   const elsewhere = ledger();
-  elsewhere.faucet(a.accountId, EUR, 5_000n);
+  elsewhere.faucet(a.accountId, EUR, 5_000n, clientBlinding(489214338095n));
   assert.equal(code(l.queueConflict(prepared(elsewhere, a, b.accountId, 100n))), "NOTE_NOT_MEMBER");
   // Transported opening that disagrees with the ledger's canonical note.
   const tx = prepared(source, a, b.accountId, 100n);
@@ -111,7 +112,7 @@ test("pending: the queue is bounded and the bound is configurable", async () => 
   assert.throws(() => ledger({ maxPendingTransactions: 1.5 }), /INVALID_MAX_PENDING_TRANSACTIONS/);
   assert.equal(ledger().maxPendingTransactions, 1024);
   const source = ledger();
-  for (const v of [200n, 2_000n, 20_000n]) source.faucet(a.accountId, EUR, v);
+  for (const [i, v] of [200n, 2_000n, 20_000n].entries()) source.faucet(a.accountId, EUR, v, clientBlinding(318033560623n + BigInt(i)));
   const l = replicaOf(source, { maxPendingTransactions: 2 });
   assert.equal(l.maxPendingTransactions, 2);
   // Three valid spends of three distinct notes, all anchored at the shared note root.
@@ -126,7 +127,7 @@ test("pending: the queue is bounded and the bound is configurable", async () => 
 test("pending: offline submit validates before queueing", async () => {
   const a = await identity(); const b = await identity();
   const source = ledger();
-  source.faucet(a.accountId, EUR, 1_000n);
+  source.faucet(a.accountId, EUR, 1_000n, clientBlinding(90364081199n));
   const offline = replicaOf(source, { connected: false });
   assert.equal(offline.connected, false);
   const tx = prepared(source, a, b.accountId, 100n);
@@ -144,7 +145,7 @@ test("pending: offline submit validates before queueing", async () => {
 test("pending: reconcile flags spends sharing an input note and never settles them", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(745408136239n));
   const t1 = prepared(l, a, b.accountId, 100n);
   const t2 = prepared(l, a, b.accountId, 300n);
   assert.equal(code(l.queueConflict(t1)), "OK");
@@ -159,8 +160,8 @@ test("pending: reconcile flags spends sharing an input note and never settles th
 test("restore: a poisoned or oversized pending queue is rejected; stale entries are not exported", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(928047944751n));
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(85516026927n));
   const t1 = prepared(l, a, b.accountId, 100n);
   assert.equal(code(l.queueConflict(t1)), "OK");
   const honest = l.snapshot();
@@ -172,7 +173,7 @@ test("restore: a poisoned or oversized pending queue is rejected; stale entries 
   assert.throws(() => UepLedger.restore(resign(unsigned), TRUST), /INVALID_SNAPSHOT_PENDING: SENDER_AUTH/);
   // Pending entry whose input is not a ledger note.
   const elsewhere = ledger();
-  elsewhere.faucet(a.accountId, EUR, 7_000n);
+  elsewhere.faucet(a.accountId, EUR, 7_000n, clientBlinding(385442300975n));
   const foreign = structuredClone(honest) as any;
   foreign.pending.push(serializeTx(prepared(elsewhere, a, b.accountId, 10n)));
   assert.throws(() => UepLedger.restore(resign(foreign), TRUST), /INVALID_SNAPSHOT_PENDING: NOTE_NOT_MEMBER/);
@@ -200,7 +201,7 @@ test("note tree: spends carry a membership proof that a replica can check agains
   const a = await identity(); const b = await identity();
   const l = ledger();
   const empty = l.noteCommitmentRoot().toHex();
-  const note = l.faucet(a.accountId, EUR, 1_000n);
+  const note = l.faucet(a.accountId, EUR, 1_000n, clientBlinding(972391736367n));
   const afterMint = l.noteCommitmentRoot().toHex();
   assert.notEqual(empty, afterMint);
   const tx = prepared(l, a, b.accountId, 100n);
@@ -223,7 +224,7 @@ test("note tree: spends carry a membership proof that a replica can check agains
 test("note tree: a missing, forged or unanchored membership proof is rejected by submit", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(414776202287n));
   const tx = prepared(l, a, b.accountId, 100n);
   const { inputMembership: _drop, ...noProof } = tx;
   assert.equal(code(l.submit(noProof as UepTransaction, a)), "MEMBERSHIP_PROOF");
@@ -234,8 +235,8 @@ test("note tree: a missing, forged or unanchored membership proof is rejected by
   assert.equal(code(l.submit(wrongIndex, a)), "MEMBERSHIP_PROOF");
   // A proof valid under a root this ledger never had (another ledger's tree).
   const other = ledger();
-  other.faucet(b.accountId, EUR, 5n);
-  other.faucet(a.accountId, EUR, 1_000n);
+  other.faucet(b.accountId, EUR, 5n, clientBlinding(557234394159n));
+  other.faucet(a.accountId, EUR, 1_000n, clientBlinding(714702476335n));
   const foreignProof = { ...tx, inputMembership: [{ ...p, root: other.noteCommitmentRoot().toHex() }] };
   assert.equal(code(l.submit(foreignProof, a)), "MEMBERSHIP_PROOF");
   assert.equal(l.txs.length, 0);
@@ -245,7 +246,7 @@ test("note tree: a missing, forged or unanchored membership proof is rejected by
 test("note tree: restore checks the signed root and every committed spend's membership proof", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(699692586031n));
   assert.ok("tx" in l.submit(prepared(l, a, b.accountId, 100n), a));
   const snap = l.snapshot();
   const badRoot = structuredClone(snap) as any;
@@ -280,7 +281,7 @@ test("submit: the sender signature is required, also when requireProof is disabl
   assert.throws(() => { ledger().requireProof = false; }, /REQUIRE_PROOF_IMMUTABLE/);
   const l = ledger({ testOnlyDisableProof: true });
   assert.equal(l.requireProof, false);
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(852312613935n));
   const tx = prepared(l, a, b.accountId, 100n);
   const { senderAuth: _drop, ...unsigned } = tx;
   assert.equal(code(l.submit(unsigned as UepTransaction, a)), "SENDER_AUTH");
@@ -302,7 +303,7 @@ test("fee: the 0.1% protocol fee has a 1-unit floor and stays 0.1% above 1000 un
   assert.equal(creatorFee(100_000n), 100n);
   const a = await identity(); const b = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 10n);
+  l.faucet(a.accountId, EUR, 10n, clientBlinding(84144268335n));
   const tx = prepared(l, a, b.accountId, 5n);
   assert.equal(tx.fee, 1n);
   assert.ok("tx" in l.submit(tx, a));

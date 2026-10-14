@@ -22,6 +22,12 @@ import type { ProviderHealth } from "./provider-model.ts";
 import { SpendInbox, type LabCompute, type LabRelay, type LabOracle, type SpendSubmitInput } from "./uep-service-backends.ts";
 import { SpendQuorum, type Groth16SpendQueue } from "./groth16-spend-queue.ts";
 import type { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
+import type { ValueBridge } from "../settlement/value-bridge.ts";
+import { deserializeTx, serializeTx } from "../core/transaction.ts";
+import { decodeAccountAddress, encodeAccountAddress } from "../core/address.ts";
+import { signEd25519 } from "../core/ed25519.ts";
+import { verifyEd25519 } from "../core/ed25519.ts";
+import { creatorFee } from "../core/fee.ts";
 import type { ActorAuth } from "../marketplace/identity.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 import { REFERENCE_BLOCK_TIME_MS, legacyMsToHeight } from "../core/height.ts";
@@ -51,6 +57,8 @@ export type ServiceApiConfig = {
   groth16?: Groth16SpendQueue;
   quorum?: SpendQuorum;
   marketplace?: DigitalServicesMarketplace;
+  bridge?: ValueBridge;
+  attachedCategories?: string[];
   iotM2M?: IoTM2MService;
   /**
    * v0.5.1 compatibility: Unix-ms clock used only to map a deprecated Unix-ms
@@ -72,6 +80,8 @@ export class UepServiceApi {
   groth16?: Groth16SpendQueue;
   quorum?: SpendQuorum;
   marketplace?: DigitalServicesMarketplace;
+  bridge?: ValueBridge;
+  attachedCategories?: string[];
   iotM2M?: IoTM2MService;
   private readonly legacyWallClock: () => number;
 
@@ -89,6 +99,8 @@ export class UepServiceApi {
     this.groth16 = cfg.groth16;
     this.quorum = cfg.quorum;
     this.marketplace = cfg.marketplace;
+    this.bridge = cfg.bridge;
+    this.attachedCategories = cfg.attachedCategories ?? [];
     this.iotM2M = cfg.iotM2M;
     this.legacyWallClock = cfg.legacyWallClock ?? (() => Date.now());
   }
@@ -289,6 +301,99 @@ export class UepServiceApi {
     }
   }
 
+
+
+  categories(meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    return ok(m.requestId, { categories: this.attachedCategories ?? [], settles: false });
+  }
+
+  bridgeInfo(meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    if (!this.bridge) return fail(m.requestId, new UepApiError("PROVIDER_UNAVAILABLE", "bridge not attached", 404));
+    return ok(m.requestId, {
+      custody: encodeAccountAddress(this.bridge.ledger.networkId, this.bridge.custody.accountId),
+      asset: "uep-test/teur",
+    });
+  }
+
+  /** Apply a client-signed spend, then credit only the sender's address identity. */
+  bridgeDeposit(buyerId: string, tx: unknown, signature: string, meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    return this.guarded(m, this.bridge, "bridge", () => {
+      const parsed = deserializeTx(tx as never);
+      const txId = parsed.txId.toHex();
+      this.assertDepositClaim(buyerId, txId, signature);
+      let committed = parsed;
+      if (!this.bridge!.ledger.hasCommittedTx(parsed.txId)) {
+        const applied = this.bridge!.ledger.submit(parsed);
+        if ("error" in applied) throw new Error(`BRIDGE_DEPOSIT_REJECTED: ${applied.error.code}`);
+        committed = applied.tx;
+      }
+      if (committed.senderId.toHex() !== this.addressAccount(buyerId)) throw new Error("BRIDGE_SENDER_MISMATCH");
+      const balance = this.bridge!.claimDeposit(buyerId, committed.txId.toHex());
+      return { txId: committed.txId.toHex(), amount: this.bridge!.receivedAmount(committed.txId.toHex()).toString(), marketplaceBalance: balance.toString() };
+    });
+  }
+
+  /** Claim a custody payment that already landed, for example via the generic ledger route. */
+  bridgeClaim(buyerId: string, txId: string, signature: string, meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    return this.guarded(m, this.bridge, "bridge", () => {
+      this.assertDepositClaim(buyerId, txId, signature);
+      if (this.bridge!.senderOf(txId) !== this.addressAccount(buyerId)) throw new Error("BRIDGE_SENDER_MISMATCH");
+      const balance = this.bridge!.claimDeposit(buyerId, txId);
+      return { txId, amount: this.bridge!.receivedAmount(txId).toString(), marketplaceBalance: balance.toString() };
+    });
+  }
+
+  bridgeWithdraw(buyerId: string, recipient: string, amount: bigint, openingSeed: bigint, nonce: string, expiresAtHeight: number, signature: string, meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    return this.guarded(m, this.bridge, "bridge", () => {
+      if (!Number.isSafeInteger(expiresAtHeight) || expiresAtHeight < this.bridge!.marketplace.clock()) throw new Error("BRIDGE_AUTH_EXPIRED");
+      const message = `uep-bridge-withdraw:${this.bridge!.marketplace.marketplaceId}:${buyerId}:${recipient}:uep-test/teur:${amount}:${openingSeed}:${nonce}:${expiresAtHeight}`;
+      const key = this.bridge!.marketplace.registeredIdentity(buyerId).publicKeyHex;
+      if (!verifyEd25519(message, signature, key)) throw new Error("ACTOR_SIGNATURE_INVALID");
+      const id = `withdraw:${buyerId}:${nonce}`;
+      if (this.bridge!.marketplace.hasUsedCredit(id)) throw new Error("BRIDGE_WITHDRAW_REPLAY");
+      const decoded = decodeAccountAddress(recipient, this.bridge!.ledger.networkId);
+      if (!decoded.ok) throw new Error(`BRIDGE_RECIPIENT_INVALID: ${decoded.code}`);
+      const move = this.bridge!.withdrawTo(buyerId, decoded.accountId, "uep-test/teur", amount, openingSeed);
+      this.bridge!.marketplace.rememberCredit(id);
+      return { txId: move.txId, amount: move.amount.toString(), fee: creatorFee(amount).toString(), marketplaceBalance: move.marketplaceBalance.toString() };
+    });
+  }
+
+  private assertDepositClaim(buyerId: string, txId: string, signature: string): void {
+    const message = `uep-bridge-deposit:${this.bridge!.marketplace.marketplaceId}:${buyerId}:${txId}`;
+    const key = this.bridge!.marketplace.registeredIdentity(buyerId).publicKeyHex;
+    if (!verifyEd25519(message, signature, key)) throw new Error("ACTOR_SIGNATURE_INVALID");
+  }
+
+  private addressAccount(buyerId: string): string {
+    const decoded = decodeAccountAddress(buyerId, this.bridge!.ledger.networkId);
+    if (!decoded.ok) throw new Error("BRIDGE_BUYER_NOT_ADDRESS");
+    return decoded.accountId.toHex();
+  }
+  marketplaceRegisterIdentity(identityId: string, publicKeyHex: string, meta?: Partial<ApiRequestMeta>, possession?: string): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    return this.guarded(m, this.marketplace, "marketplace", () => {
+      if (!possession) throw new Error("ACTOR_SIGNATURE_REQUIRED");
+      if (!verifyEd25519(identityId, possession, publicKeyHex)) throw new Error("ACTOR_SIGNATURE_INVALID");
+      return this.marketplace!.registerIdentity(identityId, publicKeyHex);
+    });
+  }
+
+  marketplaceEvents(meta?: Partial<ApiRequestMeta>, after = 0, limit = 100): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    if (!this.marketplace) return fail(m.requestId, new UepApiError("PROVIDER_UNAVAILABLE", "marketplace not attached", 404));
+    return ok(m.requestId, this.marketplace.events.list(after, limit));
+  }
+
+  marketplaceCreditAccount(identityId: string, asset: string, amount: bigint, creditId: string, meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    return this.guarded(m, this.marketplace, "marketplace", () => this.marketplace!.creditAccount(identityId, asset as never, amount, { creditId, auth: this.requireAuth(m) }));
+  }
   marketplacePublishListing(input: Parameters<DigitalServicesMarketplace["publishListing"]>[0], meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
     const m = this.parseMeta(meta);
     return this.guarded(m, this.marketplace, "marketplace", () => this.marketplace!.publishListing(input, this.requireAuth(m)));
@@ -410,6 +515,16 @@ export class UepServiceApi {
     return ok(m.requestId, await this.relay.pull());
   }
 
+
+  oraclePublish(feed: string, value: string, meta?: Partial<ApiRequestMeta>): ApiResult<unknown> {
+    const m = this.parseMeta(meta);
+    if (!this.oracle || !this.marketplace) return fail(m.requestId, new UepApiError("PROVIDER_UNAVAILABLE", "oracle not attached", 404));
+    if (!/^[0-9]+$/.test(value)) throw new Error("ORACLE_VALUE_INVALID");
+    const actor = this.marketplace.authenticateActor(this.requireAuth(m), "oracle-feed", feed, { value });
+    if (actor !== this.marketplace.adminIdentity) throw new Error("ORACLE_FEED_NOT_AUTHORIZED");
+    this.oracle.set(feed, value);
+    return ok(m.requestId, { feed, value, settles: false });
+  }
   async oracleQuote(feed: string, meta?: Partial<ApiRequestMeta>): Promise<ApiResult<unknown>> {
     const m = this.parseMeta(meta);
     if (!this.oracle) return fail(m.requestId, new UepApiError("PROVIDER_UNAVAILABLE", "oracle not attached", 404));

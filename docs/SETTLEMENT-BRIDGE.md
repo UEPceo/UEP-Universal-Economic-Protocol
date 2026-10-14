@@ -73,3 +73,7 @@ This design is intentionally conservative:
 - it documents the necessary translation layer instead of pretending one does not exist.
 
 The bridge is a safety and clarity feature, not a claim that the project is a production payment network.
+
+## Implemented in 0.5.10
+
+`src/settlement/value-bridge.ts` deposits a ledger note into Marketplace custody and withdraws it back. The credit is the recipient note amount; the 0.1 % protocol fee stays on the ledger. `src/node/assemble.ts` calls `anchorSettlements` from the process that holds both layers. A receipt anchor is still not the asset movement: the bridge is.

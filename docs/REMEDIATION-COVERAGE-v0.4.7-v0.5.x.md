@@ -1,3 +1,7 @@
+## v0.5.4
+
+Prepared-output lifecycle, real spend binding, pending indexes, reserved issuer mints, hFoldV2 (opt-in; UEP-26 hFold unchanged), wallet-domain blinding, network tag and persisted policy windows (snapshot format 10). See CHANGELOG 0.5.4.
+
 # Remediation and coverage record, v0.4.7 – v0.5.3
 
 > **What this document is.** A self-assessment by the project: the security-relevant

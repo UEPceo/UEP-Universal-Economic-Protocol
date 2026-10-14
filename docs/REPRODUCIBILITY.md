@@ -1,109 +1,57 @@
-# Reproducibility Guide
+# Reproducibility Guide — 0.5.80
+
+This guide distinguishes commands from verified outcomes. Test counts are not carried forward from older releases: record results from the exact tree being assessed.
 
 ## Environment
 
-Use Node.js 22.6+. The research labs (steps 5–7 of `test:all`) also need Rust 1.85 with `cargo` and network access to crates.io for the first build.
+- Node.js 22.6 or newer for the TypeScript test runner; the remediation run was performed on Node.js 22.16.0.
+- Rust 1.85.x and Cargo for `npm run test:rust` and the ZK research lab build.
+- A clean checkout and `npm ci` are recommended. The lab build may need network access to download Rust crates.
 
-The repository is intentionally dependency-light and uses Node's built-in
-TypeScript type stripping for the reference test runner.
-
-## Clean run
+## Core validation
 
 ```bash
-git clone https://github.com/UEPceo/UEP-Universal-Economic-Protocol.git
-cd UEP-Universal-Economic-Protocol
 npm ci
-npm run test:all
-```
-
-`npm run test:all` runs `npm run test:core` (`npm run lint:determinism`, `npm run check:snapshot-compat`, `npm run check:donation`, `npm test` with the protocol, Marketplace, IoT/M2M, settlement, oracle and category suites, `npm run test:poisoned-clock`, the smoke test, the quickstart, the 20k simulation and `test:rust`), then `build:uep-zk` and `test:lab`. It stops at the first failure. The testnet part takes a few minutes (the protocol suite alone about a minute); the labs take about 8–15 minutes more, including the first Rust build. CI runs `test:core` on Node.js 22.x and 24.x with Rust 1.85.1 and the labs in a separate job; both are blocking. A non-blocking job runs the known-issue lab files (none in v0.5.3).
-
-Expected results for `0.5.3` (Node.js 22 and 24). Last re-checked with `npm run test:all` on Node.js 22.23 and 24.21 with Rust 1.85.1 on 2026-10-08:
-
-| Command | Expected |
-|---|---|
-| `npm run lint:determinism` | 140 files scanned, 0 violations |
-| `npm run check:snapshot-compat` | `format 9, 3 migration step(s) from format 6, fixtures and FORMAT.json consistent` |
-| `npm run check:donation` | the donation address decodes as bech32 (checksum OK) and is the only BTC address in the docs |
-| `npm run test:protocol` | 199/199 pass, including every golden snapshot fixture and the cryptographic test vectors (about a minute: Poseidon in TypeScript) |
-| `npm run test:marketplace` | 210/210 pass (Marketplace, IoT/M2M, HTTP authorization, compatibility shims, height producer and height authority, poisoned-clock helpers, scale, attack battery, Marketplace snapshot format 4 and retention, ledger submit queue, ledger worker host) |
-| `npm run test:settlement` | 19/19 pass |
-| `npm run test:oracle` | 37/37 pass |
-| `npm run test:category` | 23/23 pass |
-| `npm run test:poisoned-clock` | 425/425 pass with 0 poisoned-clock violations |
-| `npm run smoke:testnet` | `SMOKE OK` |
-| `npm run quickstart` | `PASS — local reference testnet` |
-| `npm run simulate:20k` | 20,000 settled, 0 errors, `hotExpired: 100`, `valueConserved: true` |
-| `npm run test:rust` | 127 pass: uep-21-poseidon 7, uep-25-prototype 9, uep-26-spend-circuit 99, uep-23-state-transition 6, uep-24-atomic 6 |
-| `npm run build:uep-zk` | `uep-core/target/release/uep-zk` built from source |
-| `npm run test:lab` | 116 files, 546 tests pass, 0 failures; no known-issue files (the list is empty) |
-| `npm run test:lab:known` | the known-issue files; the list is empty in v0.5.3, so it runs no files (non-blocking CI job) |
-
-`src/testnet/key-derived-accounts.test.ts` uses fixed account vectors (no random account ids; the only random values are ephemeral snapshot and faucet keys, which do not change any outcome), so repeated runs give the same result; it was run 400 times on Node.js 22 with 0 failures:
-
-    for i in $(seq 1 400); do node --experimental-strip-types --no-warnings --test src/testnet/key-derived-accounts.test.ts >/dev/null || echo FAIL $i; done
-
-Lab suites with known failures are listed in `scripts/lab-known-issues.json` and skipped (see [`LABS.md`](./LABS.md)). Run them with `node scripts/test-lab.mjs --include-known`. The `uep-zk` binary hash depends on the toolchain and platform, so the labs do not pin it.
-
-To run part of the labs, pass a path fragment: `npm run test:lab -- uep-econ` runs only the lab files whose path contains `uep-econ`.
-
-## If something fails
-
-- `node: bad option: --experimental-strip-types`: Node.js is older than 22.6. Upgrade Node.js.
-- `cargo: command not found` or a Rust build error: install Rust 1.85 (CI uses 1.85.1); `npm test` and the testnet steps do not need it.
-- `uep-zk not found`: run `npm run build:uep-zk` before `npm run test:lab`, or set `UEP_ZK_BIN`.
-- A failure in a lab file listed in `scripts/lab-known-issues.json` is expected; those files are skipped by `npm run test:lab`.
-
-Please report any other failure with the information listed under "Determinism" below ([bug report form](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/issues/new?template=bug_report.yml)).
-
-## Protocol only
-
-```bash
-npm run test:protocol
+npm run check:version
+npm run lint:determinism
+npm run check:snapshot-compat
+npm run test:consensus
+npm test
+npm run test:poisoned-clock
 npm run smoke:testnet
-```
-
-## Marketplace only
-
-```bash
-npm run test:marketplace
-npm run test:iot
-npm run test:scale
+npm run quickstart
 npm run simulate:20k
+npm run test:rust
+npm run build:uep-zk
+npm run test:lab
 ```
 
-## Determinism
+`npm test` runs protocol, Marketplace, settlement, Oracle and category suites. `npm run test:consensus` runs the multi-node harness tests. `npm run test:all` wraps the broader core, Rust/ZK build and lab validation; it stops on the first failure.
 
-For protocol experiments, record:
+## Results verified for this remediation bundle
 
-- Git commit SHA;
-- Node.js version;
-- operating system;
-- command executed;
-- test output;
-- any modified protocol parameters.
+- `npm run test:consensus`: **44/44 passed** on Node.js 22.16.0 after the HTTP test fixtures were corrected.
+- `npm run test:protocol`: **214/214 passed** on Node.js 22.16.0.
+- `npm run test:settlement`: **20/20 passed**.
+- `npm run test:oracle`: **38/38 passed**.
+- `npm run test:category`: **24/24 passed**.
+- `npm run test:marketplace`: **220/220 passed** across 14 suites on Node.js 22.16.0.
+- `npm test`: **516/516 passed** across all five configured suites.
+- `npm run test:poisoned-clock` and `npm run simulate:20k` did not finish within the available execution windows; neither result is counted as pass or confirmed failure.
+- `npm run test:all`, Node.js 24.x, Rust suites and ZK labs have not been certified by this remediation run.
 
-Do not publish secrets as part of a reproduction bundle.
+Do not describe unexecuted or timed-out suites as passing. Re-run them in CI or an environment with adequate time and preserve the raw logs.
 
-## What a benchmark means
+## Testnet scope and limitations
 
-A local benchmark measures the implementation under the stated local conditions.
-It does not establish Internet TPS, public-network throughput or economic capacity.
+The current consensus code is a multi-node engineering harness, not production consensus. In particular:
 
-## Transaction evidence
+- The peer set and threshold are configured statically; this is not a complete Byzantine fault-tolerant consensus protocol with view change.
+- Catch-up currently trusts a single pinned peer to supply a snapshot. A pinned key is a trust anchor, not a quorum certificate for the snapshot's history.
+- The peer `/propose` path exercises the quorum harness, but the local economic API can accept transactions without the peer quorum. Local acceptance must not be described as network finality.
+- Local simulation results are not public-network TPS or capacity claims.
+- Experimental Groth16/ZK lab code is not a production privacy or validity guarantee.
 
-The public smoke test prints:
+## Record a reproducible result
 
-- network ID;
-- transaction ID;
-- sender;
-- recipient;
-- amount;
-- fee;
-- nullifier;
-- state root;
-- verification result.
-
-This is suitable for reproducing the project's first-transaction style milestone,
-while remaining explicit that it is a local reference transaction rather than a
-production globally finalized transaction.
+Record the commit/archive hash, Node.js and Rust versions, OS, exact command, exit code, duration and raw output. Do not include secrets, private keys, `.env` files or live account data.

@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3 UEP-C04: multi-input transactions. A spend may consume 2..8 notes
  * with a nullifier (and nonce) vector, pays ONE protocol fee and returns at
@@ -29,7 +30,7 @@ async function setup(notes: bigint[]) {
   const l = ledger();
   const a = await identity();
   const b = await identity();
-  for (const n of notes) l.faucet(a.accountId, EUR, n);
+  for (const [i, n] of notes.entries()) l.faucet(a.accountId, EUR, n, clientBlinding(882513581103n + BigInt(i)));
   return { l, a, b };
 }
 

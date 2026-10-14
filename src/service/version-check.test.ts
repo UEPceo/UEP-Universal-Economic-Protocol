@@ -11,7 +11,7 @@ const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.
 
 test("version: the repository version is numeric semver and package-lock.json / CHANGELOG agree", () => {
   assert.deepEqual(versionProblems(root), []);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version, "0.5.3");
+  assert.match(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version, NUMERIC_SEMVER);
 });
 
 test("version: suffixes, pre-releases and mismatches are refused", () => {

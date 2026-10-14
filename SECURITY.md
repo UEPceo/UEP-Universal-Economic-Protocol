@@ -65,3 +65,5 @@ Do not include in public issues or pull requests:
 - any relevant deterministic test case.
 
 Security contact: uep.dev@proton.me
+
+See also [`docs/BUG-BOUNTY.md`](./docs/BUG-BOUNTY.md) for the Phase 5 public process, severity guidance and independent assessment expectations.

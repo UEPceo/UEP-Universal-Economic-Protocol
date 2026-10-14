@@ -50,6 +50,14 @@ export type SecurityPolicyConfig = {
   assetLimits: Record<string, AssetLimits>;
 };
 
+
+export type PolicyWindowSnapshot = {
+  account: string;
+  windowStart: number;
+  txCount: number;
+  volumeByAsset: Record<string, string>;
+};
+
 export type PolicyVerdict =
   | { ok: true }
   | { ok: false; code: PolicyRejectCode; message: string };
@@ -199,6 +207,36 @@ export class SecurityPolicy {
       this.windows.set(key, b);
     }
     return b;
+  }
+
+
+  /** v0.5.4: persist open rolling windows (height-based; no clock). */
+  exportWindows(): PolicyWindowSnapshot[] {
+    const out: PolicyWindowSnapshot[] = [];
+    for (const [account, b] of this.windows) {
+      const volumeByAsset: Record<string, string> = {};
+      for (const [asset, v] of b.volumeByAsset) volumeByAsset[asset] = v.toString();
+      out.push({ account, windowStart: b.windowStart, txCount: b.txCount, volumeByAsset });
+    }
+    out.sort((a, b) => (a.account < b.account ? -1 : a.account > b.account ? 1 : 0));
+    return out;
+  }
+
+  /** v0.5.4: restore windows written by exportWindows(). Replaces in-memory windows. */
+  importWindows(rows: PolicyWindowSnapshot[] | undefined): void {
+    this.windows.clear();
+    if (!rows) return;
+    for (const row of rows) {
+      if (!row || typeof row.account !== "string" || !Number.isSafeInteger(row.windowStart) || !Number.isSafeInteger(row.txCount)) {
+        throw new Error("POLICY_WINDOWS_INVALID");
+      }
+      const volumeByAsset = new Map<string, bigint>();
+      for (const [asset, raw] of Object.entries(row.volumeByAsset ?? {})) {
+        if (!/^[0-9]+$/.test(raw)) throw new Error("POLICY_WINDOWS_INVALID");
+        volumeByAsset.set(asset, BigInt(raw));
+      }
+      this.windows.set(row.account.toLowerCase(), { windowStart: row.windowStart, txCount: row.txCount, volumeByAsset });
+    }
   }
 
   /** v0.4.7: rolling volume of one account in one asset (window open at height `at`; without `at`, the last window). */

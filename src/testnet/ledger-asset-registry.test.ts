@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.5.3 (ADR 0001): the signed asset registry is wired into the ledger.
  * Unknown, unlisted or decimal-mismatched assets are refused; deprecated
@@ -46,12 +47,12 @@ test("registry: only listed assets are minted and spent; templates alone are not
   const l = ledger(reg);
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const b = await identityFromMnemonic(await generateMnemonic(128));
-  l.faucet(a.accountId, EUR, 10_000n);
-  assert.throws(() => l.faucet(a.accountId, BTC, 10_000n), /Unknown TESTNET asset/);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(319445423151n));
+  assert.throws(() => l.faucet(a.accountId, BTC, 10_000n, clientBlinding(359373280303n)), /Unknown TESTNET asset/);
   assert.equal(code(l.prepareSpend(a, b.accountId, BTC, 10n)), "ASSET_MISMATCH");
   assert.equal(l.assetRecord(BTC), undefined);
   // Without a registry the template still admits it (backward compatible).
-  ledger().faucet(a.accountId, BTC, 1n);
+  ledger().faucet(a.accountId, BTC, 1n, clientBlinding(798415344687n));
 });
 
 test("registry: decimals must match the template (D-1, at most 8) and the network must match", () => {
@@ -67,13 +68,13 @@ test("registry: a deprecated asset cannot be minted; earlier mints stay valid; f
   const v1 = registry([...TESTNET_ASSETS], { [EUR]: { minProtocolFee: "5" } });
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const l1 = ledger(load([v1]));
-  l1.faucet(a.accountId, EUR, 100n);
+  l1.faucet(a.accountId, EUR, 100n, clientBlinding(414918284335n));
   assert.equal(l1.feeFloorOf(ledgerAssetIdToFr(EUR)), 5n);
   assert.equal(ledger().feeFloorOf(ledgerAssetIdToFr(EUR)), 1n);
   const v2 = registry([...TESTNET_ASSETS], { [EUR]: { minProtocolFee: "5", status: "deprecated" } }, v1);
   const reg2 = load([v1, v2]);
   const l2 = ledger(reg2);
-  assert.throws(() => l2.faucet(a.accountId, EUR, 1n), /ASSET_DISABLED/);
+  assert.throws(() => l2.faucet(a.accountId, EUR, 1n, clientBlinding(73481380911n)), /ASSET_DISABLED/);
   // l1's history (minted under v1) restores under the v2 chain.
   const snap = l1.snapshot();
   assert.deepEqual(snap.assetRegistry, { networkId: TESTNET.networkId, version: 1, hash: v1.manifestHash });
@@ -85,16 +86,16 @@ test("registry: snapshot binding is checked on restore", async () => {
   const reg = load([registry([...TESTNET_ASSETS])]);
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const l = ledger(reg);
-  l.faucet(a.accountId, EUR, 50n);
+  l.faucet(a.accountId, EUR, 50n, clientBlinding(320774915119n));
   const snap = l.snapshot();
-  assert.equal(snap.formatVersion, 9);
+  assert.equal(snap.formatVersion, 10);
   assert.throws(() => UepLedger.restore(snap, trust()), /INVALID_SNAPSHOT_ASSET_REGISTRY/);
   const foreign = load([registry([...TESTNET_ASSETS])]);
   assert.throws(() => UepLedger.restore(snap, trust(foreign)), /not in the trusted registry chain/);
   assert.equal(UepLedger.restore(snap, trust(reg)).assetRegistry?.hash, reg.hash);
   // A template-only snapshot (binding null) can adopt a registry; its assets are re-checked.
   const plain = ledger();
-  plain.faucet(a.accountId, BTC, 7n);
+  plain.faucet(a.accountId, BTC, 7n, clientBlinding(238786901039n));
   const ps = plain.snapshot();
   assert.equal(ps.assetRegistry, null);
   assert.ok(UepLedger.restore(ps, trust(reg)));

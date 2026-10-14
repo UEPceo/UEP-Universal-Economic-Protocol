@@ -11,6 +11,9 @@ import { Fr } from "../core/field.ts";
 import { deriveSpendKey } from "../core/spend-key.ts";
 import { isPrimeOrderEd25519Point, normalizeEd25519PublicKeyHex } from "../core/ed25519-point.ts";
 import { act, cancelAsBuyer, deliver, enrollIdentity, fund, getOrder, publishAs, refundAs, reserveAs, settle } from "./testkit.ts";
+import { evidenceStatementMessage } from "./evidence.ts";
+import { signEd25519 } from "../core/ed25519.ts";
+import { contentHash } from "../service/content-hash.ts";
 
 const getStatus = (m: DigitalServicesMarketplace, orderId: string, actor: string) => getOrder(m, orderId, actor).status;
 import { listingTerms } from "./identity.ts";
@@ -22,6 +25,19 @@ const KEYS = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(keyOf);
 const SET = { attesterSetId: "space-weather-2of3", sourceId: "https://example.org/space-weather/v1", attesterKeys: KEYS.slice(0, 3), threshold: 2, size: 3, valueCaps: { EUR: 1_000n }, providerCapBps: 10_000, buyerCapBps: 10_000, providerBondBps: 0 };
 const base = { providerId: "prov", description: "comms with force-majeure evidence", category: "API" as const, asset: "EUR", unitPrice: 100n, capacity: 100n };
 
+
+function attestAndSettle(m: DigitalServicesMarketplace, orderId: string, actor: string) {
+  try { attest(m, orderId, actor); } catch (e) { if (!(e instanceof Error) || !e.message.startsWith("EVIDENCE_NOT_REQUIRED")) throw e; }
+  return settle(m, orderId, actor);
+}
+function attest(m: DigitalServicesMarketplace, orderId: string, actor: string) {
+  const order = getOrder(m, orderId, actor);
+  const hash = order.deliveryHash ?? contentHash(Buffer.from("evidence"));
+  const body = { sourceId: SET.sourceId, dataHash: hash, observedHeight: 0, orderId, attesterSetId: SET.attesterSetId };
+  const message = evidenceStatementMessage(body);
+  const keys = [1, 2].map((i) => deriveSpendKey(new Fr(BigInt(i)), new Fr(9n)));
+  m.submitEvidence(orderId, { ...body, signatures: keys.map((k) => ({ attesterId: k.publicKeyHex.slice(-64), signature: signEd25519(message, k.privateKey) })) });
+}
 function setup() {
   const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true, evidence: { attesterSets: [SET] } });
   const listing = publishAs(m, { ...base, title: "Relay link", evidencePolicy: { attesterSetId: SET.attesterSetId, maxValuePerContract: 300n } });
@@ -101,7 +117,7 @@ test("evidence caps: the funded value of one attester set is capped across listi
   refundAs(m, "prov", a.orderId); // idempotent: released once
   assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 700n);
   deliver(m, b.orderId, "prov2", Buffer.from("link report"));
-  settle(m, b.orderId, "b2");
+  attestAndSettle(m, b.orderId, "b2");
   assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 400n);
   // A delivered order keeps its value counted until it closes.
   deliver(m, c.orderId, "prov", Buffer.from("late report"));
@@ -204,7 +220,7 @@ test("evidence caps: only funded value counts against the set cap; unfunded rese
   assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 900n);
   // Closing a funded order frees its value once; then r3 can fund.
   deliver(m, reservations[0]!.orderId, "prov", Buffer.from("report"));
-  settle(m, reservations[0]!.orderId, "r0");
+  attestAndSettle(m, reservations[0]!.orderId, "r0");
   assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 600n);
   fund(m, reservations[4]!.orderId, reservations[4]!.fundingDue);
   assert.equal(m.evidenceCaps.openValue(SET.attesterSetId, "EUR"), 900n);
@@ -260,7 +276,7 @@ test("category hooks are copied and frozen at attach: mutating the caller's obje
   deliver(m, order.orderId, "prov", Buffer.from("payload"));
   // A guard added to the caller's object after attach is not consulted.
   hooks.settlementGuard = () => { throw new Error("GUARD_ADDED_LATER"); };
-  assert.equal(settle(m, order.orderId, "buyer").orderId, order.orderId);
+  assert.equal(attestAndSettle(m, order.orderId, "buyer").orderId, order.orderId);
   assert.throws(() => m.attachCategoryService("DATA", { settlementGuard: "nope" as never }), /CATEGORY_HOOKS_INVALID/);
   assert.throws(() => m.attachCategoryService("STORAGE", null as never), /CATEGORY_HOOKS_INVALID/);
 });
@@ -293,7 +309,7 @@ test("evidence caps: an evidence-bound listing locks a provider bond in the list
   m.delistListing(listing.listingId, act(m, "p3", "delist", listing.listingId));
   assert.equal(m.listingBondLocked(listing.listingId), 25n);
   deliver(m, o.orderId, "p3", Buffer.from("report"));
-  settle(m, o.orderId, "b");
+  attestAndSettle(m, o.orderId, "b");
   assert.equal(m.listingBondLocked(listing.listingId), 0n);
   assert.equal(m.valueAccounting("EUR").listingBonds, 0n);
   assert.equal(m.valueAccounting("EUR").conserved, true);
@@ -335,7 +351,7 @@ test("evidence caps: one buyer fills at most its quota of a set; Sybil providers
   const h = reserveAs(m, { listingId: sybils[2]!.listingId, buyerId: "honest", quantity: 2n }, { credit: 10_000n });
   fund(m, h.orderId, h.fundingDue);
   deliver(m, first.orderId, "mallory-s1", Buffer.from("r"));
-  settle(m, first.orderId, "mallory");
+  attestAndSettle(m, first.orderId, "mallory");
   assert.equal(m.evidenceCaps.buyerOpenValue(SET.attesterSetId, "EUR", "mallory"), 0n);
   assert.equal(m.valueAccounting("EUR").conserved, true);
   for (const bps of [0, 10_001, 2.5]) assert.throws(() => new EvidenceCaps({ attesterSets: [{ ...SET, buyerCapBps: bps }] }), /buyerCapBps/);

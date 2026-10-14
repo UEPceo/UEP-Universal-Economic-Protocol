@@ -1,3 +1,4 @@
+import { clientBlinding } from "../src/core/client-note.ts";
 /**
  * v0.5.3 (external review 2026-10-08): reproducible measurement of the
  * Poseidon BN254 / SMT depth-254 cost of the ledger and of the event-loop
@@ -36,7 +37,7 @@ const N = 6;
 const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey });
 const recipient = await identityFromMnemonic(await generateMnemonic(128));
 const senders = [];
-for (let i = 0; i < N; i++) { const s = await identityFromMnemonic(await generateMnemonic(128)); l.faucet(s.accountId, "uep-test/teur", 10_000n); senders.push(s); }
+for (let i = 0; i < N; i++) { const s = await identityFromMnemonic(await generateMnemonic(128)); l.faucet(s.accountId, "uep-test/teur", 10_000n, clientBlinding(BigInt(i) + 1n)); senders.push(s); }
 const snapshot = l.snapshot();
 const txs = senders.map((s) => { const p = l.prepareSpend(s, recipient.accountId, "uep-test/teur", 100n); if (!("tx" in p)) throw new Error("prepare"); return p.tx; });
 async function gap(work: () => Promise<unknown>): Promise<[number, number]> {

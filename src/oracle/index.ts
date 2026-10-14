@@ -242,4 +242,4 @@ export class OracleAggregator {
     return sortedQuotes[Math.floor(sortedQuotes.length / 2)]!.priceE6;
   }
 }
-export { isValidLei, leiCheckDigits } from "./lei.ts";
+export { isValidLei, leiCheckDigits, LEI_UNGENERATED_CHECK_DIGITS } from "./lei.ts";

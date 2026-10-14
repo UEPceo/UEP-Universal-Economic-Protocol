@@ -1,0 +1,20 @@
+{
+  "protocol": "uep-bft-v1",
+  "status": "experimental-not-production",
+  "networkId": "uep-testnet-1",
+  "domainId": "EARTH",
+  "faultTolerance": 1,
+  "minimumValidators": 4,
+  "quorum": 3,
+  "validatorSet": [
+    { "id": "validator-0", "publicKeyHex": "REPLACE_WITH_PINNED_ED25519_SPKI_HEX" },
+    { "id": "validator-1", "publicKeyHex": "REPLACE_WITH_PINNED_ED25519_SPKI_HEX" },
+    { "id": "validator-2", "publicKeyHex": "REPLACE_WITH_PINNED_ED25519_SPKI_HEX" },
+    { "id": "validator-3", "publicKeyHex": "REPLACE_WITH_PINNED_ED25519_SPKI_HEX" }
+  ],
+  "notes": [
+    "Do not reuse placeholder keys or start a network with this example as-is.",
+    "This configuration is a design fixture and is not consumed by the legacy PeerNet harness.",
+    "The BFT safety kernel is not yet a complete protocol: lock proofs, safe view-change, durable atomic persistence, authenticated transport integration, and ledger commit integration are required before production use."
+  ]
+}

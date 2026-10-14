@@ -1,0 +1,84 @@
+--- src/testnet/ledger.ts
++++ src/testnet/ledger.ts
+@@ -1076,6 +1076,10 @@
+     kept.sort((a, b) => (a.publicKey < b.publicKey ? -1 : a.publicKey > b.publicKey ? 1 : 0));
+     const assetId = ledgerAssetIdToFr(assetIdStr);
+     const amount = BigInt(expected.amount);
++    // Audit fix: the checks done at prepare time are repeated at apply time (state may have moved).
++    this.assertMintable(assetIdStr);
++    this.assertSupplyCap(assetIdStr, assetId, amount, false);
++    if (this.balanceOf(account, assetId) + amount >= 2n ** 64n) throw new Error("MINT_AMOUNT_INVALID");
+     const reserved = this.mintReservations.shift()!;
+     const blinding = new Fr(reserved.blindingHex);
+     reserved.blindingHex = "";
+@@ -1090,11 +1094,18 @@
+   }
+ 
+   /** v0.5.3: under a registry, total issuance of an asset may not exceed its supplyCap. */
+-  private assertSupplyCap(assetIdStr: string, assetId: Fr, amount: bigint): void {
++  private assertSupplyCap(assetIdStr: string, assetId: Fr, amount: bigint, includeReservations = true): void {
+     const reg = this.assetRegistry?.find(assetIdStr);
+     if (!reg) return;
+     let total = 0n;
+     for (const enc of assetEncodings(assetIdStr)) total += this.supply.get(enc.toHex()) ?? 0n;
++    // Audit fix: outstanding issuer-mint reservations count against the cap, otherwise
++    // N reservations prepared before the first is applied can each pass the check alone.
++    if (includeReservations) {
++      for (const r of this.mintReservations) {
++        if (assetEncodings(assetIdStr).some((enc) => enc.toHex() === r.request.assetId)) total += BigInt(r.request.amount);
++      }
++    }
+     if (total + amount > reg.supplyCap) throw new Error(`MINT_SUPPLY_CAP: issuance would exceed the registry supplyCap of ${assetIdStr}`);
+     void assetId;
+   }
+--- src/testnet/ledger-mint-reservation-cap.test.ts
++++ src/testnet/ledger-mint-reservation-cap.test.ts
+@@ -0,0 +1,48 @@
++/**
++ * Audit regression: outstanding issuer-mint reservations count against the registry supplyCap.
++ * Before the fix, two reservations of 900 against a cap of 1000 both prepared and both applied (1800 issued).
++ */
++import test from "node:test";
++import assert from "node:assert/strict";
++import { AssetRegistry, buildSignedAssetRegistry } from "../core/asset-registry.ts";
++import { INTERPLANETARY_ASSETS } from "../core/assets.ts";
++import { generateEd25519KeyPair, signEd25519 } from "../core/ed25519.ts";
++import { identityFromMnemonic, generateMnemonic } from "../identity/index.ts";
++import { UepLedger, issuerMintMessage, type IssuerMintRequest } from "./ledger.ts";
++
++const SNAP = generateEd25519KeyPair(), FAUCET = generateEd25519KeyPair(), GOV = generateEd25519KeyPair(), NS = generateEd25519KeyPair();
++const ISSUERS = [generateEd25519KeyPair(), generateEd25519KeyPair(), generateEd25519KeyPair()];
++const IPN = "uep-interplanetary-1", SENERGY = "uep-sim/senergy";
++const tmpl = (a: any, over: any = {}) => { const { issuer: _i, network: _n, minProtocolFee, ...rest } = a; return { ...rest, ...(minProtocolFee !== undefined ? { minProtocolFee: minProtocolFee.toString() } : {}), issuer: { keys: [generateEd25519KeyPair().publicKeyHex] }, ...over } as never; };
++const sign = (req: IssuerMintRequest) => ISSUERS.slice(0, 2).map((k) => ({ publicKey: k.publicKeyHex, signature: signEd25519(issuerMintMessage(req), k.privateKey) }));
++
++function ledger() {
++  const v1 = buildSignedAssetRegistry({ networkId: IPN, namespaces: [{ namespace: "uep-sim", owner: { keys: [NS.publicKeyHex] } }],
++    assets: INTERPLANETARY_ASSETS.map((a) => tmpl(a, a.assetId === SENERGY ? { issuer: { keys: ISSUERS.map((k) => k.publicKeyHex), threshold: 2 }, supplyCap: "1000" } : {})),
++    namespaceOwnerKeys: { "uep-sim": [NS.privateKey] }, governanceKeys: [GOV.privateKey] });
++  const reg = AssetRegistry.load([v1], { keys: [GOV.publicKeyHex] });
++  return new UepLedger({ networkId: IPN, domainId: "MARS", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, assetRegistry: reg } as any);
++}
++
++test("two outstanding reservations cannot jointly exceed the supplyCap", async () => {
++  const l = ledger();
++  const a = await identityFromMnemonic(await generateMnemonic(128));
++  const r1 = l.prepareIssuerMint(a.accountId, SENERGY, 900n);
++  assert.throws(() => l.prepareIssuerMint(a.accountId, SENERGY, 900n), /MINT_SUPPLY_CAP/);
++  l.mintWithIssuerSignatures(r1, sign(r1));
++  assert.equal(l.balanceOfAsset(a.accountId, SENERGY), 900n);
++  assert.throws(() => l.prepareIssuerMint(a.accountId, SENERGY, 101n), /MINT_SUPPLY_CAP/);
++  const r2 = l.prepareIssuerMint(a.accountId, SENERGY, 100n);
++  l.mintWithIssuerSignatures(r2, sign(r2));
++  assert.equal(l.balanceOfAsset(a.accountId, SENERGY), 1000n);
++});
++
++test("a released reservation frees its share of the cap", async () => {
++  const l = ledger();
++  const a = await identityFromMnemonic(await generateMnemonic(128));
++  const r1 = l.prepareIssuerMint(a.accountId, SENERGY, 900n);
++  l.releaseIssuerMint(r1);
++  const r2 = l.prepareIssuerMint(a.accountId, SENERGY, 900n);
++  l.mintWithIssuerSignatures(r2, sign(r2));
++  assert.equal(l.balanceOfAsset(a.accountId, SENERGY), 900n);
++});

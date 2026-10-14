@@ -23,7 +23,7 @@
  * Status: IMPLEMENTED / TESTED (native). Distributed deployment: CONCEPTUAL.
  */
 import { Fr } from "./field.ts";
-import { Domain, hFold } from "./hash.ts";
+import { Domain, hFold, hFoldV2 } from "./hash.ts";
 import { txNullifiers, type TxPhase, type UepTransaction } from "./transaction.ts";
 
 export type Settlement = {
@@ -93,4 +93,19 @@ export function settlementRoot(settlements: Settlement[]): Fr {
     parts.push(new Fr(s.fee));
   }
   return hFold(Domain.Transaction, parts);
+}
+
+/**
+ * v0.5.4: same settlement aggregate under hFoldV2 (length + version domain).
+ * settlementRoot stays on hFold so existing callers and empty-queue roots do not move.
+ * The SpendCircuit transaction commitment is frozen on hFoldV2 (UEP-26.3).
+ */
+export function settlementRootV2(settlements: Settlement[]): Fr {
+  const parts: Fr[] = [];
+  for (const s of settlements) {
+    parts.push(s.txId);
+    parts.push(new Fr(s.status === "SETTLED" ? 1 : 0));
+    parts.push(new Fr(s.fee));
+  }
+  return hFoldV2(Domain.Transaction, parts.length === 0 ? [Fr.zero()] : parts);
 }

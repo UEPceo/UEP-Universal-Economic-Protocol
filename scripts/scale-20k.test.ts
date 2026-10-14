@@ -1,17 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DigitalServicesMarketplace } from "./marketplace.ts";
-import { createTestAuthority, deliver, fund, getOrder, publishAs, reserveAs, settle } from "./testkit.ts";
+import { DigitalServicesMarketplace } from "../src/marketplace/marketplace.ts";
+import { createTestAuthority, deliver, fund, getOrder, publishAs, reserveAs, settle } from "../src/marketplace/testkit.ts";
+import { listingPlan, selectedScaleSizes } from "../src/marketplace/scale-sizes.ts";
 
-test("20k-user synthetic load: settlement, replay safety and hot-stock exhaustion", () => {
+for (const users of selectedScaleSizes()) {
+test(`${users}-user synthetic load: settlement, replay safety and hot-stock exhaustion`, () => {
+  const plan = listingPlan(users);
   const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });
   const listings = [] as ReturnType<DigitalServicesMarketplace["publishListing"]>[];
-  for (let p = 0; p < 200; p++) for (let j = 0; j < 5; j++) {
-    listings.push(publishAs(m, { providerId: `prov-${p}`, title: `Compute ${p}-${j}`, description: "global digital service", category: "COMPUTE", asset: "EUR", unitPrice: 100n, capacity: 100n }));
+  for (let p = 0; p < plan.providers; p++) for (let j = 0; j < plan.perProvider; j++) {
+    listings.push(publishAs(m, { providerId: `prov-${p}`, title: `Compute ${p}-${j}`, description: "global digital service", category: "COMPUTE", asset: "EUR", unitPrice: 100n, capacity: plan.capacity }));
   }
   let settled = 0;
-  for (let i = 0; i < 20_000; i++) {
-    const l = listings[i % listings.length];
+  for (let i = 0; i < users; i++) {
+    const l = listings[i % listings.length]!;
     const o = reserveAs(m, { listingId: l.listingId, buyerId: `buyer-${i}`, quantity: 1n, idempotencyKey: `checkout-${i}` });
     assert.equal(reserveAs(m, { listingId: l.listingId, buyerId: `buyer-${i}`, quantity: 1n, idempotencyKey: `checkout-${i}` }).orderId, o.orderId);
     fund(m, o.orderId, o.fundingDue, `fund-${i}`); // deposit locked at reserve() counts toward payment
@@ -19,8 +22,9 @@ test("20k-user synthetic load: settlement, replay safety and hot-stock exhaustio
     settle(m, o.orderId, `buyer-${i}`);
     settled++;
   }
-  assert.equal(settled, 20_000);
-  assert.equal(m.treasury.totalOf("EUR"), 60_000n);
+  assert.equal(settled, users);
+  // unitPrice 100, Marketplace fee 3% => 3 per settled order. Fee parameter is unchanged.
+  assert.equal(m.treasury.totalOf("EUR"), BigInt(users) * 3n);
   assert.equal(m.valueAccounting("EUR").conserved, true);
 
   const hot = publishAs(m, { providerId: "hot", title: "Hot GPU", description: "contention", category: "COMPUTE", asset: "EUR", unitPrice: 50n, capacity: 100n });
@@ -34,6 +38,7 @@ test("20k-user synthetic load: settlement, replay safety and hot-stock exhaustio
   assert.equal(acct.lockedDeposits, 100n); // 100 open reservations x minimum deposit 1
   assert.equal(acct.conserved, true);
 });
+}
 
 test("idempotency keys are scoped to the operation order and cannot be confused", () => {
   const m = new DigitalServicesMarketplace({ testOnlyLocalHeight: true });

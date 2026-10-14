@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.4.5: key-derived accounts and addresses (UEP-ADDR-002); v0.5.1: v3 ids
  * with a 64-bit check, v2 ids kept for existing accounts.
@@ -168,12 +169,12 @@ test("ledger: faucet and spends accept v3 addresses and refuse invalid, legacy o
   const a = await identity(); const b = await identity();
   const l = ledger();
   const bAddr = l.addressOf(b.accountId);
-  l.faucet(l.addressOf(a.accountId), EUR, 10_000n);
-  assert.throws(() => l.faucet(hAccount(a.secret, a.salt), EUR, 1n), /FAUCET_ACCOUNT_INVALID/);
-  assert.throws(() => l.faucet(`uep:${NET}:${a.accountId.toHex()}`, EUR, 1n), /FAUCET_ACCOUNT_INVALID: ADDRESS_LEGACY_V1/);
+  l.faucet(l.addressOf(a.accountId), EUR, 10_000n, clientBlinding(803552773167n));
+  assert.throws(() => l.faucet(hAccount(a.secret, a.salt), EUR, 1n, clientBlinding(913313289263n)), /FAUCET_ACCOUNT_INVALID/);
+  assert.throws(() => l.faucet(`uep:${NET}:${a.accountId.toHex()}`, EUR, 1n, clientBlinding(23073805359n)), /FAUCET_ACCOUNT_INVALID: ADDRESS_LEGACY_V1/);
   const flipped = bAddr.slice(0, 30) + (bAddr[30] === "q" ? "p" : "q") + bAddr.slice(31);
   // A legacy id with the v2 byte (accepted by v2-era code), as an id or as a v2 address, is refused.
-  assert.throws(() => l.faucet(LEGACY_V2_BYTE, EUR, 1n), /FAUCET_ACCOUNT_INVALID/);
+  assert.throws(() => l.faucet(LEGACY_V2_BYTE, EUR, 1n, clientBlinding(352355353647n)), /FAUCET_ACCOUNT_INVALID/);
   for (const bad of [flipped, encodeAccountAddress("uep-global-1", b.accountId), hAccount(b.secret, b.salt), LEGACY_V2_BYTE, LEGACY_V3_BYTE, LEGACY_OTHER, encodeAccountAddress(NET, LEGACY_V2_BYTE), b.accountIdV2!, encodeAccountAddress(NET, b.accountIdV2!)]) {
     assert.equal(code(l.prepareSpend(a, bad, EUR, 100n)), "INVALID_ADDRESS");
     assert.equal(code(l.preparePayment(a, bad, EUR, 100n) as never), "INVALID_ADDRESS");
@@ -194,7 +195,7 @@ test("ledger: faucet and spends accept v3 addresses and refuse invalid, legacy o
 test("owner binding: a note owned by an address whose key does not match the signer is rejected", async () => {
   const a = await identity(); const b = await identity(); const z = await identity();
   const l = ledger({ testOnlyDisableProof: true }); // isolate the public check from the development MAC
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(517660873775n));
   const tx = prepared(l, a, b.accountId, 100n);
   // z signs a's spend (sender = a): z's key does not hash to a's account.
   const zSigned = { ...tx, senderAuth: signSenderAuth(tx, z.secret, z.salt) };
@@ -217,7 +218,7 @@ test("owner binding: a note owned by an address whose key does not match the sig
 test("owner binding: a forged spend-key registry entry no longer matters", async () => {
   const a = await identity(); const b = await identity(); const z = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(383163233327n));
   const tx = prepared(l, a, b.accountId, 100n);
   const zSigned = { ...tx, senderAuth: signSenderAuth(tx, z.secret, z.salt) };
   // A registry mapping a's account to z's key, planted on the node object, is ignored.
@@ -238,7 +239,7 @@ test("owner binding: a forged spend-key registry entry no longer matters", async
 test("restore: a key/owner mismatch in committed history or a non-key-derived note owner is rejected", async () => {
   const a = await identity(); const b = await identity(); const z = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 1_000n);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(548468753455n));
   const tx = prepared(l, a, b.accountId, 100n);
   assert.equal(code(l.submit(tx, a)), "OK");
   const snap = l.snapshot();

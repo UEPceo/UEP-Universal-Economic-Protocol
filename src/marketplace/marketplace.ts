@@ -1,3 +1,5 @@
+import { builtinContracts, assertCategoryContract, type CategoryContract } from "../category/contract.ts";
+import { ServiceEventBus, type ServiceEventType } from "./events.ts";
 /**
  * UEP Digital Services Marketplace v0.1
  *
@@ -29,7 +31,7 @@ import { NestedAmountMap, tupleKey } from "../core/composite-key.ts";
 import { findAsset, resolveAssetIdAlias } from "../core/assets.ts";
 import { HEIGHTS_PER_DAY, REFERENCE_BLOCK_TIME_MS, TransitionClock, type HeightSource, type TimeUnit } from "../core/height.ts";
 import { domainProfile, isDomainProfileId, DEFAULT_DOMAIN_PROFILE, type DomainProfileId } from "../core/domain-profiles.ts";
-import { EvidenceCaps, evidenceCapsView, type EvidenceCapsConfig, type EvidenceCapsView, type ListingEvidencePolicy } from "./evidence.ts";
+import { EvidenceCaps, evidenceCapsView, verifyEvidenceStatement, type EvidenceCapsConfig, type EvidenceCapsView, type EvidenceStatement, type ListingEvidencePolicy } from "./evidence.ts";
 import { looksLikeLegacyMs } from "../core/deprecation.ts";
 import { SettlementEngine } from "../settlement/engine.ts";
 import type { PayoutInstruction, SettlementLedgerPort, SettlementOutcome, SettlementReceipt } from "../settlement/types.ts";
@@ -109,7 +111,8 @@ export type CategoryServiceHooks = {
 /** Capability returned to the category service: read orders of its own category only. */
 export type CategoryServiceAccess = { readOrder(orderId: string): ServiceOrder };
 
-export type ServiceCategory = "COMPUTE" | "STORAGE" | "API" | "DATA" | "IOT_M2M";
+/** Built-ins plus any id registered with registerCategoryContract. */
+export type ServiceCategory = string;
 export type OrderStatus = "ACCEPTED" | "HELD" | "DELIVERED" | "DISPUTED" | "SETTLED" | "REFUNDED" | "CANCELLED" | "EXPIRED";
 
 /**
@@ -433,7 +436,9 @@ export type MarketplaceConfig = {
   evidence?: EvidenceCapsConfig;
 };
 
-export type RegisteredIdentity = { identityId: string; publicKeyHex: string; registeredAt: number };
+export type IdentityKind = "human" | "machine" | "service" | "provider" | "node";
+export type IdentityStatus = "active" | "suspended" | "revoked";
+export type RegisteredIdentity = { identityId: string; publicKeyHex: string; registeredAt: number; kind: IdentityKind; status: IdentityStatus };
 
 export type ValueAccounting = {
   asset: string;
@@ -530,9 +535,10 @@ export const MARKETPLACE_STATE_FIELDS = Object.freeze([
   "listingIndex", "fingerprintIndex", "similarityIndex", "reservationQueue", "activeReservationsByIdentity", "usedCreditIds",
   "identities", "identityKeys", "accounts", "locked", "credited", "feesCollected", "gasCollected", "unfundedByIdentityListing",
   "categoryHolds", "categoryHeldTotals", "treasuryTransfers", "subsidiesPaid", "listingBonds", "listingBondTotals", "openBondedOrders",
+  "categoryContracts",
 ] as const);
 /** Map / Set fields deliberately not persisted (runtime capabilities or configuration). */
-export const MARKETPLACE_RUNTIME_ONLY_FIELDS = Object.freeze(["categoryServices", "issuedCategoryPorts", "minReservationDepositByAsset"] as const);
+export const MARKETPLACE_RUNTIME_ONLY_FIELDS = Object.freeze(["categoryServices", "issuedCategoryPorts", "minReservationDepositByAsset", "ordersByBuyer", "events"] as const);
 const TREASURY_STATE_FIELDS = Object.freeze(["balancesByAsset", "entries", "withdrawals", "settledOrders", "withdrawnRefs", "transferRefs", "dripBudget", "dripAllocationRefs"]);
 const REPUTATION_STATE_FIELDS = Object.freeze(["events", "ratedOrders"]);
 const PAYMASTER_STATE_FIELDS = Object.freeze(["reserves", "sponsored", "captured", "outstanding", "actorOutstanding", "expiryHeap", "receipts"]);
@@ -580,6 +586,12 @@ function freezeOrderTerms(order: ServiceOrder): void {
   Object.defineProperty(order, "domainProfile", { enumerable: true, writable: false, configurable: false });
 }
 
+const evidenceStatementsOf = new WeakMap<object, Map<string, { dataHash: string; observedHeight: number; sourceId: string }>>();
+function statements(owner: object): Map<string, { dataHash: string; observedHeight: number; sourceId: string }> {
+  let map = evidenceStatementsOf.get(owner);
+  if (!map) { map = new Map(); evidenceStatementsOf.set(owner, map); }
+  return map;
+}
 export class DigitalServicesMarketplace {
   readonly version = MARKETPLACE_VERSION;
   readonly treasury: MarketplaceTreasury;
@@ -591,6 +603,8 @@ export class DigitalServicesMarketplace {
   #anchorSigningKey: PrivateKeyLike;
   private readonly listings = new Map<string, ServiceListing>();
   private readonly orders = new Map<string, ServiceOrder>();
+  /** v0.5.4: buyer -> order ids. orderId itself stays the primary Map key. */
+  private readonly ordersByBuyer = new Map<string, Set<string>>();
   private readonly held = new NestedAmountMap();
   private readonly settlements = new Map<string, SettlementRecord>();
   readonly reputation: MarketplaceReputation;
@@ -637,6 +651,7 @@ export class DigitalServicesMarketplace {
   readonly disputeTimeoutOutcome: "REFUND_BUYER" | "RELEASE";
   readonly readAuthorizationTtlMs: number;
   private readonly categoryServices = new Map<ServiceCategory, CategoryServiceHooks>();
+  private readonly categoryContracts = new Map<string, CategoryContract>();
   /** Fixed per-order deposit if configured; otherwise the bps-based default applies. */
   readonly fixedReservationDeposit?: bigint;
   readonly reservationDepositBps: number;
@@ -661,6 +676,7 @@ export class DigitalServicesMarketplace {
   /** NODE_ENV=production at construction (configuration time; never read inside a transition). */
   readonly #productionConfigured: boolean = isProductionEnvironment();
   private readonly usedCreditIds = new Set<string>();
+  readonly events = new ServiceEventBus();
   private readonly identities = new Map<string, RegisteredIdentity>();
   private readonly identityKeys = new Map<string, KeyObject>();
   /** v0.4.7: balances are indexed by asset, then identity (structural keys). */
@@ -761,6 +777,7 @@ export class DigitalServicesMarketplace {
     if (!Number.isSafeInteger(this.maxUnfundedReservationsPerListing) || this.maxUnfundedReservationsPerListing < 1) throw new Error("INVALID_RESERVATION_LIMIT");
     this.settlementEngine = new SettlementEngine({ treasury: this.treasury, paymaster: this.paymaster, height: () => this.now(), networkId: this.ledgerNetworkId });
     this.#evidence = new EvidenceCaps(config.evidence);
+    for (const contract of builtinContracts()) { this.categoryContracts.set(contract.categoryId, contract); this.categoryContracts.set(contract.categoryId.toLowerCase(), contract); }
     this.evidenceCaps = evidenceCapsView(this.#evidence);
   }
 
@@ -827,7 +844,18 @@ export class DigitalServicesMarketplace {
    * Register an identity's Ed25519 public key. Only registered identities can
    * reserve or receive testnet credits. Registration is first-come and immutable.
    */
-  registerIdentity(identityId: string, publicKey: PublicKeyLike): RegisteredIdentity {
+
+  /** Phase 2.5: admin sets active, suspended or revoked. A non-active identity cannot sign a new action. */
+  setIdentityStatus(identityId: string, status: IdentityStatus, auth: ActorAuth): RegisteredIdentity {
+    if (status !== "active" && status !== "suspended" && status !== "revoked") throw new Error("IDENTITY_STATUS_INVALID");
+    const actor = this.authenticateActor(auth, "identity-status", identityId, { status });
+    if (!this.isAdmin(actor)) throw new Error("IDENTITY_STATUS_NOT_AUTHORIZED");
+    const record = this.identities.get(identityId);
+    if (!record) throw new Error("IDENTITY_NOT_REGISTERED");
+    record.status = status;
+    return { ...record };
+  }
+  registerIdentity(identityId: string, publicKey: PublicKeyLike, kind: IdentityKind = "human"): RegisteredIdentity {
     if (!identityId || typeof identityId !== "string") throw new Error("IDENTITY_ID_REQUIRED");
     // v0.4.7: bounded length, no control characters.
     if (identityId.length > MAX_IDENTITY_ID_LENGTH || /[\u0000-\u001f\u007f-\u009f]/.test(identityId)) throw new Error("IDENTITY_ID_INVALID");
@@ -838,7 +866,8 @@ export class DigitalServicesMarketplace {
     // v0.4.5: an identity named by a ledger address must hold the key the address commits to.
     const account = this.addressIdentityAccount(identityId);
     if (account && !spendKeyMatchesAccount(keyObject, account)) throw new Error("IDENTITY_ADDRESS_KEY_MISMATCH: the public key does not match the key committed to by this address");
-    const record: RegisteredIdentity = { identityId, publicKeyHex: publicKeyHexOf(keyObject), registeredAt: this.now() };
+    if (!["human", "machine", "service", "provider", "node"].includes(kind)) throw new Error("IDENTITY_KIND_INVALID");
+    const record: RegisteredIdentity = { identityId, publicKeyHex: publicKeyHexOf(keyObject), registeredAt: this.now(), kind, status: "active" };
     this.identities.set(identityId, record);
     this.identityKeys.set(identityId, keyObject);
     return { ...record };
@@ -866,16 +895,46 @@ export class DigitalServicesMarketplace {
     return this.identities.has(identityId);
   }
 
+  identitiesSize(): number {
+    return this.identities.size;
+  }
+
+  hasUsedCredit(id: string): boolean {
+    return this.usedCreditIds.has(id);
+  }
+
+  rememberCredit(id: string): void {
+    this.usedCreditIds.add(id);
+  }
+
   registeredIdentity(identityId: string): RegisteredIdentity {
     const record = this.identities.get(identityId);
     if (!record) throw new Error("IDENTITY_NOT_REGISTERED");
-    return { ...record };
+    return { ...record, kind: record.kind ?? "human", status: record.status ?? "active" };
   }
 
   /**
    * Testnet funding rail: credit external value to a registered identity's
    * marketplace account. Production custody / payment rails remain external.
    */
+
+  private emitOrder(orderId: string, type: ServiceEventType): void {
+    this.events.emit(type, orderId, this.now());
+  }
+
+  /** Phase 2.3: accept a k-of-n statement. The published bytes stay outside. */
+  submitEvidence(orderId: string, statement: EvidenceStatement): void {
+    const order = this.order(orderId);
+    if (statement.orderId !== orderId) throw new Error("EVIDENCE_ORDER_MISMATCH");
+    const policy = this.listing(order.listingId).evidencePolicy;
+    if (!policy) throw new Error("EVIDENCE_NOT_REQUIRED");
+    if (statement.attesterSetId !== policy.attesterSetId) throw new Error("EVIDENCE_SET_MISMATCH");
+    if (statement.observedHeight > this.now()) throw new Error("EVIDENCE_FUTURE");
+    verifyEvidenceStatement(statement, this.#evidence.attesterSet(policy.attesterSetId));
+    const prev = statements(this).get(orderId);
+    if (prev && prev.dataHash !== statement.dataHash) throw new Error("EVIDENCE_CONFLICT");
+    statements(this).set(orderId, { dataHash: statement.dataHash, observedHeight: statement.observedHeight, sourceId: statement.sourceId });
+  }
   creditAccount(identityId: string, signedAsset: string, amount: bigint, authorization?: { creditId: string; auth: ActorAuth }): bigint {
     if (!this.identities.has(identityId)) throw new Error("IDENTITY_NOT_REGISTERED");
     if (!signedAsset) throw new Error("ASSET_REQUIRED");
@@ -893,6 +952,56 @@ export class DigitalServicesMarketplace {
     this.accounts.add(asset, identityId, amount);
     this.add(this.credited, asset, amount);
     return this.availableBalance(asset, identityId);
+  }
+
+  /**
+   * Bridge debit. Same authorization as creditAccount: administrator signature,
+   * one id, stored in usedCreditIds under `debit:` so a format-4 snapshot
+   * already persists it. Decrements credited so valueAccounting stays closed.
+   * Not a treasury withdrawal record.
+   */
+  debitAccount(identityId: string, signedAsset: string, amount: bigint, authorization?: { debitId: string; auth: ActorAuth }): bigint {
+    if (!this.identities.has(identityId)) throw new Error("IDENTITY_NOT_REGISTERED");
+    if (!signedAsset) throw new Error("ASSET_REQUIRED");
+    const asset = resolveAssetIdAlias(signedAsset);
+    this.assertAsset(asset);
+    if (amount <= 0n) throw new Error("INVALID_DEBIT_AMOUNT");
+    if (this.requireSignedCredits) {
+      if (!authorization || typeof authorization.debitId !== "string" || !authorization.debitId) throw new Error("DEBIT_AUTHORIZATION_REQUIRED");
+      const actor = this.authenticateActor(authorization.auth, "credit", identityId, { asset: signedAsset, amount, creditId: authorization.debitId });
+      if (!this.isAdmin(actor)) throw new Error("DEBIT_NOT_AUTHORIZED");
+      const id = `debit:${authorization.debitId}`;
+      if (this.usedCreditIds.has(id)) throw new Error("DEBIT_REPLAY");
+      this.usedCreditIds.add(id);
+    }
+    if (this.availableBalance(asset, identityId) < amount) throw new Error("INSUFFICIENT_FUNDS");
+    this.accounts.add(asset, identityId, -amount);
+    this.add(this.credited, asset, -amount);
+    return this.availableBalance(asset, identityId);
+  }
+
+  /**
+   * Move captured paymaster gas into treasuryTransfers. Conservation holds
+   * (both terms are on the same side). The value bridge then spends the
+   * matching custody note to the ledger treasury. Replay id is `gas:`.
+   */
+  consumeGas(signedAsset: string, amount: bigint, authorization?: { ref: string; auth: ActorAuth }): bigint {
+    if (!signedAsset) throw new Error("ASSET_REQUIRED");
+    const asset = resolveAssetIdAlias(signedAsset);
+    this.assertAsset(asset);
+    if (amount <= 0n) throw new Error("INVALID_GAS_AMOUNT");
+    if (this.requireSignedCredits) {
+      if (!authorization || typeof authorization.ref !== "string" || !authorization.ref) throw new Error("GAS_AUTHORIZATION_REQUIRED");
+      const actor = this.authenticateActor(authorization.auth, "credit", this.adminIdentity ?? "", { asset: signedAsset, amount, creditId: authorization.ref });
+      if (!this.isAdmin(actor)) throw new Error("GAS_NOT_AUTHORIZED");
+      const id = `gas:${authorization.ref}`;
+      if (this.usedCreditIds.has(id)) throw new Error("GAS_REPLAY");
+      this.usedCreditIds.add(id);
+    }
+    if ((this.gasCollected.get(asset) ?? 0n) < amount) throw new Error("INSUFFICIENT_GAS");
+    this.add(this.gasCollected, asset, -amount);
+    this.add(this.treasuryTransfers, asset, amount);
+    return this.gasCollected.get(asset) ?? 0n;
   }
 
   /**
@@ -932,7 +1041,7 @@ export class DigitalServicesMarketplace {
     return {
       stateVersion: MARKETPLACE_STATE_VERSION,
       config: this.stateConfig(),
-      marketplace: captureFields(this, MARKETPLACE_STATE_FIELDS),
+      marketplace: { ...captureFields(this, MARKETPLACE_STATE_FIELDS), evidenceStatements: encodeStateValue(statements(this)) },
       treasury: captureFields(this.treasury, TREASURY_STATE_FIELDS),
       reputation: captureFields(this.reputation, REPUTATION_STATE_FIELDS),
       paymaster: this.paymaster ? captureFields(this.paymaster, PAYMASTER_STATE_FIELDS) : null,
@@ -952,6 +1061,9 @@ export class DigitalServicesMarketplace {
     if (this.now() < snapshotHeight) throw new Error("MARKETPLACE_SNAPSHOT_HEIGHT_REGRESSED: the Marketplace clock is behind the snapshot height");
     if ((state.paymaster === null) !== (this.paymaster === undefined)) throw new Error("MARKETPLACE_SNAPSHOT_CONFIG_MISMATCH: paymaster");
     restoreFields(this, MARKETPLACE_STATE_FIELDS, state.marketplace);
+    const savedStatements = (state.marketplace as { evidenceStatements?: { $m?: [string, { dataHash: string; observedHeight: number; sourceId: string }][] } }).evidenceStatements;
+    if (savedStatements?.$m) for (const [id, value] of savedStatements.$m) statements(this).set(id, value);
+    for (const contract of builtinContracts()) { this.categoryContracts.set(contract.categoryId, contract); this.categoryContracts.set(contract.categoryId.toLowerCase(), contract); }
     restoreFields(this.treasury, TREASURY_STATE_FIELDS, state.treasury);
     restoreFields(this.reputation, REPUTATION_STATE_FIELDS, state.reputation);
     if (this.paymaster && state.paymaster) restoreFields(this.paymaster, PAYMASTER_STATE_FIELDS, state.paymaster);
@@ -960,8 +1072,12 @@ export class DigitalServicesMarketplace {
     // Re-apply the immutability of published terms and order windows (as at publish / reserve).
     for (const listing of this.listings.values()) freezeListingTerms(listing);
     for (const order of this.orders.values()) freezeOrderTerms(order);
+    // Derived index (not persisted): rebuild the buyer -> orders index from the restored orders.
+    this.ordersByBuyer.clear();
+    for (const order of this.orders.values()) this.indexOrder(order);
     // The restored balances must conserve value per asset.
     for (const asset of this.credited.keys()) if (!this.valueAccounting(asset).conserved) throw new Error(`MARKETPLACE_SNAPSHOT_STATE_INCONSISTENT: value not conserved for ${asset}`);
+    for (const listing of this.listings.values()) if (!this.capacityAccounting(listing.listingId).conserved) throw new Error(`MARKETPLACE_SNAPSHOT_STATE_INCONSISTENT: capacity not conserved for ${listing.listingId}`);
   }
 
   /** v0.5.3: public keys that sign this instance's snapshots (the default restore trust). */
@@ -1077,6 +1193,7 @@ export class DigitalServicesMarketplace {
    */
   publishListing(input: ListingInput, auth?: ActorAuth): ServiceListing {
     if (!input.providerId || !input.title || !input.asset) throw new Error("LISTING_METADATA_REQUIRED");
+    if (!this.categoryContracts.has(input.category) && !this.categoryContracts.has(input.category.toUpperCase())) throw new Error("CATEGORY_UNKNOWN");
     // v0.5.0 compatibility: a pre-v0.5.0 ledger asset id is stored under its namespaced id; the signature covers the terms as signed.
     const signedTerms = listingTerms(input);
     input = { ...input, asset: resolveAssetIdAlias(input.asset) };
@@ -1302,6 +1419,8 @@ export class DigitalServicesMarketplace {
     // v0.5.1: the contract windows of an order are fixed at reserve() (not writable, frozen); v0.5.3: so is its domain profile.
     freezeOrderTerms(order);
     this.orders.set(orderId, order);
+    this.emitOrder(orderId, "order.accepted");
+    this.indexOrder(order);
     this.activeReservationsByIdentity.set(input.buyerId, activeReservations + 1);
     this.adjustUnfunded(order, 1);
     this.enqueueReservation(order);
@@ -1313,6 +1432,7 @@ export class DigitalServicesMarketplace {
         listing.available += input.quantity;
         this.locked.add(listing.asset, input.buyerId, -deposit);
         this.accounts.add(listing.asset, input.buyerId, deposit);
+        this.unindexOrder(order);
         this.orders.delete(orderId);
         this.removeQueuedReservation(order);
         this.decrementActiveReservation(input.buyerId);
@@ -1391,6 +1511,7 @@ export class DigitalServicesMarketplace {
     order.depositOutcome = "APPLIED_TO_PAYMENT";
     this.adjustUnfunded(order, -1);
     order.status = "HELD";
+    this.emitOrder(order.orderId, "order.held");
     order.updatedAt = this.now();
     order.version++;
     if (idempotencyKey) this.recordOperation(orderId, tupleKey("fund", idempotencyKey), tupleKey(orderId, amount.toString()));
@@ -1421,6 +1542,7 @@ export class DigitalServicesMarketplace {
     if (order.gasFee && order.gasFee > 0n && order.gasQuoteId && this.paymaster) this.paymaster.pin(order.orderId, order.gasQuoteId);
     order.deliveryHash = hash;
     order.status = "DELIVERED";
+    this.emitOrder(order.orderId, "order.delivered");
     order.deliveredAt = this.now();
     order.updatedAt = order.deliveredAt;
     order.version++;
@@ -1495,6 +1617,7 @@ export class DigitalServicesMarketplace {
     const now = this.now();
     if (now >= (order.deliveredAt ?? order.updatedAt) + order.windows.deliveryDisputeWindow) throw new Error("DISPUTE_WINDOW_CLOSED");
     order.status = "DISPUTED";
+    this.emitOrder(order.orderId, "order.disputed");
     order.disputedAt = now;
     order.disputeReasonHash = reasonHash;
     order.disputeDeadline = now + order.windows.disputeResolutionWindow;
@@ -1588,6 +1711,22 @@ export class DigitalServicesMarketplace {
    * Read one order ("read" signature with `issuedAt`). Allowed for the buyer,
    * the provider, the administrator, and the arbiter once a dispute was opened.
    */
+
+  private indexOrder(order: ServiceOrder): void {
+    let set = this.ordersByBuyer.get(order.buyerId);
+    if (!set) { set = new Set(); this.ordersByBuyer.set(order.buyerId, set); }
+    set.add(order.orderId);
+  }
+
+  private unindexOrder(order: ServiceOrder): void {
+    this.ordersByBuyer.get(order.buyerId)?.delete(order.orderId);
+  }
+
+  /** O(1) order-id lookup (primary index) plus the buyer secondary index. */
+  orderIdsOf(buyerId: string): string[] {
+    return [...(this.ordersByBuyer.get(buyerId) ?? [])];
+  }
+
   getOrder(orderId: string, auth: ActorAuth | undefined): ServiceOrder {
     const actor = this.authenticateRead(auth, "read", orderId);
     const order = this.order(orderId);
@@ -1640,6 +1779,21 @@ export class DigitalServicesMarketplace {
    * gets a capability to read orders of that category only, and may install a
    * settlement guard for the normal release path.
    */
+
+  /** Phase 2.4: add a category without editing the Marketplace. Before any listing of that id. */
+  registerCategoryContract(contract: CategoryContract): CategoryContract {
+    const checked = assertCategoryContract(contract);
+    if (this.categoryContracts.has(checked.categoryId)) throw new Error("CATEGORY_ALREADY_REGISTERED");
+    for (const listing of this.listings.values()) if (listing.category === checked.categoryId) throw new Error("CATEGORY_SERVICE_IN_USE");
+    this.categoryContracts.set(checked.categoryId, checked);
+    return checked;
+  }
+
+  categoryContract(categoryId: string): CategoryContract {
+    const found = this.categoryContracts.get(categoryId);
+    if (!found) throw new Error("CATEGORY_UNKNOWN");
+    return found;
+  }
   attachCategoryService(category: ServiceCategory, hooks: CategoryServiceHooks = {}): CategoryServiceAccess {
     if (this.categoryServices.has(category)) throw new Error("CATEGORY_SERVICE_ALREADY_ATTACHED");
     // Hooks change how orders of the category settle, so they must be in place before the
@@ -1670,7 +1824,14 @@ export class DigitalServicesMarketplace {
   private runSettlementGuard(order: ServiceOrder): void {
     // v0.5.1 (ADR 0002 rule 6): an evidence-gated release never moves more than the per-contract cap.
     const policy = this.listing(order.listingId).evidencePolicy;
-    if (policy) this.#evidence.checkSettlement(policy, order.grossAmount + (order.gasFee ?? 0n));
+    if (policy) {
+      this.#evidence.checkSettlement(policy, order.grossAmount + (order.gasFee ?? 0n));
+      const statement = statements(this).get(order.orderId);
+      if (!statement) throw new Error("EVIDENCE_REQUIRED");
+      if (order.deliveryHash && statement.dataHash !== order.deliveryHash) throw new Error("EVIDENCE_DELIVERY_MISMATCH");
+      const listing = this.listing(order.listingId);
+      if (statement.observedHeight + listing.delayHeights > this.now()) throw new Error("EVIDENCE_CONJUNCTION_LOCK");
+    }
     const category = this.listing(order.listingId).category;
     const hooks = this.categoryServices.get(category);
     // IoT / M2M orders settle only against verified telemetry: no attached IoT service, no normal release.
@@ -1813,6 +1974,7 @@ export class DigitalServicesMarketplace {
     order.providerPayout = providerNet;
     order.buyerRefund = buyerRefund;
     order.status = providerAmount > 0n ? "SETTLED" : "REFUNDED";
+    this.emitOrder(order.orderId, order.status === "SETTLED" ? "order.settled" : "order.refunded");
     if (disputeOutcome || order.disputedAt !== undefined) order.disputeOutcome = disputeOutcome ?? outcome;
     order.updatedAt = this.now();
     order.settlementReceiptHash = receipt.receiptHash;
@@ -1907,6 +2069,8 @@ export class DigitalServicesMarketplace {
     const publicKey = auth.actorId === this.adminIdentity ? this.adminKey : auth.actorId === this.settlementArbiterId ? this.arbiterKey : this.identityKeys.get(auth.actorId);
     if (!publicKey) throw new Error(auth.actorId === this.adminIdentity ? "ADMIN_NOT_CONFIGURED" : "IDENTITY_NOT_REGISTERED");
     if (!verifyEd25519(actionMessage({ marketplaceId: this.marketplaceId, action, actorId: auth.actorId, target, details }), auth.signature, publicKey)) throw new Error("ACTOR_SIGNATURE_INVALID");
+    const record = this.identities.get(auth.actorId);
+    if (record && (record.status ?? "active") !== "active" && action !== "identity-status") throw new Error("IDENTITY_NOT_ACTIVE");
     if (auth.actorId === this.adminIdentity && this.adminAuthorizer && !this.adminAuthorizer(auth.actorId)) throw new Error("ADMIN_NOT_AUTHORIZED");
     return auth.actorId;
   }
@@ -2300,6 +2464,7 @@ export class DigitalServicesMarketplace {
       this.orderTombstones.set(orderId, { orderId, listingId: order.listingId, buyerId: order.buyerId, providerId: order.providerId, status: order.status, closedAt: at, settlementReceiptHash: order.settlementReceiptHash ?? null });
       const consumed = order.capacityConsumed ?? 0n;
       if (consumed > 0n) this.prunedCapacityConsumed.set(order.listingId, (this.prunedCapacityConsumed.get(order.listingId) ?? 0n) + consumed);
+      this.unindexOrder(order);
       this.orders.delete(orderId);
       this.settlements.delete(orderId);
       this.operationIdempotency.delete(orderId);

@@ -1,3 +1,4 @@
+import { clientBlinding } from "../core/client-note.ts";
 /**
  * v0.4.7 multi-asset ledger: canonical asset ids, per-asset conservation
  * through snapshot / restore / restoreChain, asset isolation of every spend,
@@ -86,9 +87,9 @@ test("asset ids: registries are canonical and their field encodings are distinct
 test("asset ids: unregistered or non-canonical assets are refused by faucet and prepareSpend", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
-  assert.throws(() => l.faucet(a.accountId, "uep-test/unregistered", 10n), /Unknown TESTNET asset/);
-  assert.throws(() => l.faucet(a.accountId, "\u0000uep-test/teur", 10n), /Unknown TESTNET asset/);
-  l.faucet(a.accountId, EUR, 1_000n);
+  assert.throws(() => l.faucet(a.accountId, "uep-test/unregistered", 10n, clientBlinding(299890598959n)), /Unknown TESTNET asset/);
+  assert.throws(() => l.faucet(a.accountId, "\u0000uep-test/teur", 10n, clientBlinding(180738622511n)), /Unknown TESTNET asset/);
+  l.faucet(a.accountId, EUR, 1_000n, clientBlinding(408052085807n));
   assert.equal(code(l.prepareSpend(a, b.accountId, "\u0000uep-test/teur", 10n)), "ASSET_MISMATCH");
   assert.equal(code(l.prepareSpend(a, b.accountId, "uep-global/eur", 10n)), "ASSET_MISMATCH");
 });
@@ -99,7 +100,7 @@ test("conservation: random spends over 4 assets and 4 accounts conserve every as
   const ids = await Promise.all([0, 1, 2, 3].map(() => identity()));
   const l = ledger();
   relaxPolicy(l);
-  for (const id of ids) for (const a of ASSETS) for (let k = 0; k < 6; k++) l.faucet(id.accountId, a, 15_000n);
+  for (const id of ids) for (const a of ASSETS) for (let k = 0; k < 6; k++) l.faucet(id.accountId, a, 15_000n, clientBlinding(379715265583n + BigInt(k) + BigInt(ids.indexOf(id)) * 10n + BigInt(ASSETS.indexOf(a)) * 100n));
   let seed = 11;
   const rnd = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return (seed >>> 8) % n; };
   const snaps: UepLedgerSnapshot[] = [];
@@ -141,8 +142,8 @@ test("conservation: random spends over 4 assets and 4 accounts conserve every as
 test("isolation: a relabelled asset, an input note of another asset and an output in another asset are rejected", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 10_000n);
-  l.faucet(a.accountId, BTC, 10_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(673462326319n));
+  l.faucet(a.accountId, BTC, 10_000n, clientBlinding(865708930095n));
   const tx = spend(l, a, b.accountId, EUR, 1_000n);
   // tx asset relabelled to another registered asset
   assert.equal(code(l.submit({ ...tx, assetId: fr(BTC) }, a)), "ASSET_MISMATCH");
@@ -167,11 +168,11 @@ test("isolation: a relabelled asset, an input note of another asset and an outpu
 test("issuance: restore rejects mints and notes of assets that are not registered", async () => {
   const a = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 10n);
+  l.faucet(a.accountId, EUR, 10n, clientBlinding(586416301103n));
   injectMint(l, a.accountId, fr("uep-test/unregistered"), 5_000n, FAUCET_KEY.privateKey);
   assert.throws(() => UepLedger.restore(structuredClone(l.snapshot()), TRUST), /INVALID_SNAPSHOT_(NOTE|MINT)_ASSET/);
   const l2 = ledger();
-  l2.faucet(a.accountId, EUR, 10n);
+  l2.faucet(a.accountId, EUR, 10n, clientBlinding(355402716207n));
   injectMint(l2, a.accountId, fr("uep-global/eur"), 5_000n, FAUCET_KEY.privateKey);
   assert.throws(() => UepLedger.restore(structuredClone(l2.snapshot()), TRUST), /INVALID_SNAPSHOT_(NOTE|MINT)_ASSET/);
 });
@@ -181,8 +182,8 @@ test("issuance: a per-asset issuer key is the only key that mints its asset", as
   const BTC_ISSUER = generateEd25519KeyPair();
   const l = ledger({ issuerSigningKeys: { [BTC]: BTC_ISSUER.privateKey } });
   assert.deepEqual(l.issuerPublicKeys(), { [BTC]: BTC_ISSUER.publicKeyHex });
-  l.faucet(a.accountId, EUR, 100n);
-  l.faucet(a.accountId, BTC, 100n);
+  l.faucet(a.accountId, EUR, 100n, clientBlinding(582716179503n));
+  l.faucet(a.accountId, BTC, 100n, clientBlinding(774962783279n));
   const scoped: SnapshotTrust = { ...TRUST, issuerKeys: [{ publicKey: BTC_ISSUER.publicKeyHex, assetIds: [BTC] }] };
   const snap = l.snapshot();
   const r = UepLedger.restore(structuredClone(snap), scoped);
@@ -191,12 +192,12 @@ test("issuance: a per-asset issuer key is the only key that mints its asset", as
   assert.throws(() => UepLedger.restore(structuredClone(snap), TRUST), /INVALID_SNAPSHOT_MINT_SIGNATURE/);
   // A BTC mint signed by the general faucet key is refused once BTC has a scoped issuer.
   const l2 = ledger({ issuerSigningKeys: { [BTC]: BTC_ISSUER.privateKey } });
-  l2.faucet(a.accountId, BTC, 100n);
+  l2.faucet(a.accountId, BTC, 100n, clientBlinding(810029642799n));
   injectMint(l2, a.accountId, fr(BTC), 1_000n, FAUCET_KEY.privateKey);
   assert.throws(() => UepLedger.restore(structuredClone(l2.snapshot()), scoped), /INVALID_SNAPSHOT_MINT_SIGNATURE/);
   // The BTC issuer cannot mint EUR.
   const l3 = ledger();
-  l3.faucet(a.accountId, EUR, 100n);
+  l3.faucet(a.accountId, EUR, 100n, clientBlinding(771262661679n));
   injectMint(l3, a.accountId, fr(EUR), 1_000n, BTC_ISSUER.privateKey);
   assert.throws(() => UepLedger.restore(structuredClone(l3.snapshot()), scoped), /INVALID_SNAPSHOT_MINT_SIGNATURE/);
   // Issuer keys must be distinct from snapshot authority keys, and trusted when handed to a restored node.
@@ -204,7 +205,7 @@ test("issuance: a per-asset issuer key is the only key that mints its asset", as
   assert.throws(() => ledger({ issuerSigningKeys: { "uep-test/nope": BTC_ISSUER.privateKey } }), /ISSUER_ASSET_UNKNOWN/);
   assert.throws(() => UepLedger.restore(structuredClone(snap), scoped, { issuerSigningKeys: { [EUR]: BTC_ISSUER.privateKey } }), /ISSUER_KEY_NOT_TRUSTED/);
   const resumed = UepLedger.restore(structuredClone(snap), scoped, { snapshotSigningKeys: [SNAPSHOT_KEY.privateKey], faucetSigningKey: FAUCET_KEY.privateKey, issuerSigningKeys: { [BTC]: BTC_ISSUER.privateKey } });
-  resumed.faucet(a.accountId, BTC, 1n);
+  resumed.faucet(a.accountId, BTC, 1n, clientBlinding(267617477679n));
   assert.equal(resumed.balanceOf(a.accountId, fr(BTC)), 101n);
   assert.throws(() => UepLedger.restore(structuredClone(snap), { ...scoped, issuerKeys: [{ publicKey: SNAPSHOT_KEY.publicKeyHex, assetIds: [BTC] }] }), /INVALID_SNAPSHOT_TRUST/);
 });
@@ -213,12 +214,12 @@ test("issuance: rotation and revocation of a mint key take effect from a mint in
   const a = await identity();
   const NEXT = generateEd25519KeyPair();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 10n); // mint 0, faucet key
-  l.faucet(a.accountId, EUR, 20n); // mint 1, faucet key
+  l.faucet(a.accountId, EUR, 10n, clientBlinding(302684337199n)); // mint 0, faucet key
+  l.faucet(a.accountId, EUR, 20n, clientBlinding(494930940975n)); // mint 1, faucet key
   const before = l.snapshot();
   l.setIssuerSigningKey(EUR, NEXT.privateKey); // rotation at mint index 2
-  l.faucet(a.accountId, EUR, 30n); // mint 2, new key
-  l.faucet(a.accountId, BTC, 40n); // mint 3, faucet key (BTC not rotated)
+  l.faucet(a.accountId, EUR, 30n, clientBlinding(376518177839n)); // mint 2, new key
+  l.faucet(a.accountId, BTC, 40n, clientBlinding(568764781615n)); // mint 3, faucet key (BTC not rotated)
   const after = l.snapshot();
   const rotated: SnapshotTrust = {
     ...TRUST,
@@ -265,8 +266,8 @@ test("policy: window volume is tracked per asset and limits can be set per asset
   const l = ledger();
   l.policy.config.maxTransferPerWindow = 2_000n;
   l.policy.setAssetLimits(BTC, { maxTransferPerWindow: 50_000n });
-  l.faucet(a.accountId, EUR, 10_000n);
-  l.faucet(a.accountId, BTC, 100_000n);
+  l.faucet(a.accountId, EUR, 10_000n, clientBlinding(823744861231n));
+  l.faucet(a.accountId, BTC, 100_000n, clientBlinding(15991465007n));
   assert.equal(code(l.submit(spend(l, a, b.accountId, EUR, 1_500n), a)), "OK");
   assert.equal(code(l.submit(spend(l, a, b.accountId, BTC, 40_000n), a)), "OK"); // not blocked by EUR volume
   assert.match((l.prepareSpend(a, b.accountId, EUR, 600n) as { error: { message: string } }).error.message, /WINDOW_VOLUME/);
@@ -300,10 +301,10 @@ test("fees: 0.1% for every asset, registry floor per asset (default 1 unit), exa
 test("payments: a payment no single note covers is paid atomically from several notes", async () => {
   const a = await identity(); const b = await identity();
   const l = ledger();
-  l.faucet(a.accountId, EUR, 600n);
-  l.faucet(a.accountId, EUR, 600n);
-  l.faucet(a.accountId, EUR, 1n);
-  l.faucet(a.accountId, BTC, 5_000n);
+  l.faucet(a.accountId, EUR, 600n, clientBlinding(425300255791n));
+  l.faucet(a.accountId, EUR, 600n, clientBlinding(617546859567n));
+  l.faucet(a.accountId, EUR, 1n, clientBlinding(809793463343n));
+  l.faucet(a.accountId, BTC, 5_000n, clientBlinding(2040067119n));
   assert.equal(code(l.prepareSpend(a, b.accountId, EUR, 1_000n)), "INSUFFICIENT");
   const plan = l.preparePayment(a, b.accountId, EUR, 1_000n);
   assert.ok("txs" in plan);
@@ -330,8 +331,8 @@ test("payments: a payment no single note covers is paid atomically from several 
 test("payments: a batch is all-or-nothing and its parts must share sender, asset and recipient", async () => {
   const a = await identity(); const b = await identity(); const c = await identity();
   const l = ledger();
-  for (const v of [300n, 300n, 300n]) l.faucet(a.accountId, EUR, v);
-  l.faucet(a.accountId, BTC, 1_000n);
+  for (const [i, v] of [300n, 300n, 300n].entries()) l.faucet(a.accountId, EUR, v, clientBlinding(107240645679n + BigInt(i)));
+  l.faucet(a.accountId, BTC, 1_000n, clientBlinding(299487249455n));
   const plan = l.preparePayment(a, b.accountId, EUR, 800n);
   assert.ok("txs" in plan);
   assert.equal(plan.txs.length, 3);
@@ -374,6 +375,6 @@ test("requireProof is fixed at construction and always on after restore", async 
   const t = ledger({ testOnlyDisableProof: true });
   assert.equal(t.requireProof, false);
   const a = await identity();
-  t.faucet(a.accountId, EUR, 10n);
+  t.faucet(a.accountId, EUR, 10n, clientBlinding(785480913967n));
   assert.equal(UepLedger.restore(structuredClone(t.snapshot()), TRUST).requireProof, true);
 });
