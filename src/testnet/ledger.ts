@@ -384,6 +384,7 @@ export function checkSpendShape(tx: UepTransaction, inputs: Note[], outputs: Not
     }
     total += input.amount;
   }
+  if (typeof tx.amount !== "bigint" || typeof tx.fee !== "bigint" || tx.amount <= 0n || tx.fee < 0n) return { code: "AMOUNT_MISMATCH", message: "Amount must be positive and fee non-negative." };
   if (total < tx.amount + tx.fee) return { code: "AMOUNT_MISMATCH", message: "Transaction amount plus fee exceeds the value of the input notes." };
   const change = total - tx.amount - tx.fee;
   const expected: Array<{ owner: Fr; amount: bigint }> = [{ owner: tx.recipientId, amount: tx.amount }];
@@ -1463,6 +1464,8 @@ export class UepLedger {
     if (multi && mode !== "sender-signature") throw new Error("SPEND_MULTI_INPUT_REQUIRES_SENDER_SIGNATURE");
     const total = selected.reduce((t, n) => t + n.amount, 0n);
     const debit = requiredSenderDebit(amount, minFee);
+    // 0.5.82 (Aegis): explicit no-underflow check before computing change.
+    if (amount <= 0n || fee < 0n || total < amount + fee) throw new Error(`FEE_UNDERFLOW: inputs ${total} do not cover amount ${amount} + fee ${fee}`);
     const change = total - amount - fee;
     // Single-note spend: consume the selected note, emit the recipient output
     // (`amount`) plus optional change (`total - amount - fee`). The nullifier is
