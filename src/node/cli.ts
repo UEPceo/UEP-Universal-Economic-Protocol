@@ -2,6 +2,7 @@
  * `npm start` — local reference node. No consensus. Binds 127.0.0.1.
  * UEP_DATA_DIR persists keys and the last signed snapshots so a restart reopens the same ledger.
  */
+import { HeightFloor } from "./height-floor.ts";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
@@ -73,6 +74,9 @@ let ledger = dir && existsSync(join(dir, "ledger.snapshot.json"))
   ? UepLedger.restore(JSON.parse(readFileSync(join(dir, "ledger.snapshot.json"), "utf8"), reviveBigInt), trust, signing)
   : newNodeLedger({ snapshotKey, faucetKey, noteBlindingDomain: blindingDomain });
 
+// 0.5.81 item 4: the ledger read from disk must not be below this node's own persisted height floor.
+if (dir) new HeightFloor(dir).check(ledger, { allowRegression: process.env.UEP_ALLOW_HEIGHT_REGRESSION === "1" });
+
 // Catch up before the node is assembled, so the API, queue, bridge and Marketplace all serve the ledger that was kept.
 let net: PeerNet | undefined;
 let peerLine = "";
@@ -94,6 +98,7 @@ if (net && node.ledger !== net.ledger) throw new Error("LEDGER_SPLIT: the node a
 if (dir) {
   const save = () => {
     writeSecret(join(dir, "ledger.snapshot.json"), JSON.stringify(node.ledger.snapshot(), (_k, v) => typeof v === "bigint" ? { $b: v.toString() } : v));
+    new HeightFloor(dir).record(node.ledger);
     writeSecret(join(dir, "marketplace.snapshot.json"), JSON.stringify(node.marketplace.exportSnapshot(), (_k, v) => typeof v === "bigint" ? v.toString() : v));
   };
   process.on("SIGINT", () => { save(); process.exit(0); });

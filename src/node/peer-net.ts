@@ -11,8 +11,10 @@ import { deserializeTx, serializeTx, txNullifiers, type UepTransaction } from ".
 type WireTx = Parameters<typeof deserializeTx>[0];
 import type { UepLedger } from "../testnet/ledger.ts";
 import { TxQuorum, type QuorumVote } from "./quorum.ts";
-import { BftConsensusKernel, type BftCertificate, type BftProposal, type BftVote } from "./bft-consensus.ts";
+import { BftConsensusKernel, type BftCertificate, type BftProposal, type BftRoundChange, type BftRoundChangeCertificate, type BftVote } from "./bft-consensus.ts";
 import { randomBytes } from "node:crypto";
+import { HeightFloor } from "./height-floor.ts";
+import { BftRoundTimer, type RoundTimerConfig } from "./bft-round-timer.ts";
 import { PEER_ENVELOPE_LIMITS, PeerKeyRegistry, PeerReplayGuard, signPeerEnvelope, type KeyStatement, type PeerEnvelopeV2 } from "./peer-envelope.ts";
 import { CertifiedCommitter, CommitLog, migrateJournalV1, txFromWire, type CommitResult, type CommitStatus, type CommitterOptions } from "./certified-commit.ts";
 
@@ -64,6 +66,12 @@ export class PeerNet {
   private replayGuard?: PeerReplayGuard;
   private keyRegistry?: PeerKeyRegistry;
   private inFlight = 0;
+  /** 0.5.81 item 3: height-based round-change timer and the round changes seen per `height:targetRound`. */
+  private roundTimer = new BftRoundTimer();
+  private readonly roundChanges = new Map<string, Map<string, BftRoundChange>>();
+  private lastTick = 0;
+  /** 0.5.81 item 4: own persisted height floor (only with a state directory). */
+  readonly heightFloor?: HeightFloor;
 
   constructor(id: string, ledger: UepLedger, privateKey: PrivateKeyLike, publicKeyHex: string, peers: Peer[], voters: Map<string, string>, threshold = 2, stateDir?: string) {
     this.id = id;
@@ -78,6 +86,8 @@ export class PeerNet {
       this.statePath = join(stateDir, "quorum-votes.json");
       this.bftJournalPath = join(stateDir, "bft-commit-journal.json");
       this.commitLogPath = join(stateDir, "bft-commit-log.jsonl");
+      this.heightFloor = new HeightFloor(stateDir);
+      this.heightFloor.check(ledger, { allowRegression: process.env.UEP_ALLOW_HEIGHT_REGRESSION === "1" });
       if (existsSync(this.statePath)) {
         const raw = JSON.parse(readFileSync(this.statePath, "utf8"));
         if (raw.version === 1 && raw.payload && raw.signature && raw.signer === this.publicKeyHex) {
@@ -640,9 +650,12 @@ export class PeerNet {
       const { UepLedger } = await import("../testnet/ledger.ts");
       // Item 4 (0.5.81): a peer snapshot may only extend what this node already has. The height floor
       // forbids rollback; the transaction history and every BFT-applied transaction must be a prefix.
-      const next = UepLedger.restore(snap, trust, keys, { minHeight: this.ledger.height });
+      const floor = this.heightFloor?.read()?.height ?? 0;
+      const next = UepLedger.restore(snap, trust, keys, { minHeight: Math.max(this.ledger.height, floor) });
       if (!extendsHistory(this.ledger, next, this.committer)) return false;
+      this.heightFloor?.check(next);
       this.ledger = next;
+      this.heightFloor?.record(next);
       return true;
     } catch {
       return false;

@@ -105,3 +105,38 @@ test("item 4: catchUp accepts a peer snapshot that extends this node's history",
     assert.equal(me.ledger.stateRoot().toHex(), b.stateRoot().toHex());
   } finally { await peer.close(); }
 });
+
+test("item 4: outside BFT mode the node's own persisted height floor refuses an older or forked ledger at start-up and on catch-up", async () => {
+  const { HeightFloor } = await import("./height-floor.ts");
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "uep-floor-"));
+  try {
+    const floor = new HeightFloor(dir);
+    const l = f.fresh(); l.advanceHeight(5); f.pay(l, 100n, 10n);
+    floor.record(l);
+    assert.equal(floor.read()!.height, l.height);
+    const old = f.fresh();
+    assert.throws(() => floor.check(old), /LEDGER_BELOW_HEIGHT_FLOOR/);
+    // Same height, other history: refused.
+    const fork = f.fresh(); fork.advanceHeight(5); f.pay(fork, 999n, 40n);
+    assert.equal(fork.height, l.height);
+    assert.throws(() => floor.check(fork), /LEDGER_ROOT_AT_FLOOR_MISMATCH/);
+    floor.check(l);
+    // The floor never goes down.
+    floor.record(old); assert.equal(floor.read()!.height, l.height);
+    // Explicit operator override is possible and logged.
+    const logs: string[] = [];
+    floor.check(old, { allowRegression: true, log: (m) => logs.push(m) });
+    assert.match(logs[0]!, /overridden by operator/);
+    // PeerNet with this state directory refuses to start on the older ledger.
+    const key = generateEd25519KeyPair();
+    assert.throws(() => new PeerNet("n0", old, key.privateKey, key.publicKeyHex, [], new Map([["n0", key.publicKeyHex]]), 1, dir), /LEDGER_BELOW_HEIGHT_FLOOR/);
+    new PeerNet("n0", l, key.privateKey, key.publicKeyHex, [], new Map([["n0", key.publicKeyHex]]), 1, dir);
+    // A corrupt floor file is an error, not a silent reset.
+    writeFileSync(floor.path, "{\"version\":1,\"height\":-1}");
+    assert.throws(() => floor.read(), /HEIGHT_FLOOR_CORRUPT/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
