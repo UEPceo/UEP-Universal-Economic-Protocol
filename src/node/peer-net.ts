@@ -14,6 +14,7 @@ import { TxQuorum, type QuorumVote } from "./quorum.ts";
 import { BftConsensusKernel, type BftCertificate, type BftProposal, type BftRoundChange, type BftRoundChangeCertificate, type BftVote } from "./bft-consensus.ts";
 import { randomBytes } from "node:crypto";
 import { HeightFloor } from "./height-floor.ts";
+import { EquivocationEvidenceStore, makeEquivocationEvidence, verifyEquivocationEvidence, type EquivocationEvidence } from "./bft-equivocation.ts";
 import { BftRoundTimer, type RoundTimerConfig } from "./bft-round-timer.ts";
 import { PEER_ENVELOPE_LIMITS, PeerKeyRegistry, PeerReplayGuard, signPeerEnvelope, type KeyStatement, type PeerEnvelopeV2 } from "./peer-envelope.ts";
 import { CertifiedCommitter, CommitLog, migrateJournalV1, txFromWire, type CommitResult, type CommitStatus, type CommitterOptions } from "./certified-commit.ts";
@@ -58,6 +59,10 @@ export class PeerNet {
   private committer?: CertifiedCommitter;
   /** Crash-test hook passed to the certified committer. */
   commitFaultInjector?: CommitterOptions["faultInjector"];
+  /** 0.5.83 Block C crash-test hook (after a torn log line reached the disk). */
+  commitAfterTornWrite?: () => void;
+  /** Per-source-IP request limit per minute (default 120). 0.5.83: configurable, because a loopback harness puts every peer behind one IP. */
+  rateMax = RATE_MAX;
   /** 0.5.81 item 9: v1 (unbound, replayable) envelopes are accepted while ledger.height < this. Default: always (deprecated, warns once). */
   legacyEnvelopeUntilHeight = Number.POSITIVE_INFINITY;
   private legacyWarned = false;
@@ -70,6 +75,11 @@ export class PeerNet {
   private roundTimer = new BftRoundTimer();
   private readonly roundChanges = new Map<string, Map<string, BftRoundChange>>();
   private lastTick = 0;
+  /** 0.5.83 Block B: persisted leader-equivocation evidence. */
+  private evidencePath?: string;
+  private evidence = new EquivocationEvidenceStore();
+  /** 0.5.83: the proposal this validator signed per `height:round` (re-sent unchanged on retry). */
+  private readonly ownProposals = new Map<string, { proposal: BftProposal }>();
   /** 0.5.81 item 4: own persisted height floor (only with a state directory). */
   readonly heightFloor?: HeightFloor;
 
@@ -86,6 +96,7 @@ export class PeerNet {
       this.statePath = join(stateDir, "quorum-votes.json");
       this.bftJournalPath = join(stateDir, "bft-commit-journal.json");
       this.commitLogPath = join(stateDir, "bft-commit-log.jsonl");
+      this.evidencePath = join(stateDir, "bft-equivocation-evidence.jsonl");
       this.heightFloor = new HeightFloor(stateDir);
       this.heightFloor.check(ledger, { allowRegression: process.env.UEP_ALLOW_HEIGHT_REGRESSION === "1" });
       if (existsSync(this.statePath)) {
@@ -115,13 +126,14 @@ export class PeerNet {
       throw new Error("BFT_TRANSPORT_DOMAIN_MISMATCH");
     }
     this.bftKernel = kernel;
+    this.evidence = new EquivocationEvidenceStore(this.evidencePath, kernel);
     // H1: one durable, hash-chained commit log per node; the 0.5.80 JSON journal is migrated once.
     const log = new CommitLog(this.commitLogPath ?? null);
     if (this.bftJournalPath && existsSync(this.bftJournalPath)) {
       migrateJournalV1(this.bftJournalPath, log);
       renameSync(this.bftJournalPath, this.bftJournalPath + ".migrated");
     }
-    this.committer = new CertifiedCommitter(log, kernel, () => this.ledger, { faultInjector: (p) => this.commitFaultInjector?.(p) });
+    this.committer = new CertifiedCommitter(log, kernel, () => this.ledger, { faultInjector: (p) => this.commitFaultInjector?.(p), afterTornWrite: () => this.commitAfterTornWrite?.() });
   }
 
   /** Use another round-change timeout (ticks are producer heights). */
@@ -142,7 +154,16 @@ export class PeerNet {
     this.lastTick = tick;
     const height = this.bftOpenHeight();
     const target = this.roundTimer.onTick(tick, height);
-    if (target === undefined) return undefined;
+    if (target === undefined) {
+      // 0.5.83 Block B: re-send our round change for the current round every baseTicks ticks, so a peer
+      // that lost it (drops, partition, restart) can still assemble the round-change certificate.
+      const round = this.bftRound();
+      const mine = round >= 1 ? this.roundChanges.get(`${height}:${round}`)?.get(this.id) : undefined;
+      if (mine && tick % this.roundTimer.config.baseTicks === 0 && !this.bftRoundChangeCertificate(height, round)) {
+        await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/round-change", () => this.signed("/bft/round-change", { roundChange: mine }))));
+      }
+      return undefined;
+    }
     return this.sendRoundChange(kernel, height, target);
   }
 
@@ -178,6 +199,13 @@ export class PeerNet {
     const kernel = this.requireBft();
     const height = this.bftOpenHeight();
     const round = this.bftRound();
+    // 0.5.83 Block B: a leader never signs two different blocks for one round. A retry (no quorum yet)
+    // re-sends the identical proposal (same core, same certificate, deterministic signature).
+    const own = this.ownProposals.get(`${height}:${round}`);
+    if (own) {
+      if (own.proposal.blockId !== tx.txId.toHex()) throw new Error("BFT_ALREADY_PROPOSED_OTHER_BLOCK");
+      return this.bftPropose(structuredClone(own.proposal), tx);
+    }
     const rc = this.bftRoundChangeCertificate(height, round);
     if (round < 1 || !rc) throw new Error("BFT_ROUND_CHANGE_CERTIFICATE_MISSING");
     const required = kernel.requiredProposalFromRoundChanges(rc);
@@ -185,7 +213,46 @@ export class PeerNet {
     const proposal: BftProposal = { networkId: this.ledger.networkId, domainId: this.ledger.domainId, ...(kernel.epoch ? { epoch: kernel.epoch } : {}),
       height, round, proposerId: this.id, parentRoot: this.ledger.stateRoot().toHex(), blockId: tx.txId.toHex(), roundChangeCertificate: rc,
       ...(required ? { validRound: required.validRound, validRoundCertificate: required.validRoundCertificate } : {}) };
+    this.assertBftTransaction(proposal, tx);
+    this.ownProposals.set(`${height}:${round}`, { proposal: structuredClone(proposal) });
     return this.bftPropose(proposal, tx);
+  }
+
+  /** 0.5.83 Block B: equivocation evidence recorded by this validator (persisted). */
+  bftEquivocationEvidence(): EquivocationEvidence[] { return this.evidence.all(); }
+
+  /** 0.5.83: transaction known for a block id (from a proposal seen), if any. */
+  bftTransaction(blockId: string): UepTransaction | undefined { return this.bftTransactions.get(blockId); }
+
+  /** 0.5.83: leader of (height, round). */
+  bftLeader(height: number, round: number): string { return this.requireBft().leader(height, round); }
+
+  /**
+   * 0.5.83 Block B: record verified equivocation evidence. New evidence is gossiped to every peer and,
+   * when it concerns the open height in this validator's current round, the validator leaves the round
+   * at once (round change to round + 1) instead of waiting for the timeout. Returns true when new.
+   */
+  async bftRecordEquivocation(ev: EquivocationEvidence): Promise<boolean> {
+    const kernel = this.requireBft();
+    if (!verifyEquivocationEvidence(kernel, ev)) throw new Error("BFT_EQUIVOCATION_EVIDENCE_INVALID");
+    if (!this.evidence.add(ev)) return false;
+    console.warn(`[uep-peer] BFT_LEADER_EQUIVOCATION proposer=${ev.proposerId} height=${ev.height} round=${ev.round}`);
+    void Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/equivocation", () => this.signed("/bft/equivocation", { evidence: ev })))).catch(() => {});
+    const height = this.bftOpenHeight();
+    if (ev.height === height && ev.round >= this.bftRound()) {
+      const target = ev.round + 1;
+      if (this.roundTimer.join(height, target, this.lastTick) || this.bftRound() === target) {
+        try { await this.sendRoundChange(kernel, height, target); } catch { /* locked beyond this round: the timer continues */ }
+      }
+    }
+    return true;
+  }
+
+  /** Compare a proposal seen elsewhere with ours for its position; conflicting signed proposals become evidence. */
+  private async checkProposalConflict(proposal: BftProposal, signature: string): Promise<boolean> {
+    const prior = this.bftProposals.get(this.bftPosition(proposal));
+    if (!prior || prior.proposal.proposerId !== proposal.proposerId || prior.proposal.blockId === proposal.blockId) return false;
+    return this.bftRecordEquivocation(makeEquivocationEvidence(prior, { proposal, signature }));
   }
 
   /** Commit status of a BFT height: CERTIFIED_NOT_APPLIED is never counted as applied. */
@@ -218,6 +285,7 @@ export class PeerNet {
     const mine = kernel.createVote(proposal, "prevote", this.id, this.privateKey, signature);
     const replies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/proposal", () => this.signed("/bft/proposal", { proposal, proposalSignature: signature, ...(wireTx ? { tx: wireTx } : {}) }))));
     const prevotes = [mine, ...replies.map(reply => reply?.vote as BftVote | undefined).filter((vote): vote is BftVote => !!vote)];
+    if (prevotes.length < kernel.quorum) console.error(`[uep-peer] BFT prevote replies h=${proposal.height} r=${proposal.round}: ${JSON.stringify(replies.map(r => r?.error ?? (r?.vote ? "vote" : "none")))}`);
     const prevoteCertificate = kernel.voteCertificate(proposal.height, proposal.round, "prevote", proposal.blockId, prevotes);
     kernel.observePrevoteCertificate(prevoteCertificate);
 
@@ -229,6 +297,7 @@ export class PeerNet {
     const localPrecommit = kernel.createVote(lockedProposal, "precommit", this.id, this.privateKey, lockedSignature);
     const lockReplies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/prevote-certificate", () => this.signed("/bft/prevote-certificate", { proposal: lockedProposal, proposalSignature: lockedSignature, certificate: prevoteCertificate }))));
     const precommits = [localPrecommit, ...lockReplies.map(reply => reply?.vote as BftVote | undefined).filter((vote): vote is BftVote => !!vote)];
+    if (precommits.length < kernel.quorum) console.error(`[uep-peer] BFT precommit replies h=${proposal.height} r=${proposal.round}: ${JSON.stringify(lockReplies.map(r => r?.error ?? (r?.vote ? "vote" : "none")))}`);
     const commitCertificate = kernel.voteCertificate(proposal.height, proposal.round, "precommit", proposal.blockId, precommits);
     if (tx) await this.applyBftCommit(lockedProposal, commitCertificate, tx);
     else kernel.recordCommit(commitCertificate);
@@ -356,7 +425,7 @@ export class PeerNet {
   private rateOk(ip: string): boolean {
     const now = Date.now();
     const hits = (this.rateHits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-    if (hits.length >= RATE_MAX) return false;
+    if (hits.length >= this.rateMax) return false;
     hits.push(now);
     this.rateHits.set(ip, hits);
     if (this.rateHits.size > 10_000) this.rateHits.clear(); // crude bound
@@ -391,7 +460,7 @@ export class PeerNet {
             uptimeMs: now - this.startedAt,
             peerCount: this.peers.length,
             threshold: this.threshold,
-            rateLimit: { windowMs: RATE_WINDOW_MS, max: RATE_MAX, recentHits },
+            rateLimit: { windowMs: RATE_WINDOW_MS, max: this.rateMax, recentHits },
             ...(this.committer ? { bftCommit: { lastDecidedHeight: this.committer.lastDecidedHeight(), pendingNotApplied: this.committer.pending(), logHead: this.committer.log.headHash } } : {}),
           });
         }
@@ -413,7 +482,7 @@ export class PeerNet {
           return send(res, 200, { id: this.id, height: this.ledger.height, stateRoot: this.ledger.stateRoot().toHex(), txCount: this.ledger.txs.length, recent: txs });
         }
         const raw = await readJson(req);
-        const peerPaths = new Set(["/tx", "/vote", "/commit", "/bft/proposal", "/bft/prevote-certificate", "/bft/commit-certificate", "/bft/round-change"]);
+        const peerPaths = new Set(["/tx", "/vote", "/commit", "/bft/proposal", "/bft/prevote-certificate", "/bft/commit-certificate", "/bft/round-change", "/bft/proposal-seen", "/bft/equivocation"]);
         let body = raw;
         let authenticatedFrom: string | undefined;
         if (req.method === "POST" && peerPaths.has(url.pathname)) {
@@ -462,7 +531,16 @@ export class PeerNet {
             }
             const key = this.bftPosition(proposal);
             const prior = this.bftProposals.get(key);
+            // 0.5.83: a leader retry may re-send the bare proposal after this validator already stored the
+            // prevote-certificate form of it (same core, same block). That is a resend, not an equivocation:
+            // prevote the same block again and keep the stored (certificate-carrying) form.
+            if (prior && prior.proposal.blockId === proposal.blockId && prior.signature !== proposalSignature && prior.proposal.prevoteCertificate &&
+                !proposal.prevoteCertificate && JSON.stringify({ ...prior.proposal, prevoteCertificate: undefined }) === JSON.stringify({ ...proposal, prevoteCertificate: undefined })) {
+              return send(res, 200, { accepted: true, vote: kernel.createVote(proposal, "prevote", this.id, this.privateKey, proposalSignature) });
+            }
             if (prior && (prior.proposal.blockId !== proposal.blockId || prior.signature !== proposalSignature)) {
+              // 0.5.83: keep the proof and leave the round.
+              if (prior.proposal.blockId !== proposal.blockId) await this.checkProposalConflict(proposal, proposalSignature).catch(() => false);
               return send(res, 409, { error: "BFT_PROPOSAL_EQUIVOCATION" });
             }
             if (body.tx !== undefined) {
@@ -472,7 +550,20 @@ export class PeerNet {
             }
             this.bftProposals.set(key, { proposal: structuredClone(proposal), signature: proposalSignature });
             const vote = kernel.createVote(proposal, "prevote", this.id, this.privateKey, proposalSignature);
+            // 0.5.83 Block B: tell the other validators which signed proposal we saw (detects a split equivocation).
+            if (!prior) void Promise.all(this.peers.filter(p => p.id !== proposal.proposerId).map(peer => postRetry(peer.url + "/bft/proposal-seen", () => this.signed("/bft/proposal-seen", { proposal, proposalSignature })))).catch(() => {});
             return send(res, 200, { accepted: true, vote });
+          }
+          if (url.pathname === "/bft/proposal-seen") {
+            const proposal = body.proposal as BftProposal;
+            const proposalSignature = String(body.proposalSignature ?? "");
+            if (!proposal || !kernel.verifyProposal(proposal, proposalSignature)) return send(res, 400, { error: "BFT_PROPOSAL_AUTH_INVALID" });
+            const evidence = await this.checkProposalConflict(proposal, proposalSignature);
+            return send(res, 200, { accepted: true, evidence });
+          }
+          if (url.pathname === "/bft/equivocation") {
+            try { return send(res, 200, { accepted: true, new: await this.bftRecordEquivocation(body.evidence as EquivocationEvidence) }); }
+            catch { return send(res, 400, { error: "BFT_EQUIVOCATION_EVIDENCE_INVALID" }); }
           }
           if (url.pathname === "/bft/prevote-certificate") {
             const proposal = body.proposal as BftProposal;
@@ -720,10 +811,13 @@ function votesUntil(peers: Peer[], body: unknown, need: number): Promise<QuorumV
 
 /** `body` may be a factory: each attempt then gets a freshly signed envelope (new nonce), so a retry is never refused as a replay. */
 async function postRetry(url: string, body: unknown): Promise<Record<string, unknown> | undefined> {
+  let last: Record<string, unknown> | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     const reply = await post(url, typeof body === "function" ? (body as () => unknown)() : body);
     if (reply && !reply.error) return reply;
+    last = reply;
   }
+  if (process.env.UEP_BFT_DEBUG_REPLIES) console.error(`[uep-peer] post failed ${url}: ${last ? String(last.error) : "network"}`);
   return undefined;
 }
 

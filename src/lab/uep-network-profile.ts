@@ -12,9 +12,10 @@ export type NetworkProfile = {
   networkId: string;
   domainId: string;
   domainNumber: number;
-  depth: 32;
+  /** 0.5.83: circuit v6 at depth 64 (v5 at depth 32 stays readable: LEGACY_LAB_PROFILE_V5). */
+  depth: 64 | 32;
   hash: "BN254-Poseidon-t3-alpha5";
-  circuitId: "UEP-27-SPEND-POSEIDON-D32-v5-foldv2";
+  circuitId: "UEP-27-SPEND-POSEIDON-D64-v6-rotblind" | "UEP-27-SPEND-POSEIDON-D32-v5-foldv2";
   keys: "DEV-TEST-KEYS";
   ceremony: false;
   testnetAllowed: false;
@@ -28,15 +29,18 @@ export const LAB_PROFILE: NetworkProfile = {
   networkId: "uep-lab-1",
   domainId: "lab-earth-0",
   domainNumber: 1,
-  depth: 32,
+  depth: 64,
   hash: "BN254-Poseidon-t3-alpha5",
-  circuitId: "UEP-27-SPEND-POSEIDON-D32-v5-foldv2",
+  circuitId: "UEP-27-SPEND-POSEIDON-D64-v6-rotblind",
   keys: "DEV-TEST-KEYS",
   ceremony: false,
   testnetAllowed: false,
   feeBps: 10,
   genesisLabel: "empty Poseidon SMT, lab fixture accounts",
 };
+
+/** Pre-0.5.83 profile (circuit v5, depth 32), for reading historical artefacts. */
+export const LEGACY_LAB_PROFILE_V5: NetworkProfile = { ...LAB_PROFILE, depth: 32, circuitId: "UEP-27-SPEND-POSEIDON-D32-v5-foldv2" };
 
 export function activateProfile(profile: NetworkProfile): { ok: true; profile: NetworkProfile } | { ok: false; reason: string } {
   if (profile.kind === "TESTNET" || profile.testnetAllowed) {

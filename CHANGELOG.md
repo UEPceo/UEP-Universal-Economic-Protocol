@@ -1,3 +1,39 @@
+## 0.5.83 — 2026-10-15
+
+Spend circuit liveness fix (circuit v6). Poseidon BN254 unchanged; arkworks only, no new dependencies.
+
+- New circuit tag `UEP-27-SPEND-POSEIDON-D64-v6-rotblind`: tree depth 64 (fits the u64 slot indices), note blinding rotated in-circuit on every spend (`H(D_BLIND=7, secret, nonce)`), receiving slots may be empty. Same fold and public-input order as v5 (13 inputs, domain_id at 12). 278,503 constraints at depth 64; on 8 cores prove 6.9 s vs 3.7 s for v5 at depth 32 (setup 7.1 s, verify 3 ms, proving key 60 MB).
+- v5 (`UEP-27-SPEND-POSEIDON-D32-v5-foldv2`) is kept byte-identical: v5 pins unchanged, historical v5 transactions re-verify on restore; new v5 submissions need `zkAcceptLegacyV5: true`. Helper migration `migrate_state_d32_to_d64` / `migrate_nullifiers_d32_to_d64` (Rust, with tests).
+- Ledger: v6 payloads carry `senderNextBlinding`; the depth-64 projection keeps per-slot blindings, rebuilt from committed transactions on restore (no snapshot format change). PI[11] is checked against the circuit commitment of the proof's publics and PI[12] against the ledger domain. `zkRootBinding` now defaults to `"circuit-projection"`; `"off"` stays available for labs and is refused under NODE_ENV=production.
+- Witness contract: Poseidon witnesses get the tree checks with the Poseidon backend, plus index-bit checks.
+- `uep-zk`: `circuit_version` in spend requests (default 5), `dev-vk-v6 <4|64>`, `bench-v6 <depth>`; pin script covers v6.
+- zk accounts: id `H_ACCOUNT(secret, salt)` linked to the Ed25519 account by a signed link (`linkZkAccount`, optional `zkLinks` in the snapshot, re-verified on restore; older snapshots unchanged). A zk account spend has no notes and no signature: the v6 proof authorizes it and its PI[10] is the transaction nullifier. Existing accounts move funds with a signed transfer to their zk account. `zkCircuitDepthV6` option (64, or 4 for labs). Lab network profile now names circuit v6 at depth 64.
+- Exit path: a zk account can pay an Ed25519 account; the recipient gets its balance and a deterministic exit note (`zkExitNote`) it spends with its own signature. Real-proof tests for acceptance, replay, wrong recipient, tampered amount, substituted note and supply conservation. Opt-in depth-64 end-to-end test (`UEP_ZK_D64=1`), record in `docs/audit/evidence-0.5.83/zk-d64-e2e-node24.json`.
+- `uep-zk prove-spend-json`: `domain_fr` (ledger domain as a field element), `sender_new_blinding` in the output, leaf indices accepted as strings; v5 requests with empty slots are refused.
+- Tests: Rust spec predicate `spend_valid` with differential tests both ways, mutation sweep, nightly `#[ignore]` perturbation probe with positive control; TS ledger v6 tests and real Groth16 proof tests (depth 4), including an end-to-end zk account spend accepted by the ledger with replay and reused-nullifier rejection.
+
+External source adapters requested by Research (reports UEP-RR-2026-10-08-001 and UEP-RR-2026-10-15-002). All off-node in `scripts/adapters/`; no state transition, snapshot format or signed format changes. With every source down, every node behaves exactly as before. No price enters state. Protocol fee 0.1 %, Marketplace fee 3 %, no native token.
+
+- `scripts/adapters/lib.mjs`: hard timeout, non-200 = unavailable, strict UTF-8/JSON, NFC without trimming or case folding, BigInt decimal scaling (no float on values).
+- Seismic (phase 2.3 preparation): `seismic.mjs`, `usgs-seismic.mjs` (USGS, public domain), `geofon-seismic.mjs` (GEOFON, CC BY 4.0, attribution required). Each emits the 0.5.82 canonical SEISMIC claim and `claimHash` for attesters. Cross-source tolerances remain residual (30-day study); `compareSources()` reports `SOURCES_DISCREPANT` or refuses with `EVIDENCE_TOLERANCES_UNSET`. Not wired to settlement.
+- Lab only, behind `UEP_LAB_SOURCES=1`: NOAA SWPC Kp and F10.7, JPL Horizons, CelesTrak, NASA DSN Now, Open-Meteo (non-commercial only).
+- Not added: EMSC (written permission needed), IANA/IERS leap-second files (waiting for the exporter), discarded sources.
+- Docs: sources table with licence, attribution and account requirement in `docs/ORACLE.md`; `docs/EVIDENCE.md`; README module table and `docs/MODULES.md` section 22.
+- Removed: the World Bank display-only indicator added in 0.5.82 (`src/service/indicative-display.ts`, `/v1/display/indicators`), by director decision. UEP does not use the World Bank API. Compat: the old `WORLDBANK` id is still accepted by `displayIndicative()` and answers "no disponible" without any request (test in `indicative-display.test.ts`). No persisted field or config key was involved.
+- Tests: `npm run test:adapters` (11 tests, recorded fixtures, network disabled), in `test:core`: normalization, claim output, lab flag, malformed data, timeouts, down sources and discrepant sources.
+
+
+### 0.5.83 — Blocks A–E (director requirements)
+
+Resolution matrix with evidence and dispositions: [`docs/audit/0.5.83-RESOLUTION.md`](docs/audit/0.5.83-RESOLUTION.md). Results of the sequential runs (commands, seeds, Node versions, outputs, SHA-256): [`docs/audit/evidence-0.5.83/`](docs/audit/evidence-0.5.83/). Protocol fee 0.1 %, Marketplace fee 3 %, no native token, Poseidon BN254 unchanged, no new dependency.
+
+- **A — signatures bound to network and domain.** New signed payload v2 (`src/marketplace/signature-v2.ts`) for Marketplace actions, reservations and IoT telemetry: `networkId`, `domainId` (Marketplace id), signer, nonce, operation type, ids, details (amounts, hashes) and a height window `[validFromHeight, validUntilHeight]` (max 17,280 heights). The verifier rebuilds the message from its own network and domain. Nonces are single-use per signer until the window closes and are persisted in the Marketplace snapshot (pre-0.5.83 snapshots migrate to an empty registry). Legacy v1 only through `legacyV1Signatures: { sunsetHeight }` (one deprecation warning, refused from the sunset height); under `NODE_ENV=production` v1 is refused unless configured explicitly. Client helpers: `signActionV2`, `signReservationV2`, `envelopeV2`, SDK `newSignatureNonce()`. Tests: `src/marketplace/signature-v2.test.ts` (other network, other domain, other nonce, other operation context, window, nonce reuse, restart, IoT v2).
+- **B — BFT finality and recovery.** Leader equivocation is detected from relayed signed proposals, recorded as self-verifying evidence (`src/node/bft-equivocation.ts`, persisted `bft-equivocation-evidence.jsonl`), gossiped, and triggers an immediate round change; validator processes run an internal height-tick timer and the next leader re-proposes automatically (identical proposal on retry, never a second block per round). Tests: `src/node/bft-equivocation.test.ts`; multi-process `src/node/bft-recovery-multiprocess.test.ts` (4 OS processes, seeded per-link loss/delay/duplication/partition, SIGKILL + restart, crashed leader, equivocating leader).
+- **C — crash points.** SIGKILL (kill -9) in real validator processes at each of the 7 commit write points (`UEP_CRASH_AT`), restart, recovery twice with identical result, audit of hash chain, consecutive heights, ledger/APPLIED order, root chain and state root. Test: `src/node/bft-crash-points-multiprocess.test.ts`.
+- **D — asset manifest governance.** `src/node/asset-registry-store.ts`: persistent, versioned, governance-verified manifest chain (`asset-registry.json`, chain hash, atomic writes, migration from the pre-0.5.83 layout, rollback refusal). Network policy `requireAssetRegistry`: `assembleNode` and the CLI (`UEP_REGISTRY_POLICY`) refuse to operate without the registry (`NODE_REFUSES_TO_OPERATE`). The ledger snapshot keeps binding `{networkId, version, hash}`. Test keys only; no key ceremony was generated.
+- **E — evidence.** `scripts/run-evidence.mjs` runs suites one at a time and records outputs and hashes; `run-seeded.mjs` includes the Block B and C multi-process tests (first three seeds); `npm run test:bft-adversarial`.
+- Sources: GEOFON attribution updated (event products CC BY 4.0; waveforms not used); CelesTrak adapter follows the usage policy (OMM JSON only, one download per 2-hour update, hard stop on any non-200); NASA DSN documented as CC0 unless noted (logos excluded).
+
 ## 0.5.82 — 2026-10-15
 
 Triage of the external "Aegis-Orbit" static report on v0.5.81 (`AUDIT-MV990F9F-LUPO`; summary [`docs/audit/AUDIT-EXTERNA-2026-10-15-AEGIS.md`](docs/audit/AUDIT-EXTERNA-2026-10-15-AEGIS.md), matrix [`docs/audit/0.5.82-RESOLUTION.md`](docs/audit/0.5.82-RESOLUTION.md)). Protocol fee 0.1 %, Marketplace fee 3 %, no native token, Poseidon BN254 unchanged.
@@ -9,7 +45,7 @@ Triage of the external "Aegis-Orbit" static report on v0.5.81 (`AUDIT-MV990F9F-L
 - `.gitleaks.toml` allowlist for the RFC 9180 HPKE test vectors and the `test-only-objects-token` fixture.
 - Open: network-ID binding of marketplace reservation/action and IoT telemetry signatures (signed-format change, not made here).
 - External sources (Research): evidence statements v2 bound to the local network (`UEP-EVIDENCE-STATEMENT-v2`, v1 only for archives); observation height bounds and signed `maxAgeHeights`; signed `onNoEvidence` / `evidenceDeadlineHeight` with `resolveNoEvidence()`; canonical claim and distinct-source-set structure (tolerances residual); off-node `scripts/adapters/` with `check:adapters`; display-only ECB/BIS/Eurostat/World Bank figures (`GET /v1/display/indicators`). No snapshot format change.
-- Tests: TESTCOUNTS
+- Tests: new regression files `src/testnet/aegis-0582.test.ts` and `src/marketplace/evidence-0582.test.ts`; `test:all` passed on Node 22 and 24 before release.
 
 ## 0.5.81 — 2026-10-15
 

@@ -15,15 +15,14 @@
  */
 
 import { Fr } from "./field.ts";
-import { hAccount, hLeaf, hNullifier } from "./hash.ts";
+import { Domain, hAccount, hLeaf, hNullifier, PoseidonBn254Hash } from "./hash.ts";
 import { zkAccountIdMatches } from "./zk-tx-adapter.ts";
 import {
   ACCOUNT_DEPTH,
   EMPTY_LEAF,
   type MerklePath,
   SparseMerkleTree,
-  verifyInsert,
-  verifyUpdate,
+  verifyUpdate as verifyUpdateActive,
 } from "./smt.ts";
 import {
   SPEND_PUBLIC_INPUT_NAMES,
@@ -135,6 +134,24 @@ export function defaultBalanceLeaf(
 
 export function deriveNoteNonce(senderOldLeaf: Fr, noteBlinding: Fr): Fr {
   return hLeaf(senderOldLeaf, noteBlinding);
+}
+
+/**
+ * 0.5.83: Merkle root with the frozen Poseidon backend, independent of the active hash backend,
+ * so a Poseidon witness is checked with Poseidon even if a test swapped the backend.
+ */
+function poseidonRootFromPath(leaf: Fr, path: MerklePath): Fr {
+  const hm = (l: Fr, r: Fr) => PoseidonBn254Hash.h(Domain.MerkleNode, l, r);
+  let cur = leaf;
+  for (let i = 0; i < path.siblings.length; i++) {
+    const sib = path.siblings[i]!;
+    cur = path.indexBits[i] ? hm(sib, cur) : hm(cur, sib);
+  }
+  return cur;
+}
+
+function poseidonVerifyUpdate(oldRoot: Fr, newRoot: Fr, oldLeaf: Fr, newLeaf: Fr, path: MerklePath): boolean {
+  return poseidonRootFromPath(oldLeaf, path).eq(oldRoot) && poseidonRootFromPath(newLeaf, path).eq(newRoot);
 }
 
 export function validateZkSpendInstance(
@@ -262,7 +279,15 @@ export function validateZkSpendInstance(
     }
   }
 
-  if (opts?.checkTrees && !w.usePoseidon) {
+  // 0.5.83: Poseidon witnesses are checked too (they used to skip the tree checks).
+  const verifyUpdate = w.usePoseidon ? poseidonVerifyUpdate : verifyUpdateActive;
+  const verifyInsert = (o: Fr, n: Fr, e: Fr, l: Fr, p: MerklePath) => verifyUpdate(o, n, e, l, p);
+  if (opts?.checkTrees) {
+    for (const [name, path] of [["sender", w.senderPath], ["recipient", w.recipientPath], ["treasury", w.treasuryPath], ["nullifier", w.nullifierPath]] as const) {
+      for (let i = 0; i < path.indexBits.length; i++) {
+        if (path.indexBits[i] !== (((path.index >> BigInt(i)) & 1n) === 1n)) { errors.push(`${name} path bits do not encode its index`); break; }
+      }
+    }
     const sp = asMerklePath(w.senderPath);
     if (!verifyUpdate(pub.oldStateRoot, w.midRootAfterSender, w.senderOldLeaf, w.senderNewLeaf, sp)) {
       errors.push("sender path does not connect old_state_root → midRootAfterSender");

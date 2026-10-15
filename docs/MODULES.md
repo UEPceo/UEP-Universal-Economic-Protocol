@@ -1,6 +1,6 @@
 # UEP modules
 
-> Module map of the repository at v0.5.82 (on `main`; Latest GitHub Release: v0.5.82).
+> Module map of the repository at v0.5.83 (branch `feat/0.5.83-sources`; Latest GitHub Release: v0.5.82).
 > Status labels follow the README legend: **Implemented (testnet)** = local,
 > single-node, in-process testnet only; **Experimental (lab)**; **Planned**; **Research**.
 > Nothing in this repository is a live network or a production system. There is no
@@ -91,6 +91,10 @@ ledger verifies anchored settlement receipts itself and never calls the Marketpl
 | 19 | Reference node, BFT safety kernel, PeerNet, certified commit log | `src/node` | Experimental (lab) | 0.5.10 (BFT kernel 0.5.74, PeerNet 0.5.78, certified commit log, vote activation, round timer, peer envelope v2, height floor 0.5.81) | `test:consensus`, `test:node` |
 | 20 | SDK (client, Marketplace, IoT/M2M, CLI) | `sdk/` | Implemented (testnet) | 0.5.20 | `test:sdk`, `test:node` |
 | 21 | Configuration and examples | `config/`, `examples/` | Implemented (testnet) | 0.5.42 / 0.5.23 | `test:consensus`, `examples/sample-service.test.ts` |
+| 22 | External source adapters (off-node) | `scripts/adapters/` | Experimental (lab), off-node | 0.5.83 | `test:adapters`, `check:adapters` |
+| 23 | Signed payload v2 | `src/marketplace/signature-v2.ts` | Implemented (testnet) | 0.5.83 | `test:marketplace`, `test:security` |
+| 24 | BFT equivocation evidence, recovery and crash-point harness | `src/node/bft-equivocation.ts`, `src/node/bft-mp-harness.ts` | Experimental (lab) | 0.5.83 | `test:consensus`, `test:bft-adversarial`, `test:property:full` |
+| 25 | Asset registry store and network policy | `src/node/asset-registry-store.ts` | Implemented (testnet) | 0.5.83 | `test:consensus`, `test:security` |
 
 ---
 
@@ -159,7 +163,7 @@ k-of-n arbiter quorum with bonds (per-asset minimum since v0.5.3); timeout outco
 Subsidy claims bound to the settlement index written by swap / relay; at most 50 % of an order's Marketplace fee, once per order, from DISTRIBUTABLE_PROFIT within an administrator-signed budget.
 
 ## 10. Oracle policy layer (`src/oracle`)
-- **Purpose:** signed, height-bounded observations (domain-separated with the `networkId` since v0.5.3) aggregated with per-key weight caps. `OraclePolicyGate` (v0.5.3) checks Marketplace listing prices, IoT tariffs and hashlock-swap rates against a reference band and fails closed. Never holds balances; not on the spend or consensus path. FX reference rates are display-only. Since v0.5.82, ECB/BIS/Eurostat/World Bank indicators are display-only in the UI with attribution; discarded sources are listed in `docs/ORACLE.md`.
+- **Purpose:** signed, height-bounded observations (domain-separated with the `networkId` since v0.5.3) aggregated with per-key weight caps. `OraclePolicyGate` (v0.5.3) checks Marketplace listing prices, IoT tariffs and hashlock-swap rates against a reference band and fails closed. Never holds balances; not on the spend or consensus path. FX reference rates are display-only. Since v0.5.82, ECB/BIS/Eurostat indicators are display-only (World Bank removed in 0.5.83 by director decision) in the UI with attribution; discarded sources are listed in `docs/ORACLE.md`.
 - **Status:** Implemented (testnet). Sources are configured keys; no on-network oracle consensus.
 - **Introduced:** v0.5.2; hardening and gate v0.5.3.
 - **Tests:** `npm run test:oracle`. See [`ORACLE.md`](./ORACLE.md).
@@ -222,3 +226,22 @@ Client library for the node HTTP API: `sdk/client`, `sdk/marketplace`, `sdk/iot-
 
 `config/peers.json` and `config/consensus-bft.example.json` are example node and peer configurations (public keys only; no private keys are shipped). `examples/` holds a first transaction, a sample service and a service template.
 
+## 22. External source adapters (`scripts/adapters/`)
+
+Off-node code run by attesters or in the lab, never by a node, `src/` or the ledger worker (`npm run check:adapters` fails on any `src/` import of it). `seismic.mjs` (USGS, public domain; GEOFON, CC BY 4.0 with attribution) parses each source into integer events and emits the 0.5.82 canonical SEISMIC claim with its `claimHash` and the `dataHash` of the fetched bytes; cross-source agreement stays undecided while the tolerances are unset (residual, 30-day study), and the claims are not wired to settlement. `lab-sources.mjs` (NOAA SWPC Kp and F10.7, JPL Horizons, CelesTrak, DSN, Open-Meteo non-commercial only) runs only with `UEP_LAB_SOURCES=1`. Shared helpers in `lib.mjs`: timeout, strict UTF-8 and schema checks, NFC without trimming or case folding, BigInt decimal scaling. Recorded fixtures in `fixtures/` keep the tests offline. Sources table: [`ORACLE.md`](./ORACLE.md#sources-table-0583). Since 0.5.83. Tests: `test:adapters` (in `test:core`).
+
+## 23. Signed payload v2 (`src/marketplace/signature-v2.ts`)
+- **Purpose:** binds Marketplace action, reservation and IoT telemetry signatures to `networkId`, `domainId` (Marketplace id), signer, nonce, operation (type, ids, details) and a height window. Nonces are single-use per signer until the window closes and are kept in the Marketplace snapshot. Legacy v1 signatures pass only through the deprecation shim (`legacyV1Signatures: { sunsetHeight }`, one warning, refused from the sunset height; refused by default under `NODE_ENV=production`).
+- **Status:** Implemented (testnet). Since 0.5.83. Tests: `src/marketplace/signature-v2.test.ts`.
+
+## 24. BFT equivocation evidence, recovery and crash-point harness (`src/node`)
+- **Purpose:** `bft-equivocation.ts` keeps self-verifying evidence of a leader that signed two blocks for one height/round (persisted JSONL); PeerNet relays proposals seen, records evidence, gossips it and changes round at once; `bft-validator-process.ts` runs an internal height-tick timer and re-proposes automatically as leader of later rounds. `bft-mp-harness.ts` starts N validator OS processes behind seeded fault-injecting proxies, with SIGKILL/restart and crash injection at commit write points (`UEP_CRASH_AT`).
+- **Status:** Experimental (lab). Evidence from scripted adversaries on one machine; not a claim about arbitrary adversaries or WAN conditions. Since 0.5.83. Tests: `bft-equivocation.test.ts`, `bft-recovery-multiprocess.test.ts`, `bft-crash-points-multiprocess.test.ts`.
+
+## 25. Asset registry store and network policy (`src/node/asset-registry-store.ts`)
+- **Purpose:** persistent, versioned governance of the signed asset manifest chain (`asset-registry.json`: governance key set, chain, chain hash; atomic writes; migration from the pre-0.5.83 layout; rollback refused against the version the ledger binds). With `requireAssetRegistry` a reference node (`assembleNode`, CLI `UEP_REGISTRY_POLICY`) refuses to operate without the registry.
+- **Status:** Implemented (testnet). The registry is not yet the reference-node default (a real governance key ceremony is required and has not been performed). Since 0.5.83. Tests: `src/node/asset-registry-store.test.ts`.
+
+## 26. Spend circuit v6 and zk accounts (`uep-core/uep-26-spend-circuit`, `src/core/zk-account.ts`)
+- **Purpose:** circuit v6 (`UEP-27-SPEND-POSEIDON-D64-v6-rotblind`, depth 64, in-circuit blinding rotation, empty receiving slots) and its ledger path: 13 public inputs bound to the transaction, the ledger domain and the projected roots. zk accounts (`H_ACCOUNT` ids) are linked to Ed25519 accounts by a signed link and spend with a v6 proof as authorization, to another zk account or (exit) to an Ed25519 account, which receives a deterministic exit note. Lab helper `src/lab/zk-account-spend.ts` proves with `uep-zk` and builds the transaction.
+- **Status:** Experimental (lab, development keys only). v5 kept for historical proofs. Since 0.5.83. Tests: `spend_v6_tests.rs`, nightly `exp_rr_2026_10_15_003.rs` (`--ignored`), `zk-v6-ledger.test.ts`, `zk-v6-real-proof.test.ts`, `zk-account-e2e.test.ts`, `zk-account-exit.test.ts` (depth-64 case opt-in with `UEP_ZK_D64=1`).

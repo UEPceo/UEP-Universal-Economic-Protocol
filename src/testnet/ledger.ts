@@ -15,10 +15,11 @@ import type { SettlementReceipt } from "../settlement/types.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 import { migrateSnapshotPayload, snapshotFormatSupport } from "./snapshot-migrations.ts";
 import { Domain, hAccount, hFoldV2, hLeaf } from "../core/hash.ts";
+import { zkAccountLinkError, zkExitNote, type ZkAccountLink } from "../core/zk-account.ts";
 import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
 import { deriveNoteBlinding, deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, walletDomainSeparator, type Note } from "../core/note.ts";
-import { assertVerifierAllowed, CircuitTreeProjection, circuitBalanceLeaf, ledgerBalanceKey, ledgerBalanceLeaf, parseZkSpendPayload, zkBindingMismatches, zkLedgerTransition, zkRootMismatches, type ZkLedgerTransition, type ZkRootBindingMode, type ZkSpendVerifier } from "../core/zk-tx-adapter.ts";
+import { assertRootBindingAllowed, assertVerifierAllowed, CircuitTreeProjection, circuitBalanceLeaf, circuitDomainId, CIRCUIT_TREE_DEPTH, CIRCUIT_TREE_DEPTH_V6, ledgerBalanceKey, ledgerBalanceLeaf, parseZkSpendPayload, zkBindingMismatches, zkLedgerTransition, zkPayloadVersion, zkRootMismatches, type ZkLedgerTransition, type ZkPayloadVersion, type ZkRootBindingMode, type ZkSpendPayload, type ZkSpendVerifier } from "../core/zk-tx-adapter.ts";
 import { canonicalSerializedTx, computeTxCommitment, deserializeTx, MAX_TX_INPUTS, MULTI_INPUT_TX_VERSION, multiInputShapeError, serializeTx, txCommitmentOf, txIdFromCommitment, txNonces, txNullifiers, verifyOwnership, type UepTransaction } from "../core/transaction.ts";
 import { u64ToFr } from "../core/encoding.ts";
 import { transition } from "../core/transition.ts";
@@ -265,6 +266,10 @@ export type RestoreOptions = {
   zkSpendVerifier?: ZkSpendVerifier;
   /** v0.5.3: root binding mode of the restored ledger (see the constructor option). */
   zkRootBinding?: ZkRootBindingMode;
+  /** 0.5.83: compat flag of the restored ledger for new v5 zk-spends (see the constructor). */
+  zkAcceptLegacyV5?: boolean;
+  /** 0.5.83: depth of the v6 circuit projection: 64 (default) or 4 (labs and tests with the small development circuit). */
+  zkCircuitDepthV6?: 4 | 64;
 };
 
 export type UepLedgerSnapshotPayload = ReturnType<UepLedger["snapshotPayload"]>;
@@ -342,6 +347,21 @@ function distinctKeyHexes(keys: PublicKeyLike[] | undefined, code: string): stri
 }
 
 /** v3 key-derived id, or the v2 form (grandfathered for restored state; a live recipient also needs a v2 proof). */
+/** 0.5.83: a zk-spend with no input notes is a zk account spend (balance model). */
+export function isZkAccountTx(tx: UepTransaction): boolean {
+  return tx.spendProof?.kind === "zk-spend" && Array.isArray(tx.inputCommitments) && tx.inputCommitments.length === 0;
+}
+
+/** 0.5.83: fixed shape of a zk account spend (no notes, no signature, nonce 0, one nullifier). */
+export function zkAccountTxShapeError(tx: UepTransaction): string | undefined {
+  if ((tx.inputNotes?.length ?? 0) !== 0) return "A zk account spend has no input notes.";
+  if (tx.outputCommitments.length > 1 || (tx.outputNotes?.length ?? 0) !== tx.outputCommitments.length) return "A zk account spend has at most one output note (the exit note).";
+  if (tx.inputNonces || tx.inputNullifiers || tx.inputMembership?.length) return "A zk account spend has one nullifier and no membership proofs.";
+  if (tx.senderAuth) return "A zk account spend is authorized by its proof, not by a signature.";
+  if (!tx.nonce.isZero()) return "A zk account spend uses nonce 0.";
+  return undefined;
+}
+
 function isKeyDerivedOrV2Form(id: Fr): boolean {
   return isKeyDerivedAccountId(id) || isV2AccountIdForm(id);
 }
@@ -423,7 +443,24 @@ function planPayment(available: Note[], amount: bigint, minFee: bigint): { plan:
 export class UepLedger {
   /** v0.5.3: zk-spend verifier (see src/core/zk-tx-adapter.ts). */
   private zkSpendVerifier: ZkSpendVerifier | undefined;
-  private zkRootBinding: ZkRootBindingMode = "off";
+  /**
+   * 0.5.83: roots are bound by default. "off" stays available as an explicit compat setting
+   * (refused under NODE_ENV=production by the constructor).
+   */
+  private zkRootBinding: ZkRootBindingMode = "circuit-projection";
+  /** 0.5.83: accept new legacy v5 zk-spend payloads (12 public inputs). Default false. */
+  private zkAcceptLegacyV5 = false;
+  /**
+   * 0.5.83: circuit blinding of each state slot (ledger key hex → blinding), for the v6
+   * projection. Absent = 0. Rebuilt on restore from the committed v6 zk-spends.
+   */
+  private zkBlindings = new Map<string, Fr>();
+  /** 0.5.83: depth of the v6 projection (64, or 4 for the small development circuit). */
+  private zkCircuitDepthV6: number = CIRCUIT_TREE_DEPTH_V6;
+  /** 0.5.83: signed links Ed25519 account -> zk account (H_ACCOUNT id), keyed by account hex. */
+  private zkLinks = new Map<string, ZkAccountLink>();
+  /** 0.5.83: zk account ids with at least one link (may receive transfers). */
+  private zkLinkedIds = new Set<string>();
   /** v0.5.2: re-entrancy guard of submit() / submitBatch(). */
   private spendInProgress = false;
   /** Optional security policy gate (TESTNET). */
@@ -570,6 +607,14 @@ export class UepLedger {
      * (roots unbound, earlier behaviour).
      */
     zkRootBinding?: ZkRootBindingMode;
+    /**
+     * 0.5.83 compat: accept new zk-spends in the legacy v5 format (12 public inputs, depth 32,
+     * blinding 0). Default false. Committed v5 zk-spends in a snapshot are always re-verified
+     * under the v5 rules on restore.
+     */
+    zkAcceptLegacyV5?: boolean;
+    /** 0.5.83: depth of the v6 circuit projection, 64 (default) or 4. */
+    zkCircuitDepthV6?: 4 | 64;
     /** v0.5.1 TEST-ONLY: advanceHeight(n) accepts n > MAX_BLOCKS_PER_TICK (tests and offline simulations). */
     testOnlyUnboundedHeightAdvance?: boolean;
   }) {
@@ -591,7 +636,13 @@ export class UepLedger {
     }
     if (opts.zkRootBinding !== undefined) {
       if (opts.zkRootBinding !== "off" && opts.zkRootBinding !== "circuit-projection") throw new Error("ZK_ROOT_BINDING_INVALID");
+      if (opts.zkSpendVerifier) assertRootBindingAllowed(opts.zkRootBinding);
       this.zkRootBinding = opts.zkRootBinding;
+    }
+    this.zkAcceptLegacyV5 = opts.zkAcceptLegacyV5 === true;
+    if (opts.zkCircuitDepthV6 !== undefined) {
+      if (opts.zkCircuitDepthV6 !== 4 && opts.zkCircuitDepthV6 !== 64) throw new Error("ZK_DEPTH_INVALID");
+      this.zkCircuitDepthV6 = opts.zkCircuitDepthV6;
     }
     this.unboundedHeightAdvance = testOnlyOption("testOnlyUnboundedHeightAdvance", opts.testOnlyUnboundedHeightAdvance);
     this.installSigningKeys(
@@ -885,8 +936,39 @@ export class UepLedger {
     return this.committedNullifierIndex.has(nf.toHex());
   }
 
+  /**
+   * 0.5.83: record a signed link from an Ed25519 account to its zk account. One link per
+   * account; a zk id may be linked by several accounts (a link only makes it receivable).
+   */
+  linkZkAccount(link: ZkAccountLink): { ok: true } | { error: SubmitError } {
+    const e = zkAccountLinkError(link, this.networkId, this.domainId);
+    if (e) return { error: { code: "PROOF", message: e } };
+    const key = new Fr(BigInt(link.accountId.startsWith("0x") ? link.accountId : `0x${link.accountId}`)).toHex();
+    const zk = new Fr(BigInt(link.zkAccountId.startsWith("0x") ? link.zkAccountId : `0x${link.zkAccountId}`)).toHex();
+    if (isKeyDerivedAccountId(new Fr(BigInt(`0x${zk}`))) || zk === TREASURY_ID.toHex()) return { error: { code: "INVALID_PARTICIPANTS", message: "ZK_LINK_TARGET: not a zk account id" } };
+    const prev = this.zkLinks.get(key);
+    if (prev) {
+      if (prev.zkAccountId === zk) return { ok: true };
+      return { error: { code: "INVALID_PARTICIPANTS", message: "ZK_LINK_EXISTS: this account already links another zk account" } };
+    }
+    this.zkLinks.set(key, { ...link, accountId: key, zkAccountId: zk });
+    this.zkLinkedIds.add(zk);
+    return { ok: true };
+  }
+
+  /** 0.5.83: zk account linked by `accountId`, if any. */
+  zkAccountOf(accountId: Fr): Fr | undefined {
+    const l = this.zkLinks.get(accountId.toHex());
+    return l ? new Fr(BigInt(`0x${l.zkAccountId}`)) : undefined;
+  }
+
+  isZkAccount(id: Fr): boolean {
+    return this.zkLinkedIds.has(id.toHex());
+  }
+
   acceptsRecipient(id: Fr): boolean {
     if (isKeyDerivedAccountId(id)) return true;
+    if (this.zkLinkedIds.has(id.toHex())) return true;
     if (!isV2AccountIdForm(id)) return false;
     for (; this.provenV2Scanned < this.txs.length; this.provenV2Scanned++) {
       const t = this.txs[this.provenV2Scanned]!;
@@ -980,25 +1062,61 @@ export class UepLedger {
    * v0.5.3: the ledger state and nullifier trees projected to circuit depth
    * (fresh copies). Throws ZK_SLOT_COLLISION if two keys share a slot.
    */
-  zkCircuitProjection(): { state: CircuitTreeProjection; nullifiers: CircuitTreeProjection } {
-    return { state: CircuitTreeProjection.of(this.state, circuitBalanceLeaf), nullifiers: CircuitTreeProjection.of(this.nullifiers.tree) };
+  zkCircuitProjection(version: ZkPayloadVersion = 6): { state: CircuitTreeProjection; nullifiers: CircuitTreeProjection } {
+    if (version === 5) {
+      return { state: CircuitTreeProjection.of(this.state, (leaf) => circuitBalanceLeaf(leaf)), nullifiers: CircuitTreeProjection.of(this.nullifiers.tree) };
+    }
+    return {
+      state: CircuitTreeProjection.of(this.state, (leaf, key) => circuitBalanceLeaf(leaf, this.zkBlindingOf(key)), this.zkCircuitDepthV6),
+      nullifiers: CircuitTreeProjection.of(this.nullifiers.tree, (x) => x, this.zkCircuitDepthV6),
+    };
+  }
+
+  /** 0.5.83: state-tree key of (account, asset) as used by the zk projection. */
+  zkSlotKey(account: Fr, asset: Fr): Fr {
+    return this.leafKey(account, asset);
+  }
+
+  /** 0.5.83: current circuit blinding of a state slot (0 until its first v6 zk-spend). */
+  zkBlindingOf(key: Fr): Fr {
+    return this.zkBlindings.get(key.toHex()) ?? Fr.zero();
+  }
+
+  /** 0.5.83: circuit domain_id (public input 12) of this ledger. */
+  zkDomainId(): Fr {
+    return circuitDomainId(this.domainId);
+  }
+
+  private recordZkBlinding(tx: UepTransaction): void {
+    const p = tx.spendProof?.kind === "zk-spend" ? parseZkSpendPayload(tx.spendProof) : undefined;
+    if (!p || zkPayloadVersion(p) !== 6 || !p.senderNextBlinding) return;
+    const b = new Fr(BigInt(p.senderNextBlinding.startsWith("0x") ? p.senderNextBlinding : `0x${p.senderNextBlinding}`));
+    this.zkBlindings.set(this.leafKey(tx.senderId, tx.assetId).toHex(), b);
   }
 
   /**
    * v0.5.3: circuit-depth transition (roots and paths) a zk-spend of `tx` must
    * prove against the current ledger, or an error code.
    */
-  zkTransitionFor(tx: UepTransaction): { ok: ZkLedgerTransition } | { error: string } {
+  zkTransitionFor(tx: UepTransaction, payloadOrVersion: ZkSpendPayload | ZkPayloadVersion | { version: 6; senderNextBlinding: Fr } = 6): { ok: ZkLedgerTransition } | { error: string } {
+    let version: ZkPayloadVersion;
+    let nb: string | undefined;
+    if (typeof payloadOrVersion === "number") version = payloadOrVersion;
+    else if ("publicInputsHex" in payloadOrVersion) { version = zkPayloadVersion(payloadOrVersion); nb = payloadOrVersion.senderNextBlinding; }
+    else { version = 6; nb = payloadOrVersion.senderNextBlinding.toHex(); }
     const minFee = this.feeFloorOf(tx.assetId);
     const tr = transition({ sender: this.balanceOf(tx.senderId, tx.assetId), recipient: this.balanceOf(tx.recipientId, tx.assetId), treasury: this.balanceOf(TREASURY_ID, tx.assetId) }, tx.amount, minFee);
     if ("err" in tr) return { error: "INSUFFICIENT" };
     try {
-      const { state, nullifiers } = this.zkCircuitProjection();
+      const { state, nullifiers } = this.zkCircuitProjection(version);
+      const blinding = version === 6
+        ? { senderNewBlinding: nb ? new Fr(BigInt(nb.startsWith("0x") ? nb : `0x${nb}`)) : Fr.zero(), blindingOf: (k: Fr) => this.zkBlindingOf(k) }
+        : undefined;
       const t = zkLedgerTransition(state, nullifiers, [
         { account: tx.senderId, newBalance: tr.ok.new.sender },
         { account: tx.recipientId, newBalance: tr.ok.new.recipient },
         { account: TREASURY_ID, newBalance: tr.ok.new.treasury },
-      ], tx.assetId, tx.nullifier);
+      ], tx.assetId, tx.nullifier, blinding);
       return { ok: t };
     } catch (e) {
       return { error: (e as Error).message };
@@ -1006,12 +1124,16 @@ export class UepLedger {
   }
 
   /** v0.5.3: zk-spend checks shared by submit, pending and restore (binding, verifier). */
-  private zkProofError(tx: UepTransaction, verifier: ZkSpendVerifier | undefined): string | undefined {
+  private zkProofError(tx: UepTransaction, verifier: ZkSpendVerifier | undefined, historical = false): string | undefined {
     if (!verifier) return "zk-spend proofs need a configured verifier on this ledger.";
     if (tx.inputNullifiers) return "The spend circuit proves one nullifier; multi-input zk-spends are not supported.";
     const payload = parseZkSpendPayload(tx.spendProof);
     if (!payload) return "Malformed zk-spend payload.";
-    const mismatch = zkBindingMismatches(tx, TREASURY_ID, payload);
+    if (zkPayloadVersion(payload) === 5 && !historical && !this.zkAcceptLegacyV5) {
+      return "zk-spend payload is in the legacy v5 format (12 public inputs); this ledger accepts circuit v6 (13 public inputs, domain_id bound).";
+    }
+    // 0.5.83: v6 binds PI[11] to the circuit commitment of the proof's publics and PI[12] to this domain.
+    const mismatch = zkBindingMismatches(tx, TREASURY_ID, payload, this.zkDomainId());
     if (mismatch.length > 0) return `zk-spend public inputs ${mismatch.join(",")} do not match the transaction.`;
     let ok = false;
     try { ok = verifier.verify(payload) === true; } catch { ok = false; }
@@ -1561,6 +1683,33 @@ export class UepLedger {
     return tx;
   }
 
+  /**
+   * 0.5.83: transaction of a zk account spend from a v6 proof. `publicInputsHex` are the 13
+   * publics of the proof; the nullifier is PI[10] and the sender PI[4]. Nothing is signed.
+   */
+  zkAccountSpendTx(input: { recipientId: Fr; assetId: Fr; amount: bigint; publicInputsHex: string[]; proof: string; senderNextBlinding: Fr; now?: number }): UepTransaction {
+    const pi = input.publicInputsHex.map((h) => new Fr(BigInt(h.startsWith("0x") ? h : `0x${h}`)));
+    if (pi.length !== 13) throw new Error("ZK_PUBLIC_INPUTS");
+    const senderId = pi[4]!;
+    const nullifier = pi[10]!;
+    const fee = creatorFee(input.amount, this.feeFloorOf(input.assetId));
+    const nonce = Fr.zero();
+    const exit = this.isZkAccount(input.recipientId) ? undefined : zkExitNote(input.recipientId, input.assetId, input.amount, nullifier);
+    const outputCommitments = exit ? [exit.commitment] : [];
+    const transactionCommitment = computeTxCommitment({
+      networkId: this.networkId, domainId: this.domainId, senderId, recipientId: input.recipientId, assetId: input.assetId,
+      amount: input.amount, fee, nonce, nullifier, inputCommitments: [], outputCommitments,
+    });
+    return {
+      version: 1, protocol: "UEP-25-prototype", networkId: this.networkId, domainId: this.domainId,
+      txId: txIdFromCommitment(transactionCommitment, nullifier), senderId, recipientId: input.recipientId, assetId: input.assetId,
+      amount: input.amount, fee, nonce, nullifier, inputCommitments: [], outputCommitments, inputNotes: [], outputNotes: exit ? [serializeNote(exit)] : [],
+      transactionCommitment,
+      spendProof: { kind: "zk-spend", backend: "groth16-bn254", payload: JSON.stringify({ publicInputsHex: input.publicInputsHex, proof: input.proof, senderNextBlinding: input.senderNextBlinding.toHex() }) },
+      phase: "LOCAL_VALID", inConflict: false, createdAt: input.now ?? this.blockHeight,
+    };
+  }
+
   /** v0.5.4: prepared outputs. Status only; blinding is never retained here. */
   private readonly preparedOutputs = new PreparedOutputLifecycle();
   /** v0.5.4: pending indexes (same pattern as the committed tx index). */
@@ -1781,6 +1930,9 @@ export class UepLedger {
       // input owner keys are checked below); no secret is needed or used.
       const nullifierError = this.checkSignedNullifier(tx);
       if (nullifierError) return { error: nullifierError };
+    } else if (isZkAccountTx(tx)) {
+      // 0.5.83: zk account spend (balance model). The proof is the authorization.
+      return this.checkZkAccountSpend(tx, opts, minFee, assetIdStr);
     } else if (tx.spendProof?.kind === "zk-spend") {
       // v0.5.3: witness contract on the tx path. Bound public inputs first, then the verifier.
       if (this.zkRootBinding === "circuit-projection") {
@@ -1788,7 +1940,7 @@ export class UepLedger {
         if (opts.overlay && opts.overlay.size > 0) return { error: { code: "PROOF", message: "A root-bound zk-spend must be the first transaction of a batch." } };
         const payload = parseZkSpendPayload(tx.spendProof);
         if (!payload) return { error: { code: "PROOF", message: "Malformed zk-spend payload." } };
-        const t = this.zkTransitionFor(tx);
+        const t = this.zkTransitionFor(tx, payload);
         if ("error" in t) return { error: { code: t.error === "INSUFFICIENT" ? "INSUFFICIENT" : "PROOF", message: `zk-spend root binding: ${t.error}` } };
         const rm = zkRootMismatches(payload, t.ok.roots);
         if (rm.length > 0) return { error: { code: "PROOF", message: `zk-spend public inputs ${rm.join(",")} do not match the projected ledger roots.` } };
@@ -1869,6 +2021,52 @@ export class UepLedger {
     return { inputs, outputs, next: tr.ok.new, assetIdStr };
   }
 
+  /**
+   * 0.5.83: zk account spend. No notes and no Ed25519 signature: the v6 proof shows knowledge
+   * of the sender's H_ACCOUNT preimage and of its circuit leaf, over the projected ledger roots
+   * (always bound on this path); PI[10] is the transaction nullifier. Recipient: a linked zk account.
+   */
+  private checkZkAccountSpend(tx: UepTransaction, opts: { overlay?: Map<AccountKey, bigint> }, minFee: bigint, assetIdStr: string): { error: SubmitError } | CheckedSpend {
+    const shape = zkAccountTxShapeError(tx);
+    if (shape) return { error: { code: "AMOUNT_MISMATCH", message: shape } };
+    const exit = this.zkExitOutputs(tx);
+    if ("error" in exit) return exit;
+    if (opts.overlay && opts.overlay.size > 0) return { error: { code: "PROOF", message: "A root-bound zk-spend must be the first transaction of a batch." } };
+    const payload = parseZkSpendPayload(tx.spendProof);
+    if (!payload || zkPayloadVersion(payload) !== 6) return { error: { code: "PROOF", message: "A zk account spend needs a circuit v6 payload." } };
+    const t = this.zkTransitionFor(tx, payload);
+    if ("error" in t) return { error: { code: t.error === "INSUFFICIENT" ? "INSUFFICIENT" : "PROOF", message: `zk-spend root binding: ${t.error}` } };
+    const rm = zkRootMismatches(payload, t.ok.roots);
+    if (rm.length > 0) return { error: { code: "PROOF", message: `zk-spend public inputs ${rm.join(",")} do not match the projected ledger roots.` } };
+    const zkError = this.zkProofError(tx, this.zkSpendVerifier);
+    if (zkError) return { error: { code: "PROOF", message: zkError } };
+    const bal = (account: Fr) => opts.overlay?.get(ak(account, tx.assetId)) ?? this.balanceOf(account, tx.assetId);
+    const tr = transition({ sender: bal(tx.senderId), recipient: bal(tx.recipientId), treasury: bal(TREASURY_ID) }, tx.amount, minFee);
+    if ("err" in tr) return { error: { code: "INSUFFICIENT", message: tr.err } };
+    return { inputs: [], outputs: exit.outputs, next: tr.ok.new, assetIdStr };
+  }
+
+  /**
+   * 0.5.83: outputs of a zk account spend. To a linked zk account: none (balance only). To an
+   * Ed25519 account (exit): exactly the deterministic exit note, so its notes keep matching its balance.
+   */
+  private zkExitOutputs(tx: UepTransaction): { outputs: Note[] } | { error: SubmitError } {
+    if (tx.recipientId.eq(tx.senderId) || tx.recipientId.eq(TREASURY_ID)) return { error: { code: "INVALID_PARTICIPANTS", message: "A zk account spend pays another account." } };
+    if (this.isZkAccount(tx.recipientId)) {
+      if (tx.outputCommitments.length !== 0) return { error: { code: "OUTPUT_BINDING", message: "A payment to a zk account carries no output note." } };
+      return { outputs: [] };
+    }
+    if (!this.acceptsRecipient(tx.recipientId)) return { error: { code: "INVALID_PARTICIPANTS", message: "Recipient must be a linked zk account, a v3 key-derived account or a proven v2 account." } };
+    const note = zkExitNote(tx.recipientId, tx.assetId, tx.amount, tx.nullifier);
+    let sent: Note | undefined;
+    try { sent = tx.outputNotes?.length === 1 ? deserializeNote(tx.outputNotes[0]!) : undefined; } catch { sent = undefined; }
+    if (tx.outputCommitments.length !== 1 || !tx.outputCommitments[0]!.eq(note.commitment) || !sent || !sent.commitment.eq(note.commitment) || !openNote(sent)) {
+      return { error: { code: "OUTPUT_BINDING", message: "An exit payment carries exactly the exit note of (recipient, asset, amount, nullifier)." } };
+    }
+    if (this.noteTree.indexOf(note.commitment) !== undefined) return { error: { code: "OUTPUT_BINDING", message: "Output note already exists on this ledger." } };
+    return { outputs: [sent] };
+  }
+
   private applySpend(tx: UepTransaction, checked: CheckedSpend): UepTransaction {
     const { inputs, outputs } = checked;
     const tr = { ok: { new: checked.next } };
@@ -1881,6 +2079,8 @@ export class UepLedger {
     this.setBalance(tx.senderId, tx.assetId, tr.ok.new.sender);
     this.setBalance(tx.recipientId, tx.assetId, tr.ok.new.recipient);
     this.setBalance(TREASURY_ID, tx.assetId, tr.ok.new.treasury);
+    // 0.5.83: a v6 zk-spend moves the sender's circuit leaf to its rotated blinding.
+    this.recordZkBlinding(tx);
 
     // `inputs` are the canonical ledger notes resolved above.
     for (const n of inputs) n.spent = true;
@@ -2038,6 +2238,8 @@ export class UepLedger {
       ticks: this.heightAdvanceRecord(),
       assetRegistry: this.assetRegistryBinding(),
       settlementAnchors: this.settlementAnchors.map((a) => ({ ...a, settlementIds: [...a.settlementIds], totals: { ...a.totals } })),
+      // 0.5.83: present only when a zk account link exists (older snapshots hash unchanged).
+      ...(this.zkLinks.size > 0 ? { zkLinks: [...this.zkLinks.values()].map((x) => ({ ...x })) } : {}),
       policyWindows: this.policy.exportWindows(),
       protocol: PROTOCOL_ID,
       protocolVersion: 1,
@@ -2185,6 +2387,8 @@ export class UepLedger {
         maxPendingTransactions: data.maxPendingTransactions,
         assetRegistry: trust.assetRegistry,
         ...(opts.zkRootBinding ? { zkRootBinding: opts.zkRootBinding } : {}),
+        ...(opts.zkAcceptLegacyV5 ? { zkAcceptLegacyV5: true } : {}),
+        ...(opts.zkCircuitDepthV6 ? { zkCircuitDepthV6: opts.zkCircuitDepthV6 } : {}),
       });
     } catch (e) {
       fail("PENDING", (e as Error).message);
@@ -2289,6 +2493,12 @@ export class UepLedger {
     }
     if (!rebuiltState.root().eq(l.state.root())) fail("STATE_ROOT");
 
+    // 0.5.83: zk account links are re-verified (signature by the account's key), then loaded.
+    const links = (data as { zkLinks?: unknown }).zkLinks;
+    if (links !== undefined) {
+      if (!Array.isArray(links) || links.length === 0) fail("ZK_LINKS");
+      for (const link of links as ZkAccountLink[]) if ("error" in l.linkZkAccount(link)) fail("ZK_LINKS", "a zk account link does not verify");
+    }
     // 2. Every note opens, has a well-formed nonce and appears once.
     const noteByCommitment = new Map<string, Note>();
     for (const n of l.notes) {
@@ -2296,7 +2506,7 @@ export class UepLedger {
       if (!n.nonce.eq(noteNonce(n.commitment, n.blinding))) fail("NOTE_NONCE");
       if (noteByCommitment.has(n.commitment.toHex())) fail("NOTE_DUPLICATE");
       // v0.5.0: v3 ids, or the v2 form of state written v0.4.5 to v0.5.0 (grandfathered; its spends still need the key).
-      if (!isKeyDerivedOrV2Form(n.owner)) fail("NOTE_OWNER", "note owner is not a key-derived account");
+      if (!isKeyDerivedOrV2Form(n.owner) && !l.isZkAccount(n.owner)) fail("NOTE_OWNER", "note owner is not a key-derived account or a linked zk account");
       if (!l.assetRecordByFr(n.assetId)) fail("NOTE_ASSET", "note asset is not registered on this network");
       noteByCommitment.set(n.commitment.toHex(), n);
     }
@@ -2352,6 +2562,8 @@ export class UepLedger {
     const txIds = new Set<string>();
     const feesByAsset = new Map<string, bigint>();
     const rebuiltNullifiers = new NullifierSet();
+    const zkDeltas = new Map<string, bigint>();
+    const addDelta = (k: string, d: bigint) => zkDeltas.set(k, (zkDeltas.get(k) ?? 0n) + d);
     for (const tx of l.txs) {
       if (tx.networkId !== l.networkId || tx.domainId !== l.domainId) fail("TX_NETWORK");
       if (txIds.has(tx.txId.toHex())) fail("TX_DUPLICATE");
@@ -2362,17 +2574,36 @@ export class UepLedger {
       // v0.5.3: zk-spend proofs are re-verified (bound inputs 4..11 and the verifier), not trusted from the snapshot.
       if (tx.spendProof?.kind === "zk-spend") {
         if (!opts.zkSpendVerifier) fail("ZK_VERIFIER", "the snapshot contains zk-spend transactions; restore needs opts.zkSpendVerifier");
-        const zkError = l.zkProofError(tx, opts.zkSpendVerifier);
+        const zkError = l.zkProofError(tx, opts.zkSpendVerifier, true);
         if (zkError) fail("TX_ZK_PROOF", zkError);
+        l.recordZkBlinding(tx);
       }
       if (tx.amount <= 0n || tx.fee !== creatorFee(tx.amount, l.feeFloorOf(tx.assetId))) fail("TX_VALUE");
       if (!l.assetRecordByFr(tx.assetId)) fail("TX_ASSET");
+      if (isZkAccountTx(tx)) {
+        // 0.5.83: zk account spend: no notes; the proof (re-verified above) is the authorization.
+        if (zkAccountTxShapeError(tx)) fail("TX_NOTES");
+        if (tx.recipientId.eq(tx.senderId) || tx.recipientId.eq(TREASURY_ID)) fail("TX_PARTICIPANTS");
+        const zkRecipient = l.isZkAccount(tx.recipientId);
+        if (zkRecipient ? tx.outputCommitments.length !== 0 : (!isKeyDerivedOrV2Form(tx.recipientId) || tx.outputCommitments.length !== 1 || !tx.outputCommitments[0]!.eq(zkExitNote(tx.recipientId, tx.assetId, tx.amount, tx.nullifier).commitment))) fail("TX_OUTPUT_BINDING");
+        for (const c of tx.outputCommitments) {
+          if (!noteByCommitment.has(c.toHex())) fail("TX_OUTPUT_MISSING");
+          available.add(c.toHex());
+        }
+        const p = parseZkSpendPayload(tx.spendProof);
+        if (!p || zkPayloadVersion(p) !== 6) fail("TX_ZK_PROOF");
+        if (!txCommitmentOf(tx).eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) fail("TX_COMMITMENT");
+        addDelta(ak(tx.senderId, tx.assetId), -(tx.amount + tx.fee));
+        if (zkRecipient) addDelta(ak(tx.recipientId, tx.assetId), tx.amount); // an exit note is counted with the notes
+        feesByAsset.set(tx.assetId.toHex(), (feesByAsset.get(tx.assetId.toHex()) ?? 0n) + tx.fee);
+        continue;
+      }
       if (!tx.inputNotes || !tx.outputNotes || tx.inputNotes.length !== tx.inputCommitments.length || tx.outputNotes.length !== tx.outputCommitments.length) fail("TX_NOTES");
       const recomputed = txCommitmentOf(tx);
       if (!recomputed.eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) fail("TX_COMMITMENT");
       const ins = tx.inputNotes!.map(deserializeNote); const outs = tx.outputNotes!.map(deserializeNote);
       if (ins.some((n, i) => !openNote(n) || !n.commitment.eq(tx.inputCommitments[i]!)) || outs.some((n, i) => !openNote(n) || !n.commitment.eq(tx.outputCommitments[i]!))) fail("TX_NOTES");
-      const shapeError = checkSpendShape(tx, ins, outs);
+      const shapeError = checkSpendShape(tx, ins, outs, (id) => isKeyDerivedOrV2Form(id) || l.isZkAccount(id));
       if (shapeError) {
         const map: Partial<Record<SubmitError["code"], string>> = { OUTPUT_BINDING: "TX_OUTPUT_BINDING", NOTE_NONCE: "TX_NONCE", INVALID_PARTICIPANTS: "TX_PARTICIPANTS", WRONG_OWNER: "TX_OWNER", ASSET_MISMATCH: "TX_ASSET" };
         fail(map[shapeError.code] ?? "TX_VALUE");
@@ -2421,6 +2652,7 @@ export class UepLedger {
     // 6. Balances equal unspent notes per (owner, asset), plus fee income for the treasury.
     const expectedBalances = new Map<string, bigint>();
     for (const n of l.notes) if (!n.spent) expectedBalances.set(ak(n.owner, n.assetId), (expectedBalances.get(ak(n.owner, n.assetId)) ?? 0n) + n.amount);
+    for (const [k, d] of zkDeltas) expectedBalances.set(k, (expectedBalances.get(k) ?? 0n) + d);
     for (const [assetHex, fees] of feesByAsset) {
       const k = ak(TREASURY_ID, new Fr(assetHex));
       expectedBalances.set(k, (expectedBalances.get(k) ?? 0n) + fees);

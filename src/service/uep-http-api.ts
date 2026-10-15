@@ -80,7 +80,7 @@ export type HttpApiOptions = {
    * a page if the registry is unreachable.
    */
   leiDisplay?: GleifDisplayOptions;
-  /** 0.5.82: display-only ECB/BIS/Eurostat/World Bank figures (never state). */
+  /** 0.5.82: display-only ECB/BIS/Eurostat figures (never state). */
   indicativeDisplay?: IndicativeDisplayOptions;
 };
 

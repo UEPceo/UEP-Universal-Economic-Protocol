@@ -1,0 +1,144 @@
+(node:284091) [UEP_DEP_MS_OPTION] DeprecationWarning: telemetryMaxAge: millisecond options (*Ms) are deprecated since v0.5.1 and converted to heights (ceil, 5 s blocks); use the *Heights option
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ 0.5.83 Block A: v2 signed payload
+  ✔ full flow with v1 refused: publish + reserve signed v2 (15.463259ms)
+  ✔ rejects a v1 signature when the shim is off (5.780528ms)
+  ✔ rejects a valid reservation signature replayed on another network (14.505066ms)
+  ✔ rejects a valid action signature replayed in another domain (Marketplace id) (5.355485ms)
+  ✔ rejects a different nonce (envelope tampered) and nonce reuse (6.49481ms)
+  ✔ rejects the signature in another operation context (type, ids, amounts) (9.712486ms)
+  ✔ enforces the height window (not yet valid, expired, too long) (4.435643ms)
+  ✔ the identical v2 reservation is idempotent, the nonce cannot open a second reservation (10.452433ms)
+  ✔ nonces survive snapshot / restore (replay after restart refused); pre-0.5.83 snapshots migrate to an empty registry (11.657022ms)
+✔ 0.5.83 Block A: v2 signed payload (85.814179ms)
+▶ 0.5.83 Block A: v1 deprecation shim
+  ✔ accepts v1 below the sunset height with one warning, refuses at / after it (0.451815ms)
+  ✔ is off by default under NODE_ENV=production (0.140831ms)
+  ✔ Marketplace: v1 accepted before sunset and refused after (height-based) (4.11104ms)
+✔ 0.5.83 Block A: v1 deprecation shim (5.073225ms)
+▶ 0.5.83 Block A: IoT telemetry v2
+  ✔ v2 telemetry runs end to end with v1 refused (26.868505ms)
+  ✔ machine-signed v2 telemetry for another network or domain is refused; v1 telemetry is refused without the shim (14.332695ms)
+✔ 0.5.83 Block A: IoT telemetry v2 (41.415917ms)
+✔ Block D: install, governance-signed upgrade, atomic persistence and re-verification on reopen (36.570733ms)
+✔ Block D: tampered store, foreign governance, wrong network and rollback are refused (30.610087ms)
+✔ Block D: migration of the pre-0.5.83 layout (bare manifest / bare chain) to storeVersion 1 (20.718922ms)
+✔ Block D: the snapshot binds the registry hash; restore needs the trusted chain; reference node refuses without registry (128.681417ms)
+✔ Block D: the reference node CLI process exits with NODE_REFUSES_TO_OPERATE without the required registry (303.98085ms)
+✔ item 2: a vote of another epoch does not verify, and a proposal of another epoch is refused (16.988538ms)
+✔ item 2: a vote under another validator-set configuration does not verify (3.376937ms)
+✔ item 2: contradictory proposals with the same block but another parent root are equivocation (3.383143ms)
+✔ item 2: votes for two proposal cores never add up to one certificate (8.892004ms)
+✔ item 2: after a restart from the durable store, a contradictory proposal at the same position is still refused (6.660264ms)
+✔ item 2: a precommit needs a prevote certificate for the same proposal core, not just the same block (9.953559ms)
+✔ evidence verifies only for two different blocks signed by the leader at one (height, round) (6.602392ms)
+✔ store persists, de-duplicates, drops a torn last line and re-verifies on reopen (2.223688ms)
+✔ round timer: deterministic, height-based, exponential, reset per height, no firing on a backwards producer (2.786902ms)
+[uep-peer] BFT_LEADER_EQUIVOCATION proposer=bft-0 height=1 round=0
+[uep-peer] BFT_LEADER_EQUIVOCATION proposer=bft-0 height=1 round=0
+[uep-peer] BFT_LEADER_EQUIVOCATION proposer=bft-0 height=1 round=0
+[uep-peer] BFT_LEADER_EQUIVOCATION proposer=bft-0 height=1 round=0
+✔ an equivocating round-0 proposer leaves the height open; honest validators time out by height, change round and decide one block (984.387849ms)
+✔ compat: below the activation height 0.5.80 and 0.5.81 validators sign identical-format votes and verify each other's certificates (448.76456ms)
+✔ compat: from the activation height 0.5.81 signs only v3 and refuses v2; 0.5.80 cannot verify v3 (upgrade before activation) (3.442294ms)
+✔ compat: activation height 0 (default) is pure v3; invalid activation heights are refused (0.665065ms)
+✔ H1: applyCertifiedCommit applies once and records INTENT then APPLIED in a hash-chained log (1023.051221ms)
+✔ H1 replay: the same certificate returns the identical stored result and never changes balances twice (455.577575ms)
+✔ H1 conflict: another block presented for a decided height is rejected and the ledger is unchanged (837.430008ms)
+✔ H1 height mismatch is rejected before any write (738.955257ms)
+✔ H1 prior spend: a certified tx already spent outside the certified path is rejected, nothing written (432.21991ms)
+✔ H1 invalid certificate (too few votes, duplicated/tampered vote) is rejected (440.237537ms)
+✔ H1 crash at before-intent (same-process): recovery finishes or never starts the commit, no partial state, no double apply (844.200885ms)
+✔ H1 crash at before-intent (restart-from-snapshot): recovery finishes or never starts the commit, no partial state, no double apply (823.826117ms)
+✔ H1 crash at intent-torn (same-process): recovery finishes or never starts the commit, no partial state, no double apply (870.885839ms)
+✔ H1 crash at intent-torn (restart-from-snapshot): recovery finishes or never starts the commit, no partial state, no double apply (870.735136ms)
+✔ H1 crash at after-intent (same-process): recovery finishes or never starts the commit, no partial state, no double apply (743.082344ms)
+✔ H1 crash at after-intent (restart-from-snapshot): recovery finishes or never starts the commit, no partial state, no double apply (838.470608ms)
+✔ H1 crash at after-apply (same-process): recovery finishes or never starts the commit, no partial state, no double apply (811.826822ms)
+✔ H1 crash at after-apply (restart-from-snapshot): recovery finishes or never starts the commit, no partial state, no double apply (763.537903ms)
+✔ H1 crash at applied-torn (same-process): recovery finishes or never starts the commit, no partial state, no double apply (775.180708ms)
+✔ H1 crash at applied-torn (restart-from-snapshot): recovery finishes or never starts the commit, no partial state, no double apply (764.76309ms)
+✔ H1 crash at after-applied (same-process): recovery finishes or never starts the commit, no partial state, no double apply (743.278355ms)
+✔ H1 crash at after-applied (restart-from-snapshot): recovery finishes or never starts the commit, no partial state, no double apply (761.403025ms)
+✔ H1 crash at after-kernel-commit (same-process): recovery finishes or never starts the commit, no partial state, no double apply (757.436974ms)
+✔ H1 crash at after-kernel-commit (restart-from-snapshot): recovery finishes or never starts the commit, no partial state, no double apply (972.805338ms)
+✔ H1 recovery from an older snapshot re-applies every APPLIED height in order and checks each root (1392.718745ms)
+✔ H1 a tampered non-tail log entry breaks the hash chain and refuses to start (510.46192ms)
+✔ H1 recovery against a divergent ledger refuses (or aborts) deterministically and never applies (753.269759ms)
+✔ H1 migration: a 0.5.80 bft-commit-journal.json (v1) becomes INTENT entries and recovers to the same root (733.883434ms)
+✔ H1 property (seed 1): random replays, crashes and restarts never apply a certified tx twice; final root matches the reference (1457.171167ms)
+✔ H1 property (seed 7): random replays, crashes and restarts never apply a certified tx twice; final root matches the reference (1490.156127ms)
+✔ H1 property (seed 42): random replays, crashes and restarts never apply a certified tx twice; final root matches the reference (1427.586034ms)
+✔ H1 property (seed 2026): random replays, crashes and restarts never apply a certified tx twice; final root matches the reference (1548.960813ms)
+✔ H1 property (seed 31337): random replays, crashes and restarts never apply a certified tx twice; final root matches the reference (1429.081962ms)
+✔ item 5: an APPLIED commit records the registry; applying under no registry or another manifest afterwards is refused (1033.353567ms)
+✔ item 5: under a registry, unlisted assets cannot be minted or prepared and the snapshot binding is enforced on restore (108.169365ms)
+✔ item 4: a truncated snapshot file does not parse; a truncated transaction list fails integrity (1002.771808ms)
+✔ item 4: a corrupted field (state root, balance, height) fails integrity (405.602713ms)
+✔ item 4: a snapshot of a newer (unknown) format is refused; a snapshot signed by an unknown key is refused (119.145764ms)
+✔ item 4: rollback below the current height is refused unless the operator forces it explicitly (122.719077ms)
+✔ item 4: catchUp refuses a validly signed peer snapshot from a forked history and keeps its ledger (980.038521ms)
+✔ item 4: catchUp accepts a peer snapshot that extends this node's history (724.07917ms)
+✔ item 4: outside BFT mode the node's own persisted height floor refuses an older or forked ledger at start-up and on catch-up (631.691029ms)
+✔ item 9: v2 envelope is refused across network, domain, epoch, when stale, replayed, tampered or badly signed (8.775334ms)
+✔ item 9: key rotation needs the old key and a validator quorum; revocation needs a quorum; both are height-scoped and sequence-checked (10.031546ms)
+[uep-peer] PEER_REPLAY from=node-1 path=/vote ip=127.0.0.1
+[uep-peer] PEER_DOMAIN_MISMATCH from=node-1 path=/vote ip=127.0.0.1
+[uep-peer] UEP_DEP_PEER_ENVELOPE_V1: accepted an unbound v1 peer envelope; set legacyEnvelopeUntilHeight to retire v1 (removed in 0.6.0)
+✔ item 9: PeerNet speaks v2, refuses replays over HTTP, can retire v1 at a height, and sets connection limits and timeouts (251.062828ms)
+✔ item 8: parseAmount refuses negative, NaN, Infinity, floats, exponents, hex, signs, padding, leading zeros, > u64, non-numeric types (1.431381ms)
+✔ item 8: decimal units are exact; extra precision is refused, never rounded (0.434562ms)
+✔ item 8: canonical fee rounding (0.1%, floor, min 1) and per-asset conservation over random u64 amounts (seed 20261015) (9.850596ms)
+✔ item 8: notes transported or restored with a non-u64 amount are refused (0.306827ms)
+✔ item 8/10: parseAmount fuzz — random strings either are refused or round-trip canonically (seed 20261015) (77.716969ms)
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:publish signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(Use `node --trace-deprecation ...` to show where the warning was created)
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:read signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:publish signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+(node:285283) [UEP_V1_SIGNATURE] DeprecationWarning: UEP: legacy v1 action:publish signature accepted under the deprecation shim (sunset height 6307200); sign v2 payloads
+✔ item 6: transition table is closed, terminal states are absorbing, settlement needs a receipt (1.234065ms)
+✔ item 6: seeded random operations only take table transitions, conserve value, stay idempotent and survive snapshot recovery (seed 20261015) (5143.040279ms)
+✔ item 6: hold expiry is height-based and returns the hold; dispute resolution is deterministic for the same inputs (33.385615ms)
+ℹ tests 81
+ℹ suites 3
+ℹ pass 81
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 41364.320137

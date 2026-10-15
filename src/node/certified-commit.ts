@@ -138,7 +138,7 @@ export class CommitLog {
   all(): readonly CommitLogEntry[] { return this.entries; }
   get headHash(): string { return this.entries.at(-1)?.hash ?? COMMIT_LOG_GENESIS; }
 
-  append(fields: Omit<CommitLogEntry, "v" | "seq" | "prevHash" | "hash">, torn = false): CommitLogEntry {
+  append(fields: Omit<CommitLogEntry, "v" | "seq" | "prevHash" | "hash">, torn = false, afterTornWrite?: () => void): CommitLogEntry {
     const base = { v: 1 as const, seq: this.entries.length, ...fields, prevHash: this.headHash };
     const entry: CommitLogEntry = { ...base, hash: entryHash(base) };
     const line = JSON.stringify(entry) + "\n";
@@ -153,6 +153,7 @@ export class CommitLog {
         // Crash simulation: half a line reaches the disk, then the process dies.
         writeSync(fd, line.slice(0, Math.max(1, Math.floor(line.length / 2))));
         fsyncSync(fd);
+        afterTornWrite?.(); // 0.5.83 Block C: a real crash (SIGKILL) right after the half line reached the disk
         throw new Error("CRASH_INJECTED: torn write");
       }
       writeSync(fd, line);
@@ -193,6 +194,8 @@ export type CertifiedCommitInput = { proposal: BftProposal; proposalSignature: s
 export type CommitterOptions = {
   /** Crash-test hook: called at every write point; throwing there simulates a crash. */
   faultInjector?: (point: CommitWritePoint) => void;
+  /** 0.5.83 Block C: called after a torn (half) line was fsync'd, before the simulated failure is thrown. */
+  afterTornWrite?: () => void;
 };
 
 export class CertifiedCommitter {
@@ -200,12 +203,14 @@ export class CertifiedCommitter {
   private readonly kernel: BftConsensusKernel;
   private readonly getLedger: () => UepLedger;
   private readonly inject: (point: CommitWritePoint) => void;
+  private readonly afterTorn?: () => void;
 
   constructor(log: CommitLog, kernel: BftConsensusKernel, getLedger: () => UepLedger, opts: CommitterOptions = {}) {
     this.log = log;
     this.kernel = kernel;
     this.getLedger = getLedger;
     this.inject = opts.faultInjector ?? (() => {});
+    this.afterTorn = opts.afterTornWrite;
   }
 
   /** Status of a BFT height in the commit log. A certificate alone never reads as APPLIED. */
@@ -275,7 +280,7 @@ export class CertifiedCommitter {
       type: "INTENT", height: proposal.height, round: proposal.round, blockId: proposal.blockId, certHash,
       preRoot, postRoot: null, result: null,
       proposal: structuredClone(proposal), proposalSignature, certificate: structuredClone(certificate), tx: txToWire(tx),
-    }, this.injectTorn("intent-torn"));
+    }, this.injectTorn("intent-torn"), this.afterTorn);
     this.inject("after-intent");
     return this.finish(intent);
   }
@@ -347,7 +352,7 @@ export class CertifiedCommitter {
       registry: registryOf(ledger),
     };
     this.log.append({ type: "APPLIED", height: intent.height, round: intent.round, blockId: intent.blockId, certHash: intent.certHash,
-      preRoot: intent.preRoot, postRoot: result.postRoot, result }, this.injectTorn("applied-torn"));
+      preRoot: intent.preRoot, postRoot: result.postRoot, result }, this.injectTorn("applied-torn"), this.afterTorn);
     this.inject("after-applied");
     this.kernel.recordCommit(intent.certificate!);
     this.inject("after-kernel-commit");

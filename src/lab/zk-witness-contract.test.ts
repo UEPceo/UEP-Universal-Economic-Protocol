@@ -97,6 +97,21 @@ describe("zk witness contract 28.4", () => {
     assert.equal(validateZkSpendInstance(inst, { checkCrypto: true, accountIdDerivation: "circuit-h-account" }).ok, false);
   });
 
+  it("0.5.83: Poseidon witnesses get the tree checks (path, siblings, index bits)", () => {
+    const base = makeInstance();
+    const inst = { ...base, witness: { ...base.witness, usePoseidon: true } };
+    const ok = validateZkSpendInstance(inst, { checkTrees: true });
+    assert.equal(ok.ok, true, ok.ok ? "" : ok.errors.join("; "));
+    const sib = [...inst.witness.senderPath.siblings]; sib[0] = sib[0]!.add(Fr.from(1n));
+    const badSib = { ...inst, witness: { ...inst.witness, senderPath: { ...inst.witness.senderPath, siblings: sib } } };
+    assert.equal(validateZkSpendInstance(badSib, { checkTrees: true }).ok, false);
+    const bits = [...inst.witness.recipientPath.indexBits]; bits[0] = !bits[0];
+    const badBits = { ...inst, witness: { ...inst.witness, recipientPath: { ...inst.witness.recipientPath, indexBits: bits } } };
+    const r = validateZkSpendInstance(badBits, { checkTrees: true });
+    assert.equal(r.ok, false);
+    assert.ok(!r.ok && r.errors.some((e) => /path bits do not encode its index/.test(e)));
+  });
+
   it("rejects wrong noteNonce / secret / nullifier / index", () => {
     const base = makeInstance();
 

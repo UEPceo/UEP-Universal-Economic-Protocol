@@ -152,6 +152,10 @@ pub fn honest_spend_fixture_poseidon<const D: usize>(
         nullifier_index_bits: to_bits(&nf_bits_v),
         nullifier_leaf: nullifier,
         use_poseidon: true,
+        layout: crate::spend_circuit::SpendLayout::V5Legacy,
+        sender_new_blinding: s_blind,
+        recipient_slot_empty: false,
+        treasury_slot_empty: false,
     }
 }
 

@@ -10,6 +10,7 @@ import { generateEd25519KeyPair, publicKeyHexOf } from "../core/ed25519.ts";
 import { generateMnemonic, identityFromMnemonic } from "../identity/index.ts";
 import { UepLedger } from "../testnet/ledger.ts";
 import { assembleNode, newNodeLedger } from "./assemble.ts";
+import { AssetRegistryStore, assertRegistryPolicy, type NetworkRegistryPolicy } from "./asset-registry-store.ts";
 import { clusterTrust } from "./cluster-trust.ts";
 import { PeerNet, type Peer } from "./peer-net.ts";
 
@@ -70,9 +71,19 @@ const others = list ? list.peers.filter((peer) => peer.id !== nodeId) : [];
 const trust = clusterTrust({ snapshotPublicKeyHex: snapshotKey.publicKeyHex, faucetPublicKeyHex: faucetKey.publicKeyHex }, others);
 const signing = { snapshotSigningKeys: [snapshotKey.privateKey], faucetSigningKey: faucetKey.privateKey };
 
+// 0.5.83 Block D: network registry policy (UEP_REGISTRY_POLICY=<policy.json>: { networkId, requireAssetRegistry, governance }).
+// The governance-signed manifest chain is kept in <dir>/asset-registry.json (AssetRegistryStore); with
+// requireAssetRegistry the node refuses to operate without it.
+const registryPolicy = process.env.UEP_REGISTRY_POLICY ? JSON.parse(readFileSync(process.env.UEP_REGISTRY_POLICY, "utf8")) as NetworkRegistryPolicy : undefined;
+const registryStore = registryPolicy ? (dir ? AssetRegistryStore.open(dir, registryPolicy) : undefined) : undefined;
+if (registryPolicy) assertRegistryPolicy(registryPolicy, registryStore?.registry, registryPolicy.networkId);
+const assetRegistry = registryStore?.registry;
+if (assetRegistry) (trust as { assetRegistry?: unknown }).assetRegistry = assetRegistry;
+
 let ledger = dir && existsSync(join(dir, "ledger.snapshot.json"))
   ? UepLedger.restore(JSON.parse(readFileSync(join(dir, "ledger.snapshot.json"), "utf8"), reviveBigInt), trust, signing)
-  : newNodeLedger({ snapshotKey, faucetKey, noteBlindingDomain: blindingDomain });
+  : newNodeLedger({ snapshotKey, faucetKey, noteBlindingDomain: blindingDomain, assetRegistry });
+registryStore?.assertNotBehind(ledger.assetRegistryBinding());
 
 // 0.5.81 item 4: the ledger read from disk must not be below this node's own persisted height floor.
 if (dir) new HeightFloor(dir).check(ledger, { allowRegression: process.env.UEP_ALLOW_HEIGHT_REGRESSION === "1" });
@@ -93,7 +104,7 @@ if (list && me && nodeId) {
 }
 
 const marketplaceSnapshot = dir && existsSync(join(dir, "marketplace.snapshot.json")) ? JSON.parse(readFileSync(join(dir, "marketplace.snapshot.json"), "utf8")) : undefined;
-const node = assembleNode({ custody, feeAccount, snapshotKey, faucetKey, noteBlindingDomain: blindingDomain, ledger, marketplaceSnapshot });
+const node = assembleNode({ custody, feeAccount, snapshotKey, faucetKey, noteBlindingDomain: blindingDomain, ledger, marketplaceSnapshot, ...(registryPolicy ? { registryPolicy } : {}) });
 if (net && node.ledger !== net.ledger) throw new Error("LEDGER_SPLIT: the node and the peer port must serve one ledger");
 if (dir) {
   const save = () => {

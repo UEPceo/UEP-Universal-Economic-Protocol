@@ -5,11 +5,17 @@ use std::collections::HashMap;
 
 use crate::hash_gadget::{h_merkle, Hash2, StructuralTestHash, UepPoseidon};
 
-#[derive(Clone)]
 pub struct NativeSmt<H: Hash2, const D: usize> {
     nodes: HashMap<(usize, u64), Fr>,
     empty: Vec<Fr>,
     _h: std::marker::PhantomData<H>,
+}
+
+// Manual Clone: the hasher is a marker type and need not be Clone.
+impl<H: Hash2, const D: usize> Clone for NativeSmt<H, D> {
+    fn clone(&self) -> Self {
+        Self { nodes: self.nodes.clone(), empty: self.empty.clone(), _h: std::marker::PhantomData }
+    }
 }
 
 impl<H: Hash2, const D: usize> NativeSmt<H, D> {

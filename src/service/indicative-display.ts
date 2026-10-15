@@ -1,18 +1,24 @@
 /**
- * 0.5.82: display-only indicative figures from ECB, BIS, Eurostat and the
- * World Bank (same pattern as gleif-display.ts). Not a protocol input.
+ * 0.5.82: display-only indicative figures from ECB, BIS and Eurostat
+ * (same pattern as gleif-display.ts). Not a protocol input. The fourth
+ * 0.5.82 source was removed in 0.5.83 by director decision; its id is kept
+ * only as a compat shim that always answers "no disponible" and never
+ * makes a request.
  *
  * A figure shown here is an indicative equivalence for the operator's
  * interface. It never enters a policy decision, a quote, a settlement, an
  * oracle reference or ledger state, and no module under src/ outside this
  * display reads it. If a source does not answer (timeout, HTTP error, body
  * without a value) the page shows "no disponible" and keeps working. Each
- * figure carries the source's attribution. The reuse terms of these four
+ * figure carries the source's attribution. The reuse terms of these
  * sources have not been reviewed for this project; treat the display as
  * informational only.
  */
 
-export type IndicativeSourceId = "ECB" | "BIS" | "EUROSTAT" | "WORLDBANK";
+export type IndicativeSourceId = "ECB" | "BIS" | "EUROSTAT";
+/** 0.5.83 compat: ids removed from the display, accepted but never queried. */
+export const REMOVED_INDICATIVE_SOURCES = ["WORLDBANK"] as const;
+export type RemovedIndicativeSourceId = (typeof REMOVED_INDICATIVE_SOURCES)[number];
 
 export type IndicativeSource = {
   id: IndicativeSourceId;
@@ -63,17 +69,6 @@ function parseJsonStat(body: unknown): { value: string; period: string | null } 
   return { value, period };
 }
 
-/** World Bank API v2: [meta, [ {value, date}, ... ]]. */
-function parseWorldBank(body: unknown): { value: string; period: string | null } | null {
-  if (!Array.isArray(body) || !Array.isArray(body[1])) return null;
-  for (const row of body[1] as unknown[]) {
-    const r = obj(row);
-    const value = num(r?.value);
-    if (value !== null) return { value, period: typeof r?.date === "string" ? r.date : null };
-  }
-  return null;
-}
-
 export const INDICATIVE_SOURCES: Record<IndicativeSourceId, IndicativeSource> = {
   ECB: {
     id: "ECB",
@@ -96,13 +91,6 @@ export const INDICATIVE_SOURCES: Record<IndicativeSourceId, IndicativeSource> = 
     attribution: "Fuente: Eurostat (prc_hicp_manr).",
     parse: parseJsonStat,
   },
-  WORLDBANK: {
-    id: "WORLDBANK",
-    label: "Inflación, precios al consumidor (% anual), España (Banco Mundial)",
-    url: "https://api.worldbank.org/v2/country/ESP/indicator/FP.CPI.TOTL.ZG?format=json&mrv=1",
-    attribution: "Fuente: Banco Mundial, World Development Indicators (CC BY 4.0).",
-    parse: parseWorldBank,
-  },
 };
 
 export type IndicativeDisplay = {
@@ -117,11 +105,20 @@ export type IndicativeDisplay = {
   note: string;
 };
 
+/** Answer for an id removed from the display (or unknown): no request, never available. */
+export type RemovedIndicativeDisplay = Omit<IndicativeDisplay, "source"> & { source: string; removed: true };
+
+function removedIndicative(id: string, opts: IndicativeDisplayOptions): RemovedIndicativeDisplay {
+  const queriedAt = (opts.now ?? (() => new Date()))().toISOString();
+  return { source: id, label: id, queriedAt, available: false, value: null, period: null, sourceUrl: "", attribution: "", note: `${INDICATIVE_DISPLAY_NOTE} Fuente retirada de UEP; no se consulta.`, removed: true };
+}
+
 export type IndicativeDisplayOptions = { fetch?: typeof fetch; timeoutMs?: number; now?: () => Date };
 
 /** One source for display. Never throws; a missing source leaves `available: false`. */
-export async function displayIndicative(id: IndicativeSourceId, opts: IndicativeDisplayOptions = {}): Promise<IndicativeDisplay> {
-  const src = INDICATIVE_SOURCES[id];
+export async function displayIndicative(id: IndicativeSourceId | RemovedIndicativeSourceId, opts: IndicativeDisplayOptions = {}): Promise<IndicativeDisplay | RemovedIndicativeDisplay> {
+  if (!Object.hasOwn(INDICATIVE_SOURCES, id)) return removedIndicative(id as string, opts);
+  const src = INDICATIVE_SOURCES[id as IndicativeSourceId];
   const queriedAt = (opts.now ?? (() => new Date()))().toISOString();
   const base: IndicativeDisplay = { source: id, label: src.label, queriedAt, available: false, value: null, period: null, sourceUrl: src.url, attribution: src.attribution, note: INDICATIVE_DISPLAY_NOTE };
   try {
@@ -137,9 +134,9 @@ export async function displayIndicative(id: IndicativeSourceId, opts: Indicative
   }
 }
 
-/** All four sources, queried in parallel; each one fails independently. */
+/** All configured sources, queried in parallel; each one fails independently. */
 export async function displayAllIndicative(opts: IndicativeDisplayOptions = {}): Promise<IndicativeDisplay[]> {
-  return Promise.all((Object.keys(INDICATIVE_SOURCES) as IndicativeSourceId[]).map((id) => displayIndicative(id, opts)));
+  return Promise.all((Object.keys(INDICATIVE_SOURCES) as IndicativeSourceId[]).map((id) => displayIndicative(id, opts) as Promise<IndicativeDisplay>));
 }
 
 function escapeHtml(value: string): string {

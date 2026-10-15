@@ -26,6 +26,8 @@ import { SpendSerializer } from "../testnet/spend-serializer.ts";
 import { UepLedger } from "../testnet/ledger.ts";
 import type { IdentitySecrets } from "../identity/kdf.ts";
 import type { Server } from "node:http";
+import type { AssetRegistry } from "../core/asset-registry.ts";
+import { assertRegistryPolicy, type NetworkRegistryPolicy } from "./asset-registry-store.ts";
 
 export type AssembledNode = {
   ledger: UepLedger;
@@ -50,6 +52,8 @@ export function newNodeLedger(input: {
   snapshotKey: ReturnType<typeof generateEd25519KeyPair>;
   faucetKey: ReturnType<typeof generateEd25519KeyPair>;
   noteBlindingDomain?: bigint;
+  /** 0.5.83 Block D: governance-verified asset registry the ledger enforces (and binds in every snapshot). */
+  assetRegistry?: AssetRegistry;
 }): UepLedger {
   return new UepLedger({
     networkId: TESTNET.networkId,
@@ -59,6 +63,7 @@ export function newNodeLedger(input: {
     snapshotSigningKeys: [input.snapshotKey.privateKey],
     faucetSigningKey: input.faucetKey.privateKey,
     noteBlindingDomain: input.noteBlindingDomain ?? BigInt("0x" + randomBytes(16).toString("hex")),
+    ...(input.assetRegistry ? { assetRegistry: input.assetRegistry } : {}),
   });
 }
 
@@ -71,13 +76,18 @@ export function assembleNode(input: {
   noteBlindingDomain?: bigint;
   ledger?: UepLedger;
   marketplaceSnapshot?: unknown;
+  /** 0.5.83 Block D: network registry policy. With requireAssetRegistry the node refuses to start without a valid registry. */
+  registryPolicy?: NetworkRegistryPolicy;
+  assetRegistry?: AssetRegistry;
 }): AssembledNode {
   if (poseidonBackendName() !== "uep-poseidon-bn254-x5-3-v1") {
     throw new Error("POSEIDON_BACKEND: the node boots on the JS constants; WASM is optional and must match them");
   }
   const snapshotKey = input.snapshotKey ?? generateEd25519KeyPair();
   const faucetKey = input.faucetKey ?? generateEd25519KeyPair();
-  const ledger = input.ledger ?? newNodeLedger({ snapshotKey, faucetKey, noteBlindingDomain: input.noteBlindingDomain });
+  const ledger = input.ledger ?? newNodeLedger({ snapshotKey, faucetKey, noteBlindingDomain: input.noteBlindingDomain, assetRegistry: input.assetRegistry });
+  // 0.5.83 Block D: refuse to operate without the registry when the network policy requires it.
+  if (input.registryPolicy) assertRegistryPolicy(input.registryPolicy, ledger.assetRegistry, ledger.networkId);
   const admin = createMarketplaceIdentity(input.adminId ?? "uep-node-admin");
   const marketplace = new DigitalServicesMarketplace({
     adminIdentity: admin.identityId,

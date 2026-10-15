@@ -1,0 +1,4 @@
+#EventID|Time|Latitude|Longitude|Depth/km|Author|Catalog|Contributor|ContributorID|MagType|Magnitude|MagAuthor|EventLocationName|EventType
+gfz2026udji|2026-10-14T10:49:48.08|-21.03|-178.857|582.1|||GFZ|gfz2026udji|Mw|5.92||Fiji Islands Region|earthquake
+gfz2026ucdm|2026-10-13T18:45:04.76|-5.41|152.033|27.4|||GFZ|gfz2026ucdm|Mw|5.97||New Britain Region, Papua New Guinea|earthquake
+gfz2026ubyz|2026-10-13T16:28:12.19|-5.418|152.162|10.0|||GFZ|gfz2026ubyz|mb|5.01||New Britain Region, Papua New Guinea|earthquake

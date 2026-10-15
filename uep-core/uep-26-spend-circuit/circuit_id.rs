@@ -14,6 +14,34 @@ use crate::smt_gadget::SMT_DEPTH;
 /// v5: transaction_commitment frozen on hFoldV2 (UEP-26.3). v4 proofs do not verify under this tag.
 pub const CIRCUIT_TAG: &str = "UEP-27-SPEND-POSEIDON-D32-v5-foldv2";
 
+/// 0.5.83: circuit v6 (sender blinding rotation, empty receiving slots, depth 64).
+/// v5 proofs keep verifying under their own pinned v5 key; they do not verify under v6.
+pub const CIRCUIT_TAG_V6: &str = "UEP-27-SPEND-POSEIDON-D64-v6-rotblind";
+/// Production depth of the v6 state and nullifier trees.
+pub const CIRCUIT_DEPTH_V6: usize = 64;
+/// Constraint count of the v6 circuit at D=64 (measured with `uep-zk count-constraints`).
+pub const CIRCUIT_CONSTRAINTS_V6: usize = 278_503;
+/// Legacy v5 identifiers (kept for verification of existing proofs).
+pub const LEGACY_CIRCUIT_TAG_V5: &str = CIRCUIT_TAG;
+
+/// Accepted circuit tags → (layout, production depth). Anything else is rejected.
+pub fn layout_for_tag(tag: &str) -> Option<(crate::spend_circuit::SpendLayout, usize)> {
+    use crate::spend_circuit::SpendLayout;
+    match tag {
+        CIRCUIT_TAG_V6 => Some((SpendLayout::V6, CIRCUIT_DEPTH_V6)),
+        CIRCUIT_TAG => Some((SpendLayout::V5Legacy, SMT_DEPTH)),
+        _ => None,
+    }
+}
+
+/// Tag printed with artefacts of a layout.
+pub fn tag_for_layout(layout: crate::spend_circuit::SpendLayout) -> &'static str {
+    match layout {
+        crate::spend_circuit::SpendLayout::V6 => CIRCUIT_TAG_V6,
+        crate::spend_circuit::SpendLayout::V5Legacy => CIRCUIT_TAG,
+    }
+}
+
 /// Seed of the development (non-ceremony) Groth16 setup. Fixed so the dev VK
 /// is reproducible and can be pinned by hash (see vectors/UEP-ZK-DEV-VK-PINS.json).
 pub const DEV_SETUP_SEED: u64 = 42;
