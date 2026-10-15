@@ -33,7 +33,7 @@ const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 120; // generous for local harness; still bounds floods
 /** 0.5.81 item 9: connection limits, timeouts and backpressure for the peer HTTP server. */
 export const PEER_SERVER_LIMITS = Object.freeze({ maxConnections: 256, maxInFlight: 64, headersTimeoutMs: 10_000, requestTimeoutMs: 20_000, keepAliveTimeoutMs: 5_000 });
-const NODE_VERSION = "0.5.81";
+const NODE_VERSION = "0.5.82";
 
 export class PeerNet {
   readonly id: string;
