@@ -10,7 +10,8 @@
 import { stableStringify, sha256Hex, signEd25519, verifyEd25519, publicKeyHexOf, type PrivateKeyLike } from "../core/ed25519.ts";
 
 export type BftPhase = "prevote" | "precommit";
-export type BftDomain = { networkId: string; domainId: string };
+/** `epoch` (default 0) names the validator-set configuration period; votes and proposals of another epoch never verify. */
+export type BftDomain = { networkId: string; domainId: string; epoch?: number };
 export type BftValidator = { id: string; publicKeyHex: string };
 export type BftProposal = BftDomain & {
   height: number;
@@ -29,6 +30,10 @@ export type BftVote = BftDomain & {
   phase: BftPhase;
   voterId: string;
   blockId: string;
+  /** 0.5.81 (vote v3): epoch, validator-set configuration and the full proposal core are signed. */
+  epoch: number;
+  validatorSetHash: string;
+  proposalHash: string;
   /** Prevotes carry a higher-round POL when needed; precommits carry the same-round prevote quorum. */
   justificationCertificate: BftCertificate | null;
   signature: string;
@@ -38,6 +43,8 @@ export type BftCertificate = {
   round: number;
   phase: BftPhase;
   blockId: string;
+  /** All votes of a certificate sign the same proposal core (0.5.81). */
+  proposalHash?: string;
   votes: BftVote[];
 };
 export type BftLock = { height: number; round: number; blockId: string; certificate: BftCertificate };
@@ -67,6 +74,9 @@ export class BftConsensusKernel {
   readonly faultTolerance: number;
   readonly quorum: number;
   readonly domain: BftDomain;
+  readonly epoch: number;
+  /** SHA-256 of the sorted (id, publicKeyHex) validator set and fault tolerance. */
+  readonly validatorSetHash: string;
   private readonly validatorById: Map<string, BftValidator>;
   private readonly localVotes = new Map<string, string>();
   private readonly committed = new Map<string, string>();
@@ -91,6 +101,16 @@ export class BftConsensusKernel {
     this.validatorById = new Map(this.validators.map(v => [v.id, v]));
     this.faultTolerance = faultTolerance;
     this.quorum = 2 * faultTolerance + 1;
+    this.epoch = domain.epoch ?? 0;
+    if (!validInt(this.epoch)) throw new Error("BFT_EPOCH_INVALID");
+    this.validatorSetHash = sha256Hex(stableStringify({ f: faultTolerance, validators: this.validators.map(v => ({ id: v.id, publicKeyHex: v.publicKeyHex })) }));
+  }
+
+  /** Hash of the proposal core every vote signs: domain, epoch, validator set, position, proposer, parent root and block. */
+  proposalHash(p: Pick<BftProposal, "height" | "round" | "proposerId" | "parentRoot" | "blockId">): string {
+    return sha256Hex(stableStringify({ protocol: "uep-bft-proposal-core-v1", networkId: this.domain.networkId, domainId: this.domain.domainId,
+      epoch: this.epoch, validatorSetHash: this.validatorSetHash, height: p.height, round: p.round, proposerId: p.proposerId,
+      parentRoot: p.parentRoot, blockId: p.blockId }));
   }
 
   leader(height: number, round: number): string {
@@ -135,7 +155,8 @@ export class BftConsensusKernel {
     if (phase === "precommit") {
       const proof = proposal.prevoteCertificate;
       if (!proof || proof.phase !== "prevote" || proof.height !== proposal.height ||
-          proof.round !== proposal.round || proof.blockId !== proposal.blockId || !this.verifyCertificate(proof)) {
+          proof.round !== proposal.round || proof.blockId !== proposal.blockId || proof.proposalHash !== this.proposalHash(proposal) ||
+          !this.verifyCertificate(proof)) {
         throw new Error("BFT_PRECOMMIT_REQUIRES_PREVOTE_QUORUM");
       }
       // The certificate alone is not enough: this validator must have accepted
@@ -152,7 +173,9 @@ export class BftConsensusKernel {
       }
     }
     const position = `${proposal.height}:${proposal.round}:${phase}:${voterId}`;
-    const value = proposal.blockId;
+    // The remembered value is the proposal core hash: a second proposal with the same block but
+    // another parent root or proposer at the same position is equivocation too.
+    const value = this.proposalHash(proposal);
     const prior = this.localVotes.get(position);
     if (prior && prior !== value) throw new Error("BFT_EQUIVOCATION");
     if (!prior) {
@@ -162,7 +185,8 @@ export class BftConsensusKernel {
       this.persistState?.({ ...this.exportState(), votes: [...nextVotes] });
       this.localVotes.set(position, value);
     }
-    const voteBase = { ...this.domain, height: proposal.height, round: proposal.round, phase, voterId, blockId: value,
+    const voteBase = { networkId: this.domain.networkId, domainId: this.domain.domainId, height: proposal.height, round: proposal.round, phase, voterId, blockId: proposal.blockId,
+      epoch: this.epoch, validatorSetHash: this.validatorSetHash, proposalHash: value,
       justificationCertificate: phase === "precommit" ? proposal.prevoteCertificate ?? null : proposal.validRoundCertificate ?? null };
     return { ...voteBase, signature: signEd25519(this.voteMessage(voteBase), privateKey) };
   }
@@ -170,13 +194,14 @@ export class BftConsensusKernel {
   verifyVote(vote: BftVote): boolean {
     if (!vote || vote.networkId !== this.domain.networkId || vote.domainId !== this.domain.domainId ||
       !validInt(vote.height) || vote.height < 1 || !validInt(vote.round) ||
-      (vote.phase !== "prevote" && vote.phase !== "precommit") || !HEX_256.test(vote.blockId)) return false;
+      (vote.phase !== "prevote" && vote.phase !== "precommit") || !HEX_256.test(vote.blockId) ||
+      vote.epoch !== this.epoch || vote.validatorSetHash !== this.validatorSetHash || !HEX_256.test(vote.proposalHash ?? "")) return false;
     const validator = this.validatorById.get(vote.voterId);
     if (!validator) return false;
     const proof = vote.justificationCertificate;
     if (vote.phase === "precommit") {
       if (!proof || proof.phase !== "prevote" || proof.height !== vote.height || proof.round !== vote.round ||
-          proof.blockId !== vote.blockId || !this.verifyCertificate(proof)) return false;
+          proof.blockId !== vote.blockId || proof.proposalHash !== vote.proposalHash || !this.verifyCertificate(proof)) return false;
     } else if (proof !== null && (!proof || proof.phase !== "prevote" || proof.height !== vote.height ||
         proof.round >= vote.round || proof.blockId !== vote.blockId || !this.verifyCertificate(proof))) return false;
     const { signature: _signature, ...unsigned } = vote;
@@ -187,21 +212,31 @@ export class BftConsensusKernel {
     return this.voteCertificate(height, round, "precommit", blockId, votes);
   }
 
-  voteCertificate(height: number, round: number, phase: BftPhase, blockId: string, votes: BftVote[]): BftCertificate {
+  voteCertificate(height: number, round: number, phase: BftPhase, blockId: string, votes: BftVote[], proposalHash?: string): BftCertificate {
     if (!validInt(height) || height < 1 || !validInt(round) || !HEX_256.test(blockId) ||
         (phase !== "prevote" && phase !== "precommit")) throw new Error("BFT_CERTIFICATE_INVALID");
     const unique = new Set<string>();
+    // Votes for different proposal cores never add up: the certificate's proposal is the one most votes sign
+    // (or the one the caller names); ties are broken by hash order so the choice is deterministic.
+    let target = proposalHash;
+    if (!target) {
+      const tally = new Map<string, number>();
+      for (const v of votes) if (v && typeof v.proposalHash === "string") tally.set(v.proposalHash, (tally.get(v.proposalHash) ?? 0) + 1);
+      target = [...tally].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0];
+    }
     const accepted = votes.filter(v => {
-      if (v.height !== height || v.round !== round || v.phase !== phase || v.blockId !== blockId || unique.has(v.voterId) || !this.verifyVote(v)) return false;
+      if (v.height !== height || v.round !== round || v.phase !== phase || v.blockId !== blockId || v.proposalHash !== target ||
+          unique.has(v.voterId) || !this.verifyVote(v)) return false;
       unique.add(v.voterId); return true;
     });
     if (accepted.length < this.quorum) throw new Error("BFT_QUORUM_NOT_MET");
-    return { height, round, phase, blockId, votes: accepted };
+    return { height, round, phase, blockId, proposalHash: target, votes: accepted };
   }
 
   verifyCertificate(certificate: BftCertificate): boolean {
     try {
-      const verified = this.voteCertificate(certificate.height, certificate.round, certificate.phase, certificate.blockId, certificate.votes);
+      if (!HEX_256.test(certificate.proposalHash ?? "")) return false;
+      const verified = this.voteCertificate(certificate.height, certificate.round, certificate.phase, certificate.blockId, certificate.votes, certificate.proposalHash);
       return verified.votes.length >= this.quorum;
     } catch { return false; }
   }
@@ -235,7 +270,7 @@ export class BftConsensusKernel {
     if (publicKeyHexOf(privateKey) !== validator.publicKeyHex) throw new Error("BFT_SIGNING_KEY_MISMATCH");
     const lock = this.locks.get(String(height));
     if (lock && targetRound <= lock.round) throw new Error("BFT_ROUND_CHANGE_NOT_AHEAD_OF_LOCK");
-    const base = { ...this.domain, height, targetRound, validatorId,
+    const base = { networkId: this.domain.networkId, domainId: this.domain.domainId, epoch: this.epoch, height, targetRound, validatorId,
       lockedRound: lock?.round ?? null, lockedBlockId: lock?.blockId ?? null,
       validRoundCertificate: lock?.certificate ?? null };
     const position = `${height}:${targetRound}:${validatorId}`;
@@ -266,7 +301,8 @@ export class BftConsensusKernel {
             !cert || cert.phase !== "prevote" || cert.height !== message.height || cert.round !== message.lockedRound ||
             cert.blockId !== message.lockedBlockId || !this.verifyCertificate(cert)) return false;
       }
-      return verifyEd25519(this.roundChangeMessage({ networkId: message.networkId, domainId: message.domainId,
+      if ((message.epoch ?? 0) !== this.epoch) return false;
+      return verifyEd25519(this.roundChangeMessage({ networkId: message.networkId, domainId: message.domainId, epoch: this.epoch,
         height: message.height, targetRound: message.targetRound, validatorId: message.validatorId,
         lockedRound: message.lockedRound, lockedBlockId: message.lockedBlockId,
         validRoundCertificate: message.validRoundCertificate }), message.signature, validator.publicKeyHex);
@@ -370,7 +406,7 @@ export class BftConsensusKernel {
   }
 
   private assertProposal(p: BftProposal): void {
-    if (!p || p.networkId !== this.domain.networkId || p.domainId !== this.domain.domainId ||
+    if (!p || p.networkId !== this.domain.networkId || p.domainId !== this.domain.domainId || (p.epoch ?? 0) !== this.epoch ||
       !validInt(p.height) || p.height < 1 || !validInt(p.round) || !p.proposerId ||
       !HEX_256.test(p.parentRoot) || !HEX_256.test(p.blockId)) throw new Error("BFT_PROPOSAL_INVALID");
     if (p.validRoundCertificate !== undefined) {
