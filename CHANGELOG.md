@@ -8,6 +8,7 @@ Triage of the external "Aegis-Orbit" static report on v0.5.81 (`AUDIT-MV990F9F-L
 - Regression tests `src/testnet/aegis-0582.test.ts` (nullifier reuse, amount = 1 / fee = 2, fee ≤ gross, integer score).
 - `.gitleaks.toml` allowlist for the RFC 9180 HPKE test vectors and the `test-only-objects-token` fixture.
 - Open: network-ID binding of marketplace reservation/action and IoT telemetry signatures (signed-format change, not made here).
+- External sources (Research): evidence statements v2 bound to the local network (`UEP-EVIDENCE-STATEMENT-v2`, v1 only for archives); observation height bounds and signed `maxAgeHeights`; signed `onNoEvidence` / `evidenceDeadlineHeight` with `resolveNoEvidence()`; canonical claim and distinct-source-set structure (tolerances residual); off-node `scripts/adapters/` with `check:adapters`; display-only ECB/BIS/Eurostat/World Bank figures (`GET /v1/display/indicators`). No snapshot format change.
 - Tests: TESTCOUNTS
 
 ## 0.5.81 — 2026-10-15
