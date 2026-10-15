@@ -1,4 +1,5 @@
 import { builtinContracts, assertCategoryContract, type CategoryContract } from "../category/contract.ts";
+import { assertOrderTransition } from "./order-state-machine.ts";
 import { ServiceEventBus, type ServiceEventType } from "./events.ts";
 /**
  * UEP Digital Services Marketplace v0.1
@@ -1510,6 +1511,7 @@ export class DigitalServicesMarketplace {
     order.fundingDue = 0n;
     order.depositOutcome = "APPLIED_TO_PAYMENT";
     this.adjustUnfunded(order, -1);
+    assertOrderTransition(order.status, "HELD");
     order.status = "HELD";
     this.emitOrder(order.orderId, "order.held");
     order.updatedAt = this.now();
@@ -1541,6 +1543,7 @@ export class DigitalServicesMarketplace {
     // A delivered order settles or refunds through capture() / release(): keep its sponsorship.
     if (order.gasFee && order.gasFee > 0n && order.gasQuoteId && this.paymaster) this.paymaster.pin(order.orderId, order.gasQuoteId);
     order.deliveryHash = hash;
+    assertOrderTransition(order.status, "DELIVERED");
     order.status = "DELIVERED";
     this.emitOrder(order.orderId, "order.delivered");
     order.deliveredAt = this.now();
@@ -1616,6 +1619,7 @@ export class DigitalServicesMarketplace {
     if (order.status !== "DELIVERED") throw new Error("ORDER_NOT_DISPUTABLE");
     const now = this.now();
     if (now >= (order.deliveredAt ?? order.updatedAt) + order.windows.deliveryDisputeWindow) throw new Error("DISPUTE_WINDOW_CLOSED");
+    assertOrderTransition(order.status, "DISPUTED");
     order.status = "DISPUTED";
     this.emitOrder(order.orderId, "order.disputed");
     order.disputedAt = now;
@@ -1964,7 +1968,12 @@ export class DigitalServicesMarketplace {
       gas: gas > 0n ? { fee: gas, quoteId: order.gasQuoteId } : undefined,
       outcome: outcome as SettlementOutcome,
     };
+    // 0.5.81 item 6: validate the transition before any value moves.
+    const nextStatus: OrderStatus = providerAmount > 0n ? "SETTLED" : "REFUNDED";
+    assertOrderTransition(order.status, nextStatus, { settlementReceiptHash: "pre-check" });
     const receipt = this.settlementEngine.execute(instruction, this.orderLedgerPort());
+    // The transition was checked before execute(); the engine must return a receipt hash.
+    if (!receipt.receiptHash) throw new Error("SETTLEMENT_RECEIPT_REQUIRED");
     const fee = receipt.marketplaceFee;
     const providerNet = receipt.providerNet;
     const gasCaptured = receipt.gasCaptured;
@@ -1973,7 +1982,7 @@ export class DigitalServicesMarketplace {
     order.settledFee = fee;
     order.providerPayout = providerNet;
     order.buyerRefund = buyerRefund;
-    order.status = providerAmount > 0n ? "SETTLED" : "REFUNDED";
+    order.status = nextStatus;
     this.emitOrder(order.orderId, order.status === "SETTLED" ? "order.settled" : "order.refunded");
     if (disputeOutcome || order.disputedAt !== undefined) order.disputeOutcome = disputeOutcome ?? outcome;
     order.updatedAt = this.now();
@@ -2142,6 +2151,7 @@ export class DigitalServicesMarketplace {
     order.fundingDue = 0n;
     this.releasePaymaster(order);
     this.applyCapacityRestore(order, 0n, order.quantity);
+    assertOrderTransition(order.status, status);
     order.status = status;
     order.updatedAt = this.now();
     order.version++;

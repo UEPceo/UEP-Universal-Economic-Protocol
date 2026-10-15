@@ -9,6 +9,8 @@ Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`
 
 - Item 5 (partial): each APPLIED certified commit records the asset-registry {version, hash}; a later commit under no registry, an older version or a different manifest at the same version fails with BFT_REGISTRY_REGRESSION before anything is written. Tests: src/node/registry-binding.test.ts. The reference node still runs without a registry by default.
 
+- Item 6 (partial): marketplace order state machine written as data (src/marketplace/order-state-machine.ts: phases HOLD/EVIDENCE/SETTLEMENT/CLOSED, transition table). Every status write is checked (ORDER_TRANSITION_INVALID); SETTLED/REFUNDED are checked before value moves and require the settlement-engine receipt hash (SETTLEMENT_RECEIPT_REQUIRED).
+
 ## 0.5.80 — 2026-10-13
 
 - Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.
