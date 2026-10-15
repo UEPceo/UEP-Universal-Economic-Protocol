@@ -1,3 +1,14 @@
+## 0.5.83 — 2026-10-15
+
+External source adapters requested by Research (reports UEP-RR-2026-10-08-001 and UEP-RR-2026-10-15-002). All off-node in `scripts/adapters/`; no state transition, snapshot format or signed format changes. With every source down, every node behaves exactly as before. No price enters state. Protocol fee 0.1 %, Marketplace fee 3 %, no native token.
+
+- `scripts/adapters/lib.mjs`: hard timeout, non-200 = unavailable, strict UTF-8/JSON, NFC without trimming or case folding, BigInt decimal scaling (no float on values).
+- Seismic (phase 2.3 preparation): `seismic.mjs`, `usgs-seismic.mjs` (USGS, public domain), `geofon-seismic.mjs` (GEOFON, CC BY 4.0, attribution required). Each emits the 0.5.82 canonical SEISMIC claim and `claimHash` for attesters. Cross-source tolerances remain residual (30-day study); `compareSources()` reports `SOURCES_DISCREPANT` or refuses with `EVIDENCE_TOLERANCES_UNSET`. Not wired to settlement.
+- Lab only, behind `UEP_LAB_SOURCES=1`: NOAA SWPC Kp and F10.7, JPL Horizons, CelesTrak, NASA DSN Now, Open-Meteo (non-commercial only).
+- Not added: EMSC (written permission needed), IANA/IERS leap-second files (waiting for the exporter), discarded sources.
+- Docs: sources table with licence, attribution and account requirement in `docs/ORACLE.md`; `docs/EVIDENCE.md`; README module table and `docs/MODULES.md` section 22.
+- Tests: `npm run test:adapters` (11 tests, recorded fixtures, network disabled), in `test:core`: normalization, claim output, lab flag, malformed data, timeouts, down sources and discrepant sources.
+
 ## 0.5.82 — 2026-10-15
 
 Triage of the external "Aegis-Orbit" static report on v0.5.81 (`AUDIT-MV990F9F-LUPO`; summary [`docs/audit/AUDIT-EXTERNA-2026-10-15-AEGIS.md`](docs/audit/AUDIT-EXTERNA-2026-10-15-AEGIS.md), matrix [`docs/audit/0.5.82-RESOLUTION.md`](docs/audit/0.5.82-RESOLUTION.md)). Protocol fee 0.1 %, Marketplace fee 3 %, no native token, Poseidon BN254 unchanged.
@@ -9,7 +20,7 @@ Triage of the external "Aegis-Orbit" static report on v0.5.81 (`AUDIT-MV990F9F-L
 - `.gitleaks.toml` allowlist for the RFC 9180 HPKE test vectors and the `test-only-objects-token` fixture.
 - Open: network-ID binding of marketplace reservation/action and IoT telemetry signatures (signed-format change, not made here).
 - External sources (Research): evidence statements v2 bound to the local network (`UEP-EVIDENCE-STATEMENT-v2`, v1 only for archives); observation height bounds and signed `maxAgeHeights`; signed `onNoEvidence` / `evidenceDeadlineHeight` with `resolveNoEvidence()`; canonical claim and distinct-source-set structure (tolerances residual); off-node `scripts/adapters/` with `check:adapters`; display-only ECB/BIS/Eurostat/World Bank figures (`GET /v1/display/indicators`). No snapshot format change.
-- Tests: TESTCOUNTS
+- Tests: new regression files `src/testnet/aegis-0582.test.ts` and `src/marketplace/evidence-0582.test.ts`; `test:all` passed on Node 22 and 24 before release.
 
 ## 0.5.81 — 2026-10-15
 

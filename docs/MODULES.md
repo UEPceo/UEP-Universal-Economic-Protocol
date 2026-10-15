@@ -1,6 +1,6 @@
 # UEP modules
 
-> Module map of the repository at v0.5.82 (on `main`; Latest GitHub Release: v0.5.82).
+> Module map of the repository at v0.5.83 (branch `feat/0.5.83-sources`; Latest GitHub Release: v0.5.82).
 > Status labels follow the README legend: **Implemented (testnet)** = local,
 > single-node, in-process testnet only; **Experimental (lab)**; **Planned**; **Research**.
 > Nothing in this repository is a live network or a production system. There is no
@@ -91,6 +91,7 @@ ledger verifies anchored settlement receipts itself and never calls the Marketpl
 | 19 | Reference node, BFT safety kernel, PeerNet, certified commit log | `src/node` | Experimental (lab) | 0.5.10 (BFT kernel 0.5.74, PeerNet 0.5.78, certified commit log, vote activation, round timer, peer envelope v2, height floor 0.5.81) | `test:consensus`, `test:node` |
 | 20 | SDK (client, Marketplace, IoT/M2M, CLI) | `sdk/` | Implemented (testnet) | 0.5.20 | `test:sdk`, `test:node` |
 | 21 | Configuration and examples | `config/`, `examples/` | Implemented (testnet) | 0.5.42 / 0.5.23 | `test:consensus`, `examples/sample-service.test.ts` |
+| 22 | External source adapters (off-node) | `scripts/adapters/` | Experimental (lab), off-node | 0.5.83 | `test:adapters`, `check:adapters` |
 
 ---
 
@@ -222,3 +223,6 @@ Client library for the node HTTP API: `sdk/client`, `sdk/marketplace`, `sdk/iot-
 
 `config/peers.json` and `config/consensus-bft.example.json` are example node and peer configurations (public keys only; no private keys are shipped). `examples/` holds a first transaction, a sample service and a service template.
 
+## 22. External source adapters (`scripts/adapters/`)
+
+Off-node code run by attesters or in the lab, never by a node, `src/` or the ledger worker (`npm run check:adapters` fails on any `src/` import of it). `seismic.mjs` (USGS, public domain; GEOFON, CC BY 4.0 with attribution) parses each source into integer events and emits the 0.5.82 canonical SEISMIC claim with its `claimHash` and the `dataHash` of the fetched bytes; cross-source agreement stays undecided while the tolerances are unset (residual, 30-day study), and the claims are not wired to settlement. `lab-sources.mjs` (NOAA SWPC Kp and F10.7, JPL Horizons, CelesTrak, DSN, Open-Meteo non-commercial only) runs only with `UEP_LAB_SOURCES=1`. Shared helpers in `lib.mjs`: timeout, strict UTF-8 and schema checks, NFC without trimming or case folding, BigInt decimal scaling. Recorded fixtures in `fixtures/` keep the tests offline. Sources table: [`ORACLE.md`](./ORACLE.md#sources-table-0583). Since 0.5.83. Tests: `test:adapters` (in `test:core`).

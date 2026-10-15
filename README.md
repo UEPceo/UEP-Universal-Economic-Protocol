@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.82` (experimental BFT safety kernel, certified commit log, authenticated PeerNet transport) · Latest GitHub Release: **v0.5.82**
+> **Version:** `0.5.83` on branch `feat/0.5.83-sources` (experimental BFT safety kernel, certified commit log, authenticated PeerNet transport) · Latest GitHub Release: **v0.5.82**
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -62,15 +62,17 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | [Node configuration examples](docs/MODULES.md#21-configuration-and-examples-config-examples) | `config/`, `examples/` | Implemented (testnet) | 0.5.42 / 0.5.23 | `test:consensus`, sample service test |
 | [Service gateways and adapters (IoT gateway, GLEIF display, storage adapters)](docs/MODULES.md#12-serviceapi-lab-srcserviceuep-ts-storage-adapters-groth16-spend-queuets) | `src/service/*` | Experimental (lab) | 0.5.x | `test:lab`, `test:marketplace` |
 
+| [External source adapters (off-node: USGS, GEOFON; lab: NOAA SWPC, JPL Horizons, CelesTrak, DSN, Open-Meteo)](docs/MODULES.md#22-external-source-adapters-scriptsadapters) | `scripts/adapters/` | Experimental (lab), off-node | 0.5.83 | `test:adapters`, `check:adapters` |
+
 "Hashlock swap" (`src/category/swap.ts`) is a bilateral settlement between two parties; the "AMM lab pool" (`src/lab/liquidity.ts`) is a research simulation that never moves testnet value. Full module map: [`docs/MODULES.md`](docs/MODULES.md).
 
-### Current status (v0.5.82)
+### Current status (v0.5.83, draft branch)
 
 | Item | Status |
 |---|---|
-| Version | `0.5.82` (2026-10-15, on `main`, GitHub Release `v0.5.82`): experimental BFT safety kernel with authenticated PeerNet transport, hash-chained certified commit log, height-based vote-format activation and round-change timeout; resolution matrices in [`docs/audit/0.5.81-RESOLUTION.md`](docs/audit/0.5.81-RESOLUTION.md) and [`docs/audit/0.5.82-RESOLUTION.md`](docs/audit/0.5.82-RESOLUTION.md), reference node in `src/node`, SDK, node configuration examples, ledger snapshot format 10, development ZK verifying-key pins for circuit v5-foldv2. Changes since v0.5.3 are in the [CHANGELOG](./CHANGELOG.md) (0.5.4 – 0.5.82) |
-| Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.82 entry](./CHANGELOG.md) (single source of truth) |
-| Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts in the [CHANGELOG 0.5.82 entry](./CHANGELOG.md); known-issue list: [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
+| Version | `0.5.83` (2026-10-15, branch `feat/0.5.83-sources`, not released; Latest GitHub Release `v0.5.82`): off-node external source adapters (USGS, GEOFON; lab-only NOAA SWPC, JPL Horizons, CelesTrak, DSN, Open-Meteo); experimental BFT safety kernel with authenticated PeerNet transport, hash-chained certified commit log, height-based vote-format activation and round-change timeout; resolution matrices in [`docs/audit/0.5.81-RESOLUTION.md`](docs/audit/0.5.81-RESOLUTION.md) and [`docs/audit/0.5.82-RESOLUTION.md`](docs/audit/0.5.82-RESOLUTION.md), reference node in `src/node`, SDK, node configuration examples, ledger snapshot format 10, development ZK verifying-key pins for circuit v5-foldv2. Changes since v0.5.3 are in the [CHANGELOG](./CHANGELOG.md) (0.5.4 – 0.5.83) |
+| Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.83 entry](./CHANGELOG.md) (single source of truth) |
+| Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts in the [CHANGELOG 0.5.83 entry](./CHANGELOG.md); known-issue list: [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); ledger snapshot format 10 (formats 5–9 migrated), Marketplace snapshot format 4 (formats 1–3 migrated) ([compatibility policy](docs/COMPATIBILITY.md)) |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
