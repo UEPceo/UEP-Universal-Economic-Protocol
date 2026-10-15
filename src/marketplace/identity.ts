@@ -14,7 +14,6 @@
 import type { KeyObject } from "node:crypto";
 import { generateEd25519KeyPair, sha256Hex, signEd25519, stableStringify, type PrivateKeyLike } from "../core/ed25519.ts";
 import { actionMessageV2, reservationMessageV2, type BindingContext, type SignatureEnvelopeV2 } from "./signature-v2.ts";
-import { randomBytes } from "node:crypto";
 
 export const DEFAULT_MARKETPLACE_ID = "uep-marketplace-testnet";
 
@@ -158,13 +157,12 @@ export function signCancellation(a: CancellationAuthorization, privateKey: Priva
   return signEd25519(cancellationMessage(a), privateKey);
 }
 
-/** 0.5.83: fresh random nonce (client side) for a v2 envelope. */
-export function newSignatureNonce(): string {
-  return randomBytes(16).toString("hex");
-}
-
-/** 0.5.83: build a v2 envelope valid from `fromHeight` for `heights` heights. */
-export function envelopeV2(fromHeight: number, heights = 120, nonce = newSignatureNonce()): SignatureEnvelopeV2 {
+/**
+ * 0.5.83: build a v2 envelope valid from `fromHeight` for `heights` heights. The nonce is injected by the
+ * caller (client randomness: sdk `newSignatureNonce()`; tests: a deterministic counter), so this module
+ * reads no randomness (determinism lint).
+ */
+export function envelopeV2(fromHeight: number, heights: number, nonce: string): SignatureEnvelopeV2 {
   return { v: 2, nonce, validFromHeight: fromHeight, validUntilHeight: fromHeight + heights };
 }
 

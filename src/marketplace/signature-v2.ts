@@ -133,18 +133,17 @@ export class LegacyV1Policy {
   #warn: (m: string) => void;
   accepted = 0;
 
-  constructor(config: LegacyV1Config | undefined, currentHeight = 0, unitsPerHeight = 1) {
-    if (config === false || (config === undefined && isProductionEnvironment())) {
+  constructor(config: LegacyV1Config | undefined, currentHeight = 0, unitsPerHeight = 1, production = isProductionEnvironment()) {
+    if (config === false || (config === undefined && production)) {
       this.enabled = false; this.sunsetHeight = 0; this.explicit = config === false; this.#warn = () => {};
       return;
     }
     const c = config ?? { sunsetHeight: currentHeight + DEFAULT_LEGACY_V1_SUNSET_HEIGHTS * unitsPerHeight };
     if (!Number.isSafeInteger(c.sunsetHeight) || c.sunsetHeight < 0) throw new Error("LEGACY_V1_SUNSET_INVALID");
     this.enabled = true; this.sunsetHeight = c.sunsetHeight; this.explicit = config !== undefined;
-    // Configuration time: the environment is read here, never inside a transition.
-    const silent = typeof process !== "undefined" && process.env.UEP_SILENCE_V1_WARNING === "1";
+    // Configuration time only. Pass `warn` to route or silence the one-time deprecation warning.
     const emit = typeof process !== "undefined" ? process.emitWarning.bind(process) : () => {};
-    this.#warn = c.warn ?? ((m) => { if (!silent) emit(m, "DeprecationWarning", "UEP_V1_SIGNATURE"); });
+    this.#warn = c.warn ?? ((m) => emit(m, "DeprecationWarning", "UEP_V1_SIGNATURE"));
   }
 
   /** Throws unless a v1 signature may still be accepted at `height`. */

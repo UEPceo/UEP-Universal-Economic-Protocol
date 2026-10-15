@@ -7,6 +7,7 @@ import { createMarketplaceIdentity, disputeReasonHash, envelopeV2, listingTerms,
 import type { DigitalServicesMarketplace, DisputeResolution, ServiceListing, ServiceOrder, SettlementRecord } from "./marketplace.ts";
 import type { GasQuote } from "./paymaster.ts";
 import { contentHash } from "../service/content-hash.ts";
+import { sha256Hex } from "../core/ed25519.ts";
 import type { Fr } from "../core/field.ts";
 import { encodeAccountAddress } from "../core/address.ts";
 import { deriveSpendKey } from "../core/spend-key.ts";
@@ -15,6 +16,15 @@ const registry = new WeakMap<DigitalServicesMarketplace, Map<string, Marketplace
 /** Admin / arbiter test keys, looked up by identity id + public key. */
 const authorities = new Map<string, MarketplaceIdentity>();
 let autoKey = 0;
+let nonceCounter = 0;
+/** 0.5.83 test-only: deterministic, unique v2 nonce (no randomness in scanned code). */
+export function testNonce(): string {
+  return sha256Hex(`uep-testkit-nonce:${++nonceCounter}`).slice(0, 32);
+}
+/** 0.5.83 test-only: v2 envelope with a test nonce. */
+export function testEnvelope(fromHeight: number, heights = 120) {
+  return envelopeV2(fromHeight, heights, testNonce());
+}
 
 /**
  * Create a test authority key (administrator or settlement arbiter). Pass
@@ -104,7 +114,7 @@ function keyOf(m: DigitalServicesMarketplace, actorId: string): MarketplaceIdent
 export function act(m: DigitalServicesMarketplace, actorId: string, action: MarketplaceAction, target: string, details: Record<string, unknown> = {}, identity?: MarketplaceIdentity): ActorAuth {
   const signer = identity ?? keyOf(m, actorId);
   // 0.5.83: when the v1 shim is off (legacyV1Signatures: false), sign v2 payloads.
-  if (!m.legacyV1.enabled) return signActionV2(m.bindingContext(), { action, actorId, target, details }, envelopeV2(m.clock()), signer.privateKey);
+  if (!m.legacyV1.enabled) return signActionV2(m.bindingContext(), { action, actorId, target, details }, testEnvelope(m.clock()), signer.privateKey);
   return signAction({ marketplaceId: m.marketplaceId, action, actorId, target, details }, signer.privateKey);
 }
 
@@ -140,7 +150,7 @@ export function reserveAs(
   const idempotencyKey = input.idempotencyKey ?? `auto-${++autoKey}`;
   let order: ServiceOrder;
   if (!m.legacyV1.enabled && input.notAfterHeight === undefined) {
-    const envelope = envelopeV2(m.clock());
+    const envelope = testEnvelope(m.clock());
     const signature = signReservationV2(m.bindingContext(), { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId }, envelope, identity.privateKey);
     order = m.reserve({ ...input, idempotencyKey, signature, envelope });
   } else {

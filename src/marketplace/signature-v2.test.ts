@@ -5,8 +5,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DigitalServicesMarketplace } from "./marketplace.ts";
-import { envelopeV2, listingTerms, signActionV2, signReservation, signReservationV2 } from "./identity.ts";
-import { act, createTestAuthority, enrollIdentity, publishAs, reserveAs, testCredit } from "./testkit.ts";
+import { listingTerms, signActionV2, signReservation, signReservationV2 } from "./identity.ts";
+import { act, createTestAuthority, enrollIdentity, publishAs, reserveAs, testCredit, testEnvelope as envelopeV2 } from "./testkit.ts";
 import { LegacyV1Policy, MAX_V2_WINDOW_HEIGHTS, NonceRegistry } from "./signature-v2.ts";
 import { IoTM2MService, IOT_M2M_CATEGORY, signIoTTelemetry } from "../service/iot-m2m.ts";
 import { deliverTelemetryAs, holdAs, machineKey, registerMachineAs, registerProviderAs, requestAs, simulateAs } from "../service/iot-testkit.ts";
@@ -155,9 +155,9 @@ describe("0.5.83 Block A: v1 deprecation shim", () => {
   });
 
   it("is off by default under NODE_ENV=production", () => {
-    const prev = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
-    try { assert.equal(new LegacyV1Policy(undefined).enabled, false); } finally { if (prev === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prev; }
+    // The production flag is injected (configuration time); no environment mutation in the test.
+    assert.equal(new LegacyV1Policy(undefined, 0, 1, true).enabled, false);
+    assert.equal(new LegacyV1Policy(undefined, 0, 1, false).enabled, true);
   });
 
   it("Marketplace: v1 accepted before sunset and refused after (height-based)", () => {

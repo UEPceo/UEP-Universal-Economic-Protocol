@@ -1,9 +1,12 @@
+import { randomBytes } from "node:crypto";
 /**
  * @uep/marketplace — buyer and provider calls over the local API.
  */
 import { listingTerms, signAction, signReservation } from "../../src/marketplace/identity.ts";
 // 0.5.83 (Block A): v2 client helpers (network / domain / nonce / height-window bound signatures).
-export { envelopeV2, newSignatureNonce, signActionV2, signReservationV2 } from "../../src/marketplace/identity.ts";
+export { envelopeV2, signActionV2, signReservationV2 } from "../../src/marketplace/identity.ts";
+/** 0.5.83: fresh random nonce for a v2 envelope (client side; randomness stays outside the protocol code). */
+export function newSignatureNonce(): string { return randomBytes(16).toString("hex"); }
 import { signEd25519 } from "../../src/core/ed25519.ts";
 import { serializeTx, type UepTransaction } from "../../src/core/transaction.ts";
 import { contentHash } from "../../src/service/content-hash.ts";
