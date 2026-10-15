@@ -26,6 +26,8 @@ type Config = {
   /** 0.5.83 Block B: when set, an internal height-producer ticker feeds the round timer every autoTickMs (ticks are counted heights, not wall time inside the protocol). */
   autoTickMs?: number;
   roundTimer?: { baseTicks: number; maxDoublings: number };
+  /** Per-IP peer rate limit; the loopback harness raises it because all peers share 127.0.0.1. */
+  peerRateMax?: number;
 };
 
 const decode = (_k: string, v: unknown) => v && typeof v === "object" && "$b" in v && typeof (v as { $b: unknown }).$b === "string" ? BigInt((v as { $b: string }).$b) : v;
@@ -59,11 +61,13 @@ if (crashAt) {
 }
 const recovered = await net.recoverBftCommits();
 if (cfg.roundTimer) net.configureRoundTimer(cfg.roundTimer);
+if (cfg.peerRateMax) net.rateMax = cfg.peerRateMax;
 
 // 0.5.83 Block B: pending transactions (harness-submitted) and automatic round change / re-proposal.
 const mempool = new Map<string, ReturnType<typeof txFromWire>>();
 const proposedAt = new Set<string>();
 const chosen = new Map<string, string>();
+const lastTryTick = new Map<string, number>();
 let tick = 0;
 let ticking = false;
 async function autoStep(): Promise<void> {
@@ -75,6 +79,10 @@ async function autoStep(): Promise<void> {
     for (const [id, tx] of mempool) if (net.ledger.txs.some(t => t.txId.toHex() === id)) mempool.delete(id);
     const round = net.bftRound();
     if (round < 1 || net.bftLeader(height, round) !== cfg.id || proposedAt.has(`${height}:${round}`)) return;
+    // Back off between re-proposals of one round (every baseTicks ticks), to keep peer traffic bounded.
+    const lastTry = lastTryTick.get(`${height}:${round}`);
+    if (lastTry !== undefined && tick - lastTry < (cfg.roundTimer?.baseTicks ?? 4)) return;
+    lastTryTick.set(`${height}:${round}`, tick);
     if (!net.bftRoundChangeCertificate(height, round)) return;
     proposedAt.add(`${height}:${round}`);
     // Prefer the block a round-change certificate forces (highest lock), else any pending transaction that applies.

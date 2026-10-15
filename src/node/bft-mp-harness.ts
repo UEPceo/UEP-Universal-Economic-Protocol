@@ -123,6 +123,8 @@ export async function startCluster(o: ClusterOptions) {
     writeFileSync(file, JSON.stringify({
       id: `v${i}`, voterPem: keys[i]!.pem, stateDir: join(dir, "state"), peerPort: peerPorts[i], controlPort: ctlPorts[i],
       validators, faultTolerance: Math.floor((n - 1) / 3), genesisFile, trust,
+      // Every peer reaches every other through 127.0.0.1 here, so the per-IP limit (120/min) is raised; it still bounds floods.
+      peerRateMax: 1_200,
       ...(o.autoTickMs ? { autoTickMs: o.autoTickMs } : {}), ...(o.roundTimer ? { roundTimer: o.roundTimer } : {}), ...(o.extraConfig ?? {}),
       peers: validators.map((_, j) => j).filter(j => j !== i).map(j => ({ id: `v${j}`, url: `http://127.0.0.1:${proxyPort.get(`${i}>${j}`)}`, publicKeyHex: keys[j]!.publicKeyHex })),
     }), { mode: 0o600 });

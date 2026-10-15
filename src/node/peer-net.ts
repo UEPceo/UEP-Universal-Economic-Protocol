@@ -61,6 +61,8 @@ export class PeerNet {
   commitFaultInjector?: CommitterOptions["faultInjector"];
   /** 0.5.83 Block C crash-test hook (after a torn log line reached the disk). */
   commitAfterTornWrite?: () => void;
+  /** Per-source-IP request limit per minute (default 120). 0.5.83: configurable, because a loopback harness puts every peer behind one IP. */
+  rateMax = RATE_MAX;
   /** 0.5.81 item 9: v1 (unbound, replayable) envelopes are accepted while ledger.height < this. Default: always (deprecated, warns once). */
   legacyEnvelopeUntilHeight = Number.POSITIVE_INFINITY;
   private legacyWarned = false;
@@ -157,7 +159,7 @@ export class PeerNet {
       // that lost it (drops, partition, restart) can still assemble the round-change certificate.
       const round = this.bftRound();
       const mine = round >= 1 ? this.roundChanges.get(`${height}:${round}`)?.get(this.id) : undefined;
-      if (mine && tick % this.roundTimer.config.baseTicks === 0) {
+      if (mine && tick % this.roundTimer.config.baseTicks === 0 && !this.bftRoundChangeCertificate(height, round)) {
         await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/round-change", () => this.signed("/bft/round-change", { roundChange: mine }))));
       }
       return undefined;
@@ -283,6 +285,7 @@ export class PeerNet {
     const mine = kernel.createVote(proposal, "prevote", this.id, this.privateKey, signature);
     const replies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/proposal", () => this.signed("/bft/proposal", { proposal, proposalSignature: signature, ...(wireTx ? { tx: wireTx } : {}) }))));
     const prevotes = [mine, ...replies.map(reply => reply?.vote as BftVote | undefined).filter((vote): vote is BftVote => !!vote)];
+    if (prevotes.length < kernel.quorum) console.error(`[uep-peer] BFT prevote replies h=${proposal.height} r=${proposal.round}: ${JSON.stringify(replies.map(r => r?.error ?? (r?.vote ? "vote" : "none")))}`);
     const prevoteCertificate = kernel.voteCertificate(proposal.height, proposal.round, "prevote", proposal.blockId, prevotes);
     kernel.observePrevoteCertificate(prevoteCertificate);
 
@@ -294,6 +297,7 @@ export class PeerNet {
     const localPrecommit = kernel.createVote(lockedProposal, "precommit", this.id, this.privateKey, lockedSignature);
     const lockReplies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/prevote-certificate", () => this.signed("/bft/prevote-certificate", { proposal: lockedProposal, proposalSignature: lockedSignature, certificate: prevoteCertificate }))));
     const precommits = [localPrecommit, ...lockReplies.map(reply => reply?.vote as BftVote | undefined).filter((vote): vote is BftVote => !!vote)];
+    if (precommits.length < kernel.quorum) console.error(`[uep-peer] BFT precommit replies h=${proposal.height} r=${proposal.round}: ${JSON.stringify(lockReplies.map(r => r?.error ?? (r?.vote ? "vote" : "none")))}`);
     const commitCertificate = kernel.voteCertificate(proposal.height, proposal.round, "precommit", proposal.blockId, precommits);
     if (tx) await this.applyBftCommit(lockedProposal, commitCertificate, tx);
     else kernel.recordCommit(commitCertificate);
@@ -421,7 +425,7 @@ export class PeerNet {
   private rateOk(ip: string): boolean {
     const now = Date.now();
     const hits = (this.rateHits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-    if (hits.length >= RATE_MAX) return false;
+    if (hits.length >= this.rateMax) return false;
     hits.push(now);
     this.rateHits.set(ip, hits);
     if (this.rateHits.size > 10_000) this.rateHits.clear(); // crude bound
@@ -456,7 +460,7 @@ export class PeerNet {
             uptimeMs: now - this.startedAt,
             peerCount: this.peers.length,
             threshold: this.threshold,
-            rateLimit: { windowMs: RATE_WINDOW_MS, max: RATE_MAX, recentHits },
+            rateLimit: { windowMs: RATE_WINDOW_MS, max: this.rateMax, recentHits },
             ...(this.committer ? { bftCommit: { lastDecidedHeight: this.committer.lastDecidedHeight(), pendingNotApplied: this.committer.pending(), logHead: this.committer.log.headHash } } : {}),
           });
         }
@@ -540,7 +544,7 @@ export class PeerNet {
             this.bftProposals.set(key, { proposal: structuredClone(proposal), signature: proposalSignature });
             const vote = kernel.createVote(proposal, "prevote", this.id, this.privateKey, proposalSignature);
             // 0.5.83 Block B: tell the other validators which signed proposal we saw (detects a split equivocation).
-            void Promise.all(this.peers.filter(p => p.id !== proposal.proposerId).map(peer => postRetry(peer.url + "/bft/proposal-seen", () => this.signed("/bft/proposal-seen", { proposal, proposalSignature })))).catch(() => {});
+            if (!prior) void Promise.all(this.peers.filter(p => p.id !== proposal.proposerId).map(peer => postRetry(peer.url + "/bft/proposal-seen", () => this.signed("/bft/proposal-seen", { proposal, proposalSignature })))).catch(() => {});
             return send(res, 200, { accepted: true, vote });
           }
           if (url.pathname === "/bft/proposal-seen") {
@@ -800,10 +804,13 @@ function votesUntil(peers: Peer[], body: unknown, need: number): Promise<QuorumV
 
 /** `body` may be a factory: each attempt then gets a freshly signed envelope (new nonce), so a retry is never refused as a replay. */
 async function postRetry(url: string, body: unknown): Promise<Record<string, unknown> | undefined> {
+  let last: Record<string, unknown> | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     const reply = await post(url, typeof body === "function" ? (body as () => unknown)() : body);
     if (reply && !reply.error) return reply;
+    last = reply;
   }
+  if (process.env.UEP_BFT_DEBUG_REPLIES) console.error(`[uep-peer] post failed ${url}: ${last ? String(last.error) : "network"}`);
   return undefined;
 }
 
