@@ -7,6 +7,8 @@ Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`
 - **Item 3 — multi-process consensus harness.** `src/node/bft-validator-process.ts` runs one validator per OS process; `src/node/bft-multiprocess.test.ts` drives four of them through seeded per-link fault proxies (loss, delay/reorder, duplication, partition), a SIGKILL restart, a spent-tx proposal and an equivocating proposer, asserting no conflicting finality and honest convergence. Commit messages now carry the signed proposal and transaction; `GET /bft/commits` and `PeerNet.bftSync()` let a lagging validator catch up, re-verifying everything. Round-change timers are still not automatic (liveness after equivocation is open).
 - **Item 4 — snapshot restore rules.** `PeerNet.catchUp` restores peer snapshots with a height floor and then requires history continuity (`extendsHistory`: same transactions in order, no fewer mints, every BFT-applied transaction present). Written restore trust rules in `docs/COMPATIBILITY.md`. Tests: `src/node/snapshot-rules.test.ts` (in `test:node`).
 
+- Item 5 (partial): each APPLIED certified commit records the asset-registry {version, hash}; a later commit under no registry, an older version or a different manifest at the same version fails with BFT_REGISTRY_REGRESSION before anything is written. Tests: src/node/registry-binding.test.ts. The reference node still runs without a registry by default.
+
 ## 0.5.80 — 2026-10-13
 
 - Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.

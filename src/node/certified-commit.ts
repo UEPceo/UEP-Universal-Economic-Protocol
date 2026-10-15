@@ -53,6 +53,8 @@ export type CommitResult = {
   preRoot: string;
   /** null only for a height migrated from the 0.5.80 journal whose post-root can no longer be observed. */
   postRoot: string | null;
+  /** Item 5: the asset registry (version, hash) the transition was applied under; null without a registry. */
+  registry?: { version: number; hash: string } | null;
 };
 
 export type CommitLogEntry = {
@@ -263,6 +265,7 @@ export class CertifiedCommitter {
 
     const ledger = this.getLedger();
     if (proposal.height !== this.expectedHeight()) throw new Error("BFT_HEIGHT_MISMATCH");
+    this.checkRegistry(ledger);
     const preRoot = ledger.stateRoot().toHex();
     if (proposal.parentRoot !== preRoot || preRoot !== this.expectedParentRoot()) throw new Error("BFT_PARENT_STATE_MISMATCH");
     this.checkSpend(ledger, tx);
@@ -341,6 +344,7 @@ export class CertifiedCommitter {
     const result: CommitResult = {
       status: "APPLIED", height: intent.height, round: intent.round, blockId: intent.blockId, certHash: intent.certHash,
       txId: tx.txId.toHex(), preRoot: intent.preRoot, postRoot: observable ? ledger.stateRoot().toHex() : null,
+      registry: registryOf(ledger),
     };
     this.log.append({ type: "APPLIED", height: intent.height, round: intent.round, blockId: intent.blockId, certHash: intent.certHash,
       preRoot: intent.preRoot, postRoot: result.postRoot, result }, this.injectTorn("applied-torn"));
@@ -348,6 +352,18 @@ export class CertifiedCommitter {
     this.kernel.recordCommit(intent.certificate!);
     this.inject("after-kernel-commit");
     return structuredClone(result);
+  }
+
+  /**
+   * Item 5: the registry may only move forward. A ledger with no registry after one was used, an older
+   * version, or another manifest at the same version is BFT_REGISTRY_REGRESSION (the node refuses to apply).
+   */
+  private checkRegistry(ledger: UepLedger): void {
+    const last = [...this.log.all()].reverse().find(e => e.type === "APPLIED" && (e.result as CommitResult | null)?.registry !== undefined);
+    const prev = (last?.result as CommitResult | undefined)?.registry ?? null;
+    if (!prev) return;
+    const now = registryOf(ledger);
+    if (!now || now.version < prev.version || (now.version === prev.version && now.hash !== prev.hash)) throw new Error("BFT_REGISTRY_REGRESSION");
   }
 
   private abort(intent: CommitLogEntry, reason: string): void {
@@ -379,6 +395,11 @@ export class CertifiedCommitter {
     const checked = ledger.validateSpend(tx);
     if ("error" in checked) throw new Error(checked.error.code);
   }
+}
+
+function registryOf(ledger: UepLedger): { version: number; hash: string } | null {
+  const b = ledger.assetRegistryBinding();
+  return b ? { version: b.version, hash: b.hash } : null;
 }
 
 function ledgerHasTx(ledger: UepLedger, txId: string): boolean {
