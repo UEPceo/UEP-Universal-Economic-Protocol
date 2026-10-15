@@ -2,6 +2,8 @@
  * @uep/marketplace — buyer and provider calls over the local API.
  */
 import { listingTerms, signAction, signReservation } from "../../src/marketplace/identity.ts";
+// 0.5.83 (Block A): v2 client helpers (network / domain / nonce / height-window bound signatures).
+export { envelopeV2, newSignatureNonce, signActionV2, signReservationV2 } from "../../src/marketplace/identity.ts";
 import { signEd25519 } from "../../src/core/ed25519.ts";
 import { serializeTx, type UepTransaction } from "../../src/core/transaction.ts";
 import { contentHash } from "../../src/service/content-hash.ts";

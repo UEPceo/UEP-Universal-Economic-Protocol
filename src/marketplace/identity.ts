@@ -13,6 +13,8 @@
  */
 import type { KeyObject } from "node:crypto";
 import { generateEd25519KeyPair, sha256Hex, signEd25519, stableStringify, type PrivateKeyLike } from "../core/ed25519.ts";
+import { actionMessageV2, reservationMessageV2, type BindingContext, type SignatureEnvelopeV2 } from "./signature-v2.ts";
+import { randomBytes } from "node:crypto";
 
 export const DEFAULT_MARKETPLACE_ID = "uep-marketplace-testnet";
 
@@ -71,6 +73,8 @@ export type ActorAuth = {
    * check; the signature still covers `issuedAt`.
    */
   issuedAtHeight?: number;
+  /** 0.5.83 (Block A): v2 envelope. When present the signature is a v2 signature (network, domain, nonce, height window bound). */
+  envelope?: SignatureEnvelopeV2;
 };
 
 export type MarketplaceAction =
@@ -152,4 +156,25 @@ export function cancellationMessage(a: CancellationAuthorization): string {
 
 export function signCancellation(a: CancellationAuthorization, privateKey: PrivateKeyLike): string {
   return signEd25519(cancellationMessage(a), privateKey);
+}
+
+/** 0.5.83: fresh random nonce (client side) for a v2 envelope. */
+export function newSignatureNonce(): string {
+  return randomBytes(16).toString("hex");
+}
+
+/** 0.5.83: build a v2 envelope valid from `fromHeight` for `heights` heights. */
+export function envelopeV2(fromHeight: number, heights = 120, nonce = newSignatureNonce()): SignatureEnvelopeV2 {
+  return { v: 2, nonce, validFromHeight: fromHeight, validUntilHeight: fromHeight + heights };
+}
+
+/** 0.5.83: sign an action as v2 (bound to networkId, domainId, signer, nonce, operation and height window). */
+export function signActionV2(ctx: BindingContext, a: Omit<ActionAuthorization, "marketplaceId">, envelope: SignatureEnvelopeV2, privateKey: PrivateKeyLike): ActorAuth {
+  const issuedAt = a.details?.issuedAt;
+  return { actorId: a.actorId, signature: signEd25519(actionMessageV2(ctx, a, envelope), privateKey), envelope, ...(typeof issuedAt === "number" ? { issuedAt } : {}) };
+}
+
+/** 0.5.83: sign a reservation as v2. Pass the returned envelope with the reservation (`envelope`). */
+export function signReservationV2(ctx: BindingContext, r: Omit<ReservationAuthorization, "marketplaceId" | "notAfterHeight">, envelope: SignatureEnvelopeV2, privateKey: PrivateKeyLike): string {
+  return signEd25519(reservationMessageV2(ctx, r, envelope), privateKey);
 }

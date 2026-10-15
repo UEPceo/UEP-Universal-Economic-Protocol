@@ -4,6 +4,7 @@
  * marketplace testkit. Not used by production code paths.
  */
 import type { KeyObject } from "node:crypto";
+import { envelopeV2, signReservationV2 } from "../marketplace/identity.ts";
 import { act, enrollIdentity, iotAuthorization, readAuth, testCredit } from "../marketplace/testkit.ts";
 import { createIoTMachineIdentity, iotMachineTerms, iotTelemetryDeliveryHash, type IoTM2MService, type IoTMachine, type IoTTelemetry } from "./iot-m2m.ts";
 
@@ -41,6 +42,12 @@ export function requestAs(iot: IoTM2MService, input: { buyerId: string; listingI
   const asset = m.getListing(input.listingId).asset;
   if (credit > 0n && m.availableBalance(asset, input.buyerId) < credit) testCredit(m, input.buyerId, asset, credit - m.availableBalance(asset, input.buyerId));
   const idempotencyKey = input.idempotencyKey ?? `iot-auto-${++autoRequest}`;
+  // 0.5.83: v2 reservation signature when the v1 shim is off.
+  if (!m.legacyV1.enabled) {
+    const envelope = envelopeV2(m.clock());
+    const buyer = enrollIdentity(m, input.buyerId);
+    return iot.requestService({ ...input, idempotencyKey, envelope, authorization: signReservationV2(m.bindingContext(), { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey }, envelope, buyer.privateKey) });
+  }
   return iot.requestService({ ...input, idempotencyKey, authorization: iotAuthorization(m, { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey }) });
 }
 

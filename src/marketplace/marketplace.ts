@@ -27,6 +27,7 @@ import { decodeAccountAddress } from "../core/address.ts";
 import { spendKeyMatchesAccount } from "../core/spend-key.ts";
 import type { Fr } from "../core/field.ts";
 import { TESTNET } from "../network/profiles.ts";
+import { LegacyV1Policy, NonceRegistry, actionMessageV2, assertEnvelopeV2, reservationMessageV2, type LegacyV1Config, type SignatureEnvelopeV2 } from "./signature-v2.ts";
 import { DEFAULT_MARKETPLACE_ID, actionMessage, disputeReasonHash, listingTerms, reservationMessage, type ActorAuth, type MarketplaceAction } from "./identity.ts";
 import { NestedAmountMap, tupleKey } from "../core/composite-key.ts";
 import { findAsset, resolveAssetIdAlias } from "../core/assets.ts";
@@ -379,6 +380,12 @@ export type MarketplaceConfig = {
    * key that address commits to. Default: the public testnet.
    */
   ledgerNetworkId?: string;
+  /**
+   * 0.5.83 (Block A): deprecation shim for v1 (network/nonce-unbound) Marketplace and IoT signatures.
+   * `false` refuses v1; `{ sunsetHeight }` accepts v1 below that height with one warning.
+   * Omitted: refused under NODE_ENV=production, otherwise accepted for DEFAULT_LEGACY_V1_SUNSET_HEIGHTS heights after construction.
+   */
+  legacyV1Signatures?: LegacyV1Config;
   /** 0.5.82: accept legacy v1 (network-unbound) evidence statements. Only for archived evidence; default false. */
   acceptEvidenceV1Archive?: boolean;
   /** Proportional deposit in basis points when no fixed deposit is set (default 100 = 1%). */
@@ -665,6 +672,10 @@ export class DigitalServicesMarketplace {
   readonly oracleGate: OraclePolicyGate | undefined;
   /** v0.4.5: network of the ledger addresses accepted as identity ids. */
   readonly ledgerNetworkId: string;
+  /** 0.5.83: v1 signature deprecation shim. */
+  readonly legacyV1: LegacyV1Policy;
+  /** 0.5.83: consumed v2 nonces (per signer, until their window closes). Persisted in the snapshot. */
+  signatureNonces = new NonceRegistry();
   /** 0.5.82: see MarketplaceConfig.acceptEvidenceV1Archive (private: no public evidence handle). */
   readonly #acceptV1Archive: boolean;
   /** v0.4.5: true only when the test-only zero-deposit flag was set. */
@@ -760,6 +771,7 @@ export class DigitalServicesMarketplace {
     this.#snapshotSigningKeys = config.snapshotSigningKeys && config.snapshotSigningKeys.length > 0 ? [...config.snapshotSigningKeys] : [generateEd25519KeyPair().privateKey];
     this.#anchorSigningKey = config.anchorSigningKey ?? generateEd25519KeyPair().privateKey;
     this.ledgerNetworkId = config.ledgerNetworkId ?? TESTNET.networkId;
+    this.legacyV1 = new LegacyV1Policy(config.legacyV1Signatures, this.now(), this.transitionClock.unit === "height" ? 1 : 5_000);
     this.#acceptV1Archive = config.acceptEvidenceV1Archive === true;
     // v0.5.3: oracle quotes must be bound to the same network as the ledger this Marketplace settles on.
     if (this.oracleGate && this.oracleGate.networkId !== this.ledgerNetworkId) throw new Error(`ORACLE_NETWORK_MISMATCH: oracle network ${this.oracleGate.networkId}, ledger network ${this.ledgerNetworkId}`);
@@ -1052,7 +1064,7 @@ export class DigitalServicesMarketplace {
     return {
       stateVersion: MARKETPLACE_STATE_VERSION,
       config: this.stateConfig(),
-      marketplace: { ...captureFields(this, MARKETPLACE_STATE_FIELDS), evidenceStatements: encodeStateValue(statements(this)) },
+      marketplace: { ...captureFields(this, MARKETPLACE_STATE_FIELDS), evidenceStatements: encodeStateValue(statements(this)), ...(this.signatureNonces.size ? { signatureNonces: this.signatureNonces.toJSON() } : {}) },
       treasury: captureFields(this.treasury, TREASURY_STATE_FIELDS),
       reputation: captureFields(this.reputation, REPUTATION_STATE_FIELDS),
       paymaster: this.paymaster ? captureFields(this.paymaster, PAYMASTER_STATE_FIELDS) : null,
@@ -1074,6 +1086,8 @@ export class DigitalServicesMarketplace {
     restoreFields(this, MARKETPLACE_STATE_FIELDS, state.marketplace);
     const savedStatements = (state.marketplace as { evidenceStatements?: { $m?: [string, { dataHash: string; observedHeight: number; sourceId: string }][] } }).evidenceStatements;
     if (savedStatements?.$m) for (const [id, value] of savedStatements.$m) statements(this).set(id, value);
+    // 0.5.83 migration: snapshots before 0.5.83 carry no v2 nonces (empty registry); later ones restore them so a replay after restart is refused.
+    this.signatureNonces = NonceRegistry.fromJSON((state.marketplace as { signatureNonces?: unknown }).signatureNonces);
     for (const contract of builtinContracts()) { this.categoryContracts.set(contract.categoryId, contract); this.categoryContracts.set(contract.categoryId.toLowerCase(), contract); }
     restoreFields(this.treasury, TREASURY_STATE_FIELDS, state.treasury);
     restoreFields(this.reputation, REPUTATION_STATE_FIELDS, state.reputation);
@@ -1352,14 +1366,16 @@ export class DigitalServicesMarketplace {
    * request must carry the buyer's Ed25519 signature (see signReservation) and
    * the reservation deposit is locked from the buyer's available balance.
    */
-  reserve(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number }): ServiceOrder {
+  reserve(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number; envelope?: SignatureEnvelopeV2 }): ServiceOrder {
     this.assertReservationAuthorized(input);
     // v0.5.3: an authorization signed with notAfterHeight is refused after it (its idempotency entry can then be dropped).
     if (input.notAfterHeight !== undefined && this.now() > input.notAfterHeight) throw new Error("RESERVATION_AUTHORIZATION_EXPIRED");
     // A signed request authorizes at most one reservation: replays return the same order
     // (ORDER_PRUNED once its closed record was pruned: still no second reservation).
     const previous = this.orderIdempotency.get(tupleKey(input.buyerId, input.idempotencyKey));
+    // 0.5.83: the byte-identical v2 request returns its order (idempotent); any other use of the nonce is refused.
     if (previous) return { ...this.order(previous) };
+    if (input.envelope) this.consumeSignatureNonce(input.buyerId, input.envelope);
     this.reapExpiredReservations();
     this.pruneRetention({ budget: 8, listingAttempts: false });
     const listing = this.listings.get(input.listingId);
@@ -1459,7 +1475,7 @@ export class DigitalServicesMarketplace {
   }
 
   /** Throws unless `buyerId` is registered and `signature` is its valid signReservation() signature. */
-  assertReservationAuthorized(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number }): void {
+  assertReservationAuthorized(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number; envelope?: SignatureEnvelopeV2 }): void {
     if (!input.buyerId) throw new Error("BUYER_REQUIRED");
     if (this.isReservedIdentity(input.buyerId)) throw new Error("RESERVED_IDENTITY");
     const identity = this.identities.get(input.buyerId);
@@ -1467,12 +1483,32 @@ export class DigitalServicesMarketplace {
     if (!input.idempotencyKey) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
     if (input.notAfterHeight !== undefined && (!Number.isSafeInteger(input.notAfterHeight) || input.notAfterHeight < 0)) throw new Error("RESERVATION_NOT_AFTER_INVALID");
     if (typeof input.idempotencyKey !== "string" || input.idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) throw new Error("IDEMPOTENCY_KEY_TOO_LONG");
+    if (input.envelope !== undefined) {
+      // 0.5.83 v2: bound to this network, this Marketplace (domain), the buyer, a nonce and a height window.
+      assertEnvelopeV2(input.envelope, this.now());
+      if (input.notAfterHeight !== undefined) throw new Error("SIGNATURE_V2_ENVELOPE_INVALID: use validUntilHeight instead of notAfterHeight");
+      const message = reservationMessageV2(this.bindingContext(), { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId }, input.envelope);
+      if (!verifyEd25519(message, input.signature, this.identityKeys.get(input.buyerId)!)) throw new Error("RESERVATION_SIGNATURE_INVALID");
+      return;
+    }
+    this.legacyV1.assertAllowed("reservation", this.now());
     const message = reservationMessage({ marketplaceId: this.marketplaceId, listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId, notAfterHeight: input.notAfterHeight });
     if (!verifyEd25519(message, input.signature, this.identityKeys.get(input.buyerId)!)) throw new Error("RESERVATION_SIGNATURE_INVALID");
   }
 
+  /** 0.5.83: network / domain binding of v2 signatures verified by this instance. */
+  bindingContext(): { networkId: string; domainId: string } {
+    return { networkId: this.ledgerNetworkId, domainId: this.marketplaceId };
+  }
+
+  /** 0.5.83: consume a v2 nonce (throws SIGNATURE_V2_NONCE_REUSED) and prune closed windows. */
+  consumeSignatureNonce(signer: string, envelope: SignatureEnvelopeV2): void {
+    this.signatureNonces.prune(this.now());
+    this.signatureNonces.consume(signer, envelope.nonce, envelope.validUntilHeight);
+  }
+
   /** Alias of reserve() (same signed, funded, fail-closed rules). */
-  acceptOrder(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number }): ServiceOrder {
+  acceptOrder(input: { listingId: string; buyerId: string; quantity: bigint; idempotencyKey: string; signature: string; orderId?: string; gasQuote?: GasQuote; notAfterHeight?: number; envelope?: SignatureEnvelopeV2 }): ServiceOrder {
     return this.reserve(input);
   }
 
@@ -2116,10 +2152,19 @@ export class DigitalServicesMarketplace {
     if (auth.actorId === "marketplace-system") throw new Error("RESERVED_IDENTITY");
     const publicKey = auth.actorId === this.adminIdentity ? this.adminKey : auth.actorId === this.settlementArbiterId ? this.arbiterKey : this.identityKeys.get(auth.actorId);
     if (!publicKey) throw new Error(auth.actorId === this.adminIdentity ? "ADMIN_NOT_CONFIGURED" : "IDENTITY_NOT_REGISTERED");
-    if (!verifyEd25519(actionMessage({ marketplaceId: this.marketplaceId, action, actorId: auth.actorId, target, details }), auth.signature, publicKey)) throw new Error("ACTOR_SIGNATURE_INVALID");
+    if (auth.envelope !== undefined) {
+      // 0.5.83 v2: network, domain, signer, nonce, operation and height window are all signed.
+      assertEnvelopeV2(auth.envelope, this.now());
+      if (!verifyEd25519(actionMessageV2(this.bindingContext(), { action, actorId: auth.actorId, target, details }, auth.envelope), auth.signature, publicKey)) throw new Error("ACTOR_SIGNATURE_INVALID");
+      this.signatureNonces.assertFresh(auth.actorId, auth.envelope.nonce);
+    } else {
+      this.legacyV1.assertAllowed(`action:${action}`, this.now());
+      if (!verifyEd25519(actionMessage({ marketplaceId: this.marketplaceId, action, actorId: auth.actorId, target, details }), auth.signature, publicKey)) throw new Error("ACTOR_SIGNATURE_INVALID");
+    }
     const record = this.identities.get(auth.actorId);
     if (record && (record.status ?? "active") !== "active" && action !== "identity-status") throw new Error("IDENTITY_NOT_ACTIVE");
     if (auth.actorId === this.adminIdentity && this.adminAuthorizer && !this.adminAuthorizer(auth.actorId)) throw new Error("ADMIN_NOT_AUTHORIZED");
+    if (auth.envelope !== undefined) this.consumeSignatureNonce(auth.actorId, auth.envelope);
     return auth.actorId;
   }
 

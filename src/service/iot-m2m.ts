@@ -40,6 +40,7 @@ import type { TransitionClock } from "../core/height.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 import { runOracleCheck } from "../oracle/policy-gate.ts";
 import { verifyEd25519 } from "../core/ed25519.ts";
+import { SIGNATURE_V2_IOT_DOMAIN, type SignatureEnvelopeV2 } from "../marketplace/signature-v2.ts";
 
 /** Default telemetry age window, in heights (60 = 5 min at 5 s blocks). */
 export const DEFAULT_TELEMETRY_MAX_AGE_HEIGHTS = 60;
@@ -106,6 +107,14 @@ export type IoTTelemetry = {
   unitsDelivered: string;
   /** Unique machine-scoped nonce. Replay of an already verified nonce is rejected. */
   nonce: string;
+  /** 0.5.83 (Block A): 2 = v2 payload bound to networkId, domainId and a height window. Absent = legacy v1 (deprecation shim). */
+  sigVersion?: 2;
+  /** 0.5.83 v2: ledger network id the machine signed for. */
+  networkId?: string;
+  /** 0.5.83 v2: Marketplace (domain) id the machine signed for. */
+  domainId?: string;
+  /** 0.5.83 v2: last height at which the report may be accepted. */
+  validUntilHeight?: number;
   /** Ed25519 signature by the machine key over the unsigned canonical telemetry envelope (required). */
   signature?: string;
 };
@@ -202,15 +211,21 @@ function unsignedTelemetry(telemetry: IoTTelemetry): Omit<IoTTelemetry, "signatu
   return unsigned;
 }
 
-export function signIoTTelemetry(telemetry: IoTTelemetry, privateKey: KeyObject): string {
-  return cryptoSign(null, encodeCanonicalCbor(unsignedTelemetry(telemetry)), privateKey).toString("hex");
+/** Signed bytes: v1 = canonical CBOR of the unsigned report; v2 = domain-tagged CBOR (fields include networkId, domainId, validUntilHeight). */
+export function iotTelemetrySigningBytes(telemetry: IoTTelemetry): Buffer {
+  const unsigned = unsignedTelemetry(telemetry);
+  return telemetry.sigVersion === 2 ? encodeCanonicalCbor({ domain: SIGNATURE_V2_IOT_DOMAIN, report: unsigned }) : encodeCanonicalCbor(unsigned);
 }
 
-function verifyIoTTelemetrySignature(telemetry: IoTTelemetry, publicKeyHex: string): boolean {
+export function signIoTTelemetry(telemetry: IoTTelemetry, privateKey: KeyObject): string {
+  return cryptoSign(null, iotTelemetrySigningBytes(telemetry), privateKey).toString("hex");
+}
+
+function verifyIoTTelemetrySignatureBytes(telemetry: IoTTelemetry, publicKeyHex: string): boolean {
   if (!telemetry.signature) return false;
   try {
     // v0.5.3: strict verification (prime-order key, canonical R and S), same answer on every Node version.
-    return verifyEd25519(encodeCanonicalCbor(unsignedTelemetry(telemetry)), telemetry.signature.toLowerCase(), publicKeyHex);
+    return verifyEd25519(iotTelemetrySigningBytes(telemetry), telemetry.signature.toLowerCase(), publicKeyHex);
   } catch {
     return false;
   }
@@ -344,7 +359,7 @@ export class IoTM2MService {
    * { listingId, buyerId, quantity, idempotencyKey }. The reservation deposit is
    * locked from the buyer's marketplace balance.
    */
-  requestService(input: { requestId?: string; idempotencyKey: string; authorization: string; buyerId: string; listingId: string; machineId: string; quantity: bigint; maxCost?: bigint }): IoTServiceRequest & { order: ServiceOrder; contract: IoTContract } {
+  requestService(input: { requestId?: string; idempotencyKey: string; authorization: string; buyerId: string; listingId: string; machineId: string; quantity: bigint; maxCost?: bigint ; envelope?: SignatureEnvelopeV2 }): IoTServiceRequest & { order: ServiceOrder; contract: IoTContract } {
     const machine = this.machine(input.machineId);
     if (!machine.active) throw new Error("IOT_MACHINE_INACTIVE");
     const listing = this.marketplace.getListing(input.listingId);
@@ -368,7 +383,7 @@ export class IoTM2MService {
         return g.quote(ref.baseAssetId, listing.asset, height);
       });
     }
-    const reservation = { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, signature: input.authorization };
+    const reservation = { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey: input.idempotencyKey, signature: input.authorization, ...(input.envelope ? { envelope: input.envelope } : {}) };
     // Fail closed before touching any state: registered buyer + valid signature.
     this.marketplace.assertReservationAuthorized(reservation);
     const idemKey = tupleKey(input.buyerId, input.idempotencyKey);
@@ -445,9 +460,10 @@ export class IoTM2MService {
     const nonce = hash({ machineId: machine.machineId, requestId, sequence, observedAt }).slice(0, 32);
     const telemetryId = id("telemetry", { requestId, contractId: contract.contractId, machineId: machine.machineId, sequence, measurements, observedAt, nonce, unitsDelivered: units.toString() });
     if (this.telemetry.has(telemetryId)) throw new Error("IOT_TELEMETRY_REPLAY");
-    const unsigned: IoTTelemetry = { telemetryId, requestId, contractId: contract.contractId, providerId: contract.providerId, machineId: machine.machineId, sequence, observedAt, measurements: { ...measurements }, unitsDelivered: units.toString(), nonce };
+    // 0.5.83: simulated machines sign v2 reports (network, domain and height window bound).
+    const unsigned: IoTTelemetry = { telemetryId, requestId, contractId: contract.contractId, providerId: contract.providerId, machineId: machine.machineId, sequence, observedAt, measurements: { ...measurements }, unitsDelivered: units.toString(), nonce, sigVersion: 2, networkId: this.marketplace.ledgerNetworkId, domainId: this.marketplace.marketplaceId, validUntilHeight: this.now() + this.telemetryMaxAgeFor(order) + this.telemetryMaxFutureSkew };
     const signature = signIoTTelemetry(unsigned, signer);
-    if (!verifyIoTTelemetrySignature({ ...unsigned, signature }, machine.publicKeyHex)) throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
+    if (!this.verifyTelemetrySignature({ ...unsigned, signature }, machine.publicKeyHex)) throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
     const row: IoTTelemetry = { ...unsigned, signature };
     this.telemetry.set(telemetryId, row);
     this.telemetrySequences.set(machine.machineId, sequence);
@@ -462,7 +478,7 @@ export class IoTM2MService {
       if (stableJson(existing) !== stableJson(telemetry)) throw new Error("IOT_TELEMETRY_TAMPERED");
       throw new Error("IOT_TELEMETRY_REPLAY");
     }
-    if (!verifyIoTTelemetrySignature(telemetry, machine.publicKeyHex)) {
+    if (!this.verifyTelemetrySignature(telemetry, machine.publicKeyHex)) {
       throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
     }
     const verifiedSequence = this.verifiedMachineSequences.get(machine.machineId) ?? 0;
@@ -510,7 +526,7 @@ export class IoTM2MService {
     if (this.heightMode && looksLikeLegacyMs(telemetry.observedAt)) throw new Error("IOT_TELEMETRY_OBSERVED_AT_UNIT: observedAt looks like Unix ms; since v0.5.1 it is the Marketplace height at observation (docs/COMPATIBILITY.md)");
     if (this.now() - telemetry.observedAt > this.telemetryMaxAgeFor(order)) throw new Error("IOT_TELEMETRY_STALE");
     if (telemetry.observedAt > this.now() + this.telemetryMaxFutureSkew) throw new Error("IOT_TELEMETRY_FUTURE_TIMESTAMP");
-    if (!verifyIoTTelemetrySignature(telemetry, machine.publicKeyHex)) throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
+    if (!this.verifyTelemetrySignature(telemetry, machine.publicKeyHex)) throw new Error("IOT_TELEMETRY_SIGNATURE_INVALID");
     if (typeof telemetry.unitsDelivered !== "string" || !/^[0-9]+$/.test(telemetry.unitsDelivered)) throw new Error("IOT_TELEMETRY_UNITS_INVALID");
     const unitsDelivered = BigInt(telemetry.unitsDelivered);
     if (unitsDelivered > contract.quantity) throw new Error("IOT_TELEMETRY_UNITS_INVALID");
@@ -556,6 +572,25 @@ export class IoTM2MService {
       verifiedUsageAmount: verification ? verification.unitsDelivered * contract.unitPrice : null,
       nextAction,
     } as const;
+  }
+
+  /**
+   * 0.5.83 (Block A): v2 reports must name this ledger network and this Marketplace and be inside
+   * their height window (refused otherwise, even with a valid machine signature); v1 reports pass
+   * only through the Marketplace v1 deprecation shim.
+   */
+  private verifyTelemetrySignature(telemetry: IoTTelemetry, publicKeyHex: string): boolean {
+    if (telemetry.sigVersion === 2) {
+      if (telemetry.networkId !== this.marketplace.ledgerNetworkId) throw new Error("IOT_TELEMETRY_NETWORK_MISMATCH");
+      if (telemetry.domainId !== this.marketplace.marketplaceId) throw new Error("IOT_TELEMETRY_DOMAIN_MISMATCH");
+      if (!Number.isSafeInteger(telemetry.validUntilHeight)) throw new Error("SIGNATURE_V2_WINDOW_INVALID");
+      if (this.now() > (telemetry.validUntilHeight as number)) throw new Error("SIGNATURE_V2_EXPIRED");
+    } else if (telemetry.sigVersion !== undefined) {
+      throw new Error("IOT_TELEMETRY_SIG_VERSION_INVALID");
+    } else {
+      this.marketplace.legacyV1.assertAllowed("iot-telemetry", this.now());
+    }
+    return verifyIoTTelemetrySignatureBytes(telemetry, publicKeyHex);
   }
 
   private assertTelemetryEnvelope(requestId: string, telemetry: IoTTelemetry): void {

@@ -3,7 +3,7 @@
  * Not used by production code paths. Keys of enrolled identities and of
  * test authorities (admin / arbiter) live in this module only.
  */
-import { createMarketplaceIdentity, disputeReasonHash, listingTerms, signAction, signCancellation, signReservation, type ActorAuth, type MarketplaceAction, type MarketplaceIdentity } from "./identity.ts";
+import { createMarketplaceIdentity, disputeReasonHash, envelopeV2, listingTerms, signAction, signActionV2, signCancellation, signReservation, signReservationV2, type ActorAuth, type MarketplaceAction, type MarketplaceIdentity } from "./identity.ts";
 import type { DigitalServicesMarketplace, DisputeResolution, ServiceListing, ServiceOrder, SettlementRecord } from "./marketplace.ts";
 import type { GasQuote } from "./paymaster.ts";
 import { contentHash } from "../service/content-hash.ts";
@@ -103,6 +103,8 @@ function keyOf(m: DigitalServicesMarketplace, actorId: string): MarketplaceIdent
 /** Sign `action` on `target` as `actorId` (enrolled identity, test authority, or auto-enrolled). */
 export function act(m: DigitalServicesMarketplace, actorId: string, action: MarketplaceAction, target: string, details: Record<string, unknown> = {}, identity?: MarketplaceIdentity): ActorAuth {
   const signer = identity ?? keyOf(m, actorId);
+  // 0.5.83: when the v1 shim is off (legacyV1Signatures: false), sign v2 payloads.
+  if (!m.legacyV1.enabled) return signActionV2(m.bindingContext(), { action, actorId, target, details }, envelopeV2(m.clock()), signer.privateKey);
   return signAction({ marketplaceId: m.marketplaceId, action, actorId, target, details }, signer.privateKey);
 }
 
@@ -136,8 +138,15 @@ export function reserveAs(
   const credit = opts.credit ?? 1_000_000n;
   if (credit > 0n && m.availableBalance(asset, input.buyerId) < credit) testCredit(m, input.buyerId, asset, credit - m.availableBalance(asset, input.buyerId));
   const idempotencyKey = input.idempotencyKey ?? `auto-${++autoKey}`;
-  const signature = signReservation({ marketplaceId: m.marketplaceId, listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId, notAfterHeight: input.notAfterHeight }, identity.privateKey);
-  const order = m.reserve({ ...input, idempotencyKey, signature });
+  let order: ServiceOrder;
+  if (!m.legacyV1.enabled && input.notAfterHeight === undefined) {
+    const envelope = envelopeV2(m.clock());
+    const signature = signReservationV2(m.bindingContext(), { listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId }, envelope, identity.privateKey);
+    order = m.reserve({ ...input, idempotencyKey, signature, envelope });
+  } else {
+    const signature = signReservation({ marketplaceId: m.marketplaceId, listingId: input.listingId, buyerId: input.buyerId, quantity: input.quantity, idempotencyKey, orderId: input.orderId, gasQuoteId: input.gasQuote?.quoteId, notAfterHeight: input.notAfterHeight }, identity.privateKey);
+    order = m.reserve({ ...input, idempotencyKey, signature });
+  }
   let tracked = orderBuyers.get(m);
   if (!tracked) { tracked = new Map(); orderBuyers.set(m, tracked); }
   tracked.set(order.orderId, input.buyerId);
