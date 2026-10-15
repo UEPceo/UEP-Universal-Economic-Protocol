@@ -1,4 +1,4 @@
-## 0.5.81 — unreleased
+## 0.5.81 — 2026-10-15
 
 Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`docs/audit/0.5.81-RESOLUTION.md`](docs/audit/0.5.81-RESOLUTION.md)). Protocol fee 0.1 %, Marketplace fee 3 %, no native token, Poseidon BN254 unchanged.
 
@@ -26,6 +26,8 @@ Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`
 - Dependencies: the 5 low-severity Dependabot alerts (Rust `tracing-subscriber` < 0.3.20, pulled in by `ark-relations` 0.3 in the lab crates) are not fixed by a patch/minor bump: `ark-relations` 0.3 requires `tracing-subscriber` ^0.2, and moving to arkworks 0.4+ changes the circuit and its verifying keys. No npm runtime dependencies; `npm audit` reports 0.
 
 - Fixes found by the full suite: peer retries re-sign the envelope (new nonce) so a retry after a lost reply is not refused as a replay (the multi-process fault test caught this); the envelope freshness window is measured against the highest height accepted from that sender, not the receiver's height (lagging peers can still talk); on catch-up the height floor checks the height only, since a peer may hold more transactions at the same height and history continuity is checked separately.
+
+- Tests (local, sequential, Node 22.23.3 and Node 24.21.0, identical counts): protocol 219, marketplace 223, settlement 20, oracle 38, category 24, consensus 107, node 18, poisoned clock 446, labs 564 (127 files), all passing; Rust crates, smoke, quickstart and 20k simulation pass. CI: Node 22, Node 24, labs and seeded property/fault jobs green; type check (non-blocking) still reports pre-existing errors as on 0.5.80.
 
 ## 0.5.80 — 2026-10-13
 

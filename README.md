@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.80` (experimental BFT safety kernel, authenticated PeerNet transport) · Latest GitHub Release: **v0.5.80**
+> **Version:** `0.5.81` (experimental BFT safety kernel, certified commit log, authenticated PeerNet transport) · Latest GitHub Release: **v0.5.81**
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -64,13 +64,13 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 
 "Hashlock swap" (`src/category/swap.ts`) is a bilateral settlement between two parties; the "AMM lab pool" (`src/lab/liquidity.ts`) is a research simulation that never moves testnet value. Full module map: [`docs/MODULES.md`](docs/MODULES.md).
 
-### Current status (v0.5.80)
+### Current status (v0.5.81)
 
 | Item | Status |
 |---|---|
-| Version | `0.5.80` (2026-10-14, on `main`, GitHub Release `v0.5.80`): experimental BFT safety kernel with authenticated PeerNet transport and certified ledger application (crash-consistent single-process commit and recovery), reference node in `src/node`, SDK, node configuration examples, ledger snapshot format 10, development ZK verifying-key pins for circuit v5-foldv2. Changes since v0.5.3 are in the [CHANGELOG](./CHANGELOG.md) (0.5.4 – 0.5.80) |
-| Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.80 entry](./CHANGELOG.md) (single source of truth) |
-| Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts in the [CHANGELOG 0.5.80 entry](./CHANGELOG.md); known-issue list: [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
+| Version | `0.5.81` (2026-10-15, on `main`, GitHub Release `v0.5.81`): experimental BFT safety kernel with authenticated PeerNet transport, hash-chained certified commit log, height-based vote-format activation and round-change timeout; resolution matrix in [`docs/audit/0.5.81-RESOLUTION.md`](docs/audit/0.5.81-RESOLUTION.md), reference node in `src/node`, SDK, node configuration examples, ledger snapshot format 10, development ZK verifying-key pins for circuit v5-foldv2. Changes since v0.5.3 are in the [CHANGELOG](./CHANGELOG.md) (0.5.4 – 0.5.81) |
+| Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.81 entry](./CHANGELOG.md) (single source of truth) |
+| Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts in the [CHANGELOG 0.5.81 entry](./CHANGELOG.md); known-issue list: [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
 | Protocol hash | Poseidon over BN254 (one canonical hash for the core and the ZK circuit lab); ledger snapshot format 10 (formats 5–9 migrated), Marketplace snapshot format 4 (formats 1–3 migrated) ([compatibility policy](docs/COMPATIBILITY.md)) |
 | Research labs | Internal lab experiments from the project's early stage, now public as experimental code in `src/lab/`, `src/agent/` and `uep-core/`, run by `test:all`; not part of the testnet ([`docs/LABS.md`](./docs/LABS.md)) |
