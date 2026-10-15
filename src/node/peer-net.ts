@@ -149,7 +149,7 @@ export class PeerNet {
   private async sendRoundChange(kernel: BftConsensusKernel, height: number, target: number): Promise<BftRoundChange> {
     const rc = kernel.createRoundChange(height, target, this.id, this.privateKey);
     this.keepRoundChange(rc);
-    await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/round-change", this.signed("/bft/round-change", { roundChange: rc }))));
+    await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/round-change", () => this.signed("/bft/round-change", { roundChange: rc }))));
     return rc;
   }
 
@@ -216,7 +216,7 @@ export class PeerNet {
     if (tx) this.bftTransactions.set(proposal.blockId, tx);
     const wireTx = tx ? JSON.parse(JSON.stringify(serializeTx(tx), encode)) as WireTx : undefined;
     const mine = kernel.createVote(proposal, "prevote", this.id, this.privateKey, signature);
-    const replies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/proposal", this.signed("/bft/proposal", { proposal, proposalSignature: signature, ...(wireTx ? { tx: wireTx } : {}) }))));
+    const replies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/proposal", () => this.signed("/bft/proposal", { proposal, proposalSignature: signature, ...(wireTx ? { tx: wireTx } : {}) }))));
     const prevotes = [mine, ...replies.map(reply => reply?.vote as BftVote | undefined).filter((vote): vote is BftVote => !!vote)];
     const prevoteCertificate = kernel.voteCertificate(proposal.height, proposal.round, "prevote", proposal.blockId, prevotes);
     kernel.observePrevoteCertificate(prevoteCertificate);
@@ -227,7 +227,7 @@ export class PeerNet {
     const lockedSignature = kernel.signProposal(lockedProposal, this.privateKey);
     this.bftProposals.set(this.bftPosition(lockedProposal), { proposal: structuredClone(lockedProposal), signature: lockedSignature });
     const localPrecommit = kernel.createVote(lockedProposal, "precommit", this.id, this.privateKey, lockedSignature);
-    const lockReplies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/prevote-certificate", this.signed("/bft/prevote-certificate", { proposal: lockedProposal, proposalSignature: lockedSignature, certificate: prevoteCertificate }))));
+    const lockReplies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/prevote-certificate", () => this.signed("/bft/prevote-certificate", { proposal: lockedProposal, proposalSignature: lockedSignature, certificate: prevoteCertificate }))));
     const precommits = [localPrecommit, ...lockReplies.map(reply => reply?.vote as BftVote | undefined).filter((vote): vote is BftVote => !!vote)];
     const commitCertificate = kernel.voteCertificate(proposal.height, proposal.round, "precommit", proposal.blockId, precommits);
     if (tx) await this.applyBftCommit(lockedProposal, commitCertificate, tx);
@@ -235,7 +235,7 @@ export class PeerNet {
     // The commit message carries the signed proposal and the transaction, so a validator that missed
     // the proposal can still apply through applyCertifiedCommit (it re-verifies everything).
     const commitPayload = { certificate: commitCertificate, proposal: lockedProposal, proposalSignature: lockedSignature, ...(wireTx ? { tx: wireTx } : {}) };
-    const commits = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/commit-certificate", this.signed("/bft/commit-certificate", commitPayload))));
+    const commits = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/commit-certificate", () => this.signed("/bft/commit-certificate", commitPayload))));
     const accepted = commits.filter(reply => reply?.accepted === true).length;
     if (accepted < kernel.quorum - 1) throw new Error("BFT_TRANSPORT_COMMIT_ACKS_INSUFFICIENT");
     return commitCertificate;
@@ -615,7 +615,7 @@ export class PeerNet {
     let remote = await votesUntil(this.peers, this.signed("/tx", { tx: wire }), 1);
     for (let attempt = 0; remote.length < 1 && attempt < 3; attempt++) remote = await votesUntil(this.peers, this.signed("/tx", { tx: wire }), 1);
     const accepted = this.quorum.confirm(txId, nullifiers, [mine, ...remote]);
-    const acks = (await Promise.all(this.peers.map((peer) => postRetry(peer.url + "/commit", this.signed("/commit", { txId, votes: accepted }))))).filter(Boolean).length;
+    const acks = (await Promise.all(this.peers.map((peer) => postRetry(peer.url + "/commit", () => this.signed("/commit", { txId, votes: accepted }))))).filter(Boolean).length;
     if (this.peers.length > 0 && acks < this.threshold - 1) throw new Error("COMMIT_NOT_ACKED");
     await this.enqueue(() => {
       const applied = this.ledger.submit(tx);
@@ -653,7 +653,7 @@ export class PeerNet {
       const floor = this.heightFloor?.read()?.height ?? 0;
       const next = UepLedger.restore(snap, trust, keys, { minHeight: Math.max(this.ledger.height, floor) });
       if (!extendsHistory(this.ledger, next, this.committer)) return false;
-      this.heightFloor?.check(next);
+      this.heightFloor?.check(next, { heightOnly: true });
       this.ledger = next;
       this.heightFloor?.record(next);
       return true;
@@ -718,9 +718,10 @@ function votesUntil(peers: Peer[], body: unknown, need: number): Promise<QuorumV
   });
 }
 
+/** `body` may be a factory: each attempt then gets a freshly signed envelope (new nonce), so a retry is never refused as a replay. */
 async function postRetry(url: string, body: unknown): Promise<Record<string, unknown> | undefined> {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const reply = await post(url, body);
+    const reply = await post(url, typeof body === "function" ? (body as () => unknown)() : body);
     if (reply && !reply.error) return reply;
   }
   return undefined;

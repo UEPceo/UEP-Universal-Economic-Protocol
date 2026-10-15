@@ -25,11 +25,12 @@ export class HeightFloor {
   }
 
   /** Throws when the ledger is below the floor, or at the floor height with another root. */
-  check(ledger: { height: number; stateRoot(): { toHex(): string } }, opts: { allowRegression?: boolean; log?: (m: string) => void } = {}): void {
+  /** `heightOnly`: on catch-up, history continuity is checked separately (extendsHistory), and a peer may hold more transactions at the same height. */
+  check(ledger: { height: number; stateRoot(): { toHex(): string } }, opts: { allowRegression?: boolean; heightOnly?: boolean; log?: (m: string) => void } = {}): void {
     const floor = this.read();
     if (!floor) return;
     const bad = ledger.height < floor.height ? "LEDGER_BELOW_HEIGHT_FLOOR"
-      : ledger.height === floor.height && ledger.stateRoot().toHex() !== floor.stateRoot ? "LEDGER_ROOT_AT_FLOOR_MISMATCH" : undefined;
+      : !opts.heightOnly && ledger.height === floor.height && ledger.stateRoot().toHex() !== floor.stateRoot ? "LEDGER_ROOT_AT_FLOOR_MISMATCH" : undefined;
     if (!bad) return;
     if (opts.allowRegression) { (opts.log ?? console.warn)(`[uep-node] ${bad} overridden by operator: ledger height ${ledger.height}, floor ${floor.height}`); return; }
     throw new Error(`${bad}: ledger height ${ledger.height}, persisted floor ${floor.height}`);
@@ -40,6 +41,7 @@ export class HeightFloor {
     const floor = this.read();
     if (floor && ledger.height < floor.height) return;
     if (floor && ledger.height === floor.height && floor.stateRoot === ledger.stateRoot().toHex()) return;
+    // Same height, new root (more transactions at this height after a verified catch-up or local spends): the floor follows the newest root.
     const tmp = this.path + ".tmp";
     writeFileSync(tmp, JSON.stringify({ version: 1, height: ledger.height, stateRoot: ledger.stateRoot().toHex() } satisfies HeightFloorRecord) + "\n", { mode: 0o600 });
     const fd = openSync(tmp, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }

@@ -22,6 +22,7 @@ test("item 9: v2 envelope is refused across network, domain, epoch, when stale, 
     [signPeerEnvelope({ ...D, networkId: "other" }, "v1", "/vote", 100, "n-2", {}, K[1]!.privateKey), /PEER_DOMAIN_MISMATCH/],
     [signPeerEnvelope({ ...D, domainId: "MARS" }, "v1", "/vote", 100, "n-3", {}, K[1]!.privateKey), /PEER_DOMAIN_MISMATCH/],
     [signPeerEnvelope({ ...D, epoch: 1 }, "v1", "/vote", 100, "n-4", {}, K[1]!.privateKey), /PEER_EPOCH_MISMATCH/],
+    // Stale: more than the window below the highest height already accepted from v1 (100).
     [signPeerEnvelope(D, "v1", "/vote", 100 - PEER_ENVELOPE_LIMITS.replayWindow - 1, "n-5", {}, K[1]!.privateKey), /PEER_ENVELOPE_STALE/],
     [{ ...signPeerEnvelope(D, "v1", "/vote", 100, "n-6", { a: 1 }, K[1]!.privateKey), payload: { a: 2 } }, /PEER_AUTH/],
     [{ ...signPeerEnvelope(D, "v1", "/vote", 100, "n-7", {}, K[1]!.privateKey), height: 101 }, /PEER_AUTH/],
@@ -32,6 +33,8 @@ test("item 9: v2 envelope is refused across network, domain, epoch, when stale, 
   for (const [e, re] of cases) assert.throws(() => g.verify(e as never, "/vote", 100, keyOf), re);
   // Signed for another path: refused on this one.
   assert.throws(() => g.verify(signPeerEnvelope(D, "v1", "/tx", 100, "n-10", {}, K[1]!.privateKey), "/vote", 100, keyOf), /PEER_AUTH/);
+  // A sender far behind the receiver is not refused (lagging validators can still talk).
+  g.verify(signPeerEnvelope(D, "v2", "/vote", 1, "lag-1", {}, K[2]!.privateKey), "/vote", 10_000, keyOf);
   // A refused envelope does not burn its nonce.
   g.verify(signPeerEnvelope(D, "v1", "/vote", 100, "n-6", { a: 1 }, K[1]!.privateKey), "/vote", 100, keyOf);
 });

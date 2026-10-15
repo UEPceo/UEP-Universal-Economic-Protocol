@@ -6,8 +6,9 @@
  * v2: signature over canonical JSON of
  *   { v: 2, networkId, domainId, epoch, from, path, height, nonce, payloadHash }
  * - networkId/domainId/epoch must equal the receiver's (cross-network and cross-epoch replay refused);
- * - `height` is the sender's committed height; the receiver refuses envelopes older than
- *   `replayWindow` heights below its own height (height-based freshness, no wall clock);
+ * - `height` is the sender's own height; the receiver refuses envelopes more than `replayWindow`
+ *   heights below the highest height it has accepted from that sender (height-based freshness,
+ *   no wall clock; a lagging sender is not penalised for being behind the receiver);
  * - (from, nonce) is remembered for the window, so an envelope is accepted once.
  * BFT payloads (proposals, votes, certificates) additionally carry their own height/round binding.
  *
@@ -32,17 +33,18 @@ export function signPeerEnvelope(d: PeerDomain, from: string, path: string, heig
 
 export class PeerReplayGuard {
   private readonly seen = new Map<string, Map<string, number>>();
+  private readonly maxHeight = new Map<string, number>();
   readonly domain: PeerDomain;
   readonly window: number;
   constructor(domain: PeerDomain, window: number = PEER_ENVELOPE_LIMITS.replayWindow) { this.domain = domain; this.window = window; }
 
   /** Throws PEER_* on any failure; records the nonce only after the signature verified. */
-  verify(env: PeerEnvelopeV2, path: string, localHeight: number, keyOf: (from: string, height: number) => string | undefined): void {
+  verify(env: PeerEnvelopeV2, path: string, _localHeight: number, keyOf: (from: string, height: number) => string | undefined): void {
     if (env.v !== 2) throw new Error("PEER_ENVELOPE_VERSION");
     if (env.networkId !== this.domain.networkId || env.domainId !== this.domain.domainId) throw new Error("PEER_DOMAIN_MISMATCH");
     if (env.epoch !== this.domain.epoch) throw new Error("PEER_EPOCH_MISMATCH");
     if (!Number.isSafeInteger(env.height) || env.height < 0) throw new Error("PEER_HEIGHT_INVALID");
-    if (env.height + this.window < localHeight) throw new Error("PEER_ENVELOPE_STALE");
+    if (env.height + this.window < (this.maxHeight.get(env.from) ?? 0)) throw new Error("PEER_ENVELOPE_STALE");
     if (typeof env.nonce !== "string" || env.nonce.length === 0 || env.nonce.length > PEER_ENVELOPE_LIMITS.maxNonceLength) throw new Error("PEER_NONCE_INVALID");
     const key = keyOf(env.from, env.height);
     if (!key) throw new Error("PEER_AUTH");
@@ -51,9 +53,11 @@ export class PeerReplayGuard {
     if (!s) { s = new Map(); this.seen.set(env.from, s); }
     if (s.has(env.nonce)) throw new Error("PEER_REPLAY");
     s.set(env.nonce, env.height);
+    if (env.height > (this.maxHeight.get(env.from) ?? 0)) this.maxHeight.set(env.from, env.height);
+    const top = this.maxHeight.get(env.from)!;
     // Bound memory: drop nonces that fell out of the window, then the oldest if still over the cap.
     if (s.size > PEER_ENVELOPE_LIMITS.maxSeenPerPeer) {
-      for (const [n, h] of s) if (h + this.window < localHeight) s.delete(n);
+      for (const [n, h] of s) if (h + this.window < top) s.delete(n);
       while (s.size > PEER_ENVELOPE_LIMITS.maxSeenPerPeer) s.delete(s.keys().next().value!);
     }
   }

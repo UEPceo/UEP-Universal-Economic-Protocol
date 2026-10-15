@@ -25,6 +25,8 @@ Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`
 - Item 5: the registry binding is not made the reference-node default in 0.5.81 (needs persistent governance keys and a snapshot migration; see the resolution matrix).
 - Dependencies: the 5 low-severity Dependabot alerts (Rust `tracing-subscriber` < 0.3.20, pulled in by `ark-relations` 0.3 in the lab crates) are not fixed by a patch/minor bump: `ark-relations` 0.3 requires `tracing-subscriber` ^0.2, and moving to arkworks 0.4+ changes the circuit and its verifying keys. No npm runtime dependencies; `npm audit` reports 0.
 
+- Fixes found by the full suite: peer retries re-sign the envelope (new nonce) so a retry after a lost reply is not refused as a replay (the multi-process fault test caught this); the envelope freshness window is measured against the highest height accepted from that sender, not the receiver's height (lagging peers can still talk); on catch-up the height floor checks the height only, since a peer may hold more transactions at the same height and history continuity is checked separately.
+
 ## 0.5.80 — 2026-10-13
 
 - Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.
