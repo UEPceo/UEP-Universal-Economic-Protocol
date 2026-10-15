@@ -145,6 +145,11 @@ export class CircuitTreeProjection {
     return circuitSlotIndex(key, this.depth);
   }
 
+  /** 0.5.83: occupied slots (slot index, owning key, circuit leaf). */
+  slots(): Array<{ index: bigint; key: Fr; leaf: Fr }> {
+    return [...this.owner].map(([slot, key]) => ({ index: slot, key: new Fr(key), leaf: this.tree.getIndex(slot) }));
+  }
+
   get(key: Fr): Fr {
     const slot = this.slotOf(key);
     const o = this.owner.get(slot);

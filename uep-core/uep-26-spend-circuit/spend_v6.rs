@@ -53,7 +53,8 @@ pub struct SpendParams {
     pub treasury: Party,
     pub asset: Fr,
     pub amount: u64,
-    pub domain_id: u64,
+    /// Public domain (PI[12]); the ledger uses encodeStringToFr(domainId).
+    pub domain_id: Fr,
 }
 
 /// Ledger trees for a spend (state tree keyed by lowBits(H_ACCOUNT(id, asset), D),
@@ -182,7 +183,7 @@ pub fn build_spend<H: SpendHash, const D: usize>(
     nfs.set(nf_idx, nullifier);
     let new_nf_root = nfs.root();
 
-    let domain_fr = Fr::from(p.domain_id);
+    let domain_fr = p.domain_id;
     let amount_fr = Fr::from(p.amount);
     let fee_fr = Fr::from(fee);
     let transaction_commitment = tx_commitment::<H>(

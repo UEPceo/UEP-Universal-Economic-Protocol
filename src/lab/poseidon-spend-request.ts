@@ -27,7 +27,7 @@ export type PoseidonSpendRequestJson = {
   note_blinding: string;
   recipient_blinding: string;
   treasury_blinding: string;
-  extra_state_leaves?: Array<[number, string]>;
+  extra_state_leaves?: Array<[number | string, string]>;
   existing_nullifiers?: string[];
   network_profile?: string;
   expected_old_state_root?: string;

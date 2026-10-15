@@ -33,6 +33,10 @@ pub struct PoseidonSpendRequest {
     /// Public domain number. Lab profile uses 1.
     #[serde(default = "default_domain")]
     pub domain_id: u64,
+    /// 0.5.83 (v6 only): domain as a field element (hex or decimal), e.g. the ledger's
+    /// encodeStringToFr(domainId). Overrides `domain_id` when present.
+    #[serde(default)]
+    pub domain_fr: Option<String>,
     #[serde(deserialize_with = "de_u64_flex")]
     pub sender_old_balance: u64,
     #[serde(default, deserialize_with = "de_u64_flex_opt")]
@@ -44,7 +48,7 @@ pub struct PoseidonSpendRequest {
     pub treasury_blinding: String,
     /// Additional state leaves as ["index", "leaf_hex"] pairs for multi-leaf canonical state.
     /// Sender/recipient/treasury leaves are always applied on top.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_leaves_flex")]
     pub extra_state_leaves: Vec<(u64, String)>,
     /// Prior nullifiers already in the nullifier SMT (hex Fr values).
     #[serde(default)]
@@ -83,6 +87,14 @@ fn default_depth() -> u32 {
 }
 fn default_seed() -> u64 {
     42
+}
+
+/// 0.5.83: leaf indices as numbers or decimal strings (depth-64 indices exceed JS safe integers).
+fn de_leaves_flex<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(u64, String)>, D::Error> {
+    #[derive(serde::Deserialize)]
+    struct Idx(#[serde(deserialize_with = "de_u64_flex")] u64);
+    let v: Vec<(Idx, String)> = serde::Deserialize::deserialize(d)?;
+    Ok(v.into_iter().map(|(i, l)| (i.0, l)).collect())
 }
 
 fn de_u64_flex<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
@@ -271,7 +283,7 @@ fn circuit_from_request_v6<const D: usize>(req: &PoseidonSpendRequest) -> Result
         treasury: Party { id: parse_fr(&req.treasury_id)?, blinding: parse_fr(&req.treasury_blinding)?, old_balance: req.treasury_old_balance },
         asset,
         amount: req.amount,
-        domain_id: req.domain_id,
+        domain_id: match &req.domain_fr { Some(d) => parse_fr(d)?, None => Fr::from(req.domain_id) },
     };
     if (req.recipient_slot_empty && req.recipient_old_balance != 0) || (req.treasury_slot_empty && req.treasury_old_balance != 0) {
         return Err("EMPTY_SLOT_WITH_BALANCE".into());
@@ -580,6 +592,21 @@ mod parse_tests {
         req.recipient_old_balance = 0;
         req.circuit_version = 5;
         assert_eq!(circuit_from_request::<4>(&req).err().as_deref(), Some("EMPTY_SLOT_NOT_SUPPORTED_IN_V5"));
+    }
+
+    #[test]
+    fn v6_request_domain_fr_and_string_indices() {
+        let mut req = base_request();
+        req.circuit_version = 6;
+        let d1 = circuit_from_request::<4>(&req).unwrap().domain_id;
+        assert_eq!(d1, Fr::from(1u64));
+        req.domain_fr = Some("0x45415254".into());
+        let c = circuit_from_request::<4>(&req).unwrap();
+        assert_eq!(c.domain_id, Fr::from(0x45415254u64));
+        let j = r#"[["3","0x1"],[5,"0x2"]]"#;
+        let mut de = serde_json::Deserializer::from_str(j);
+        let v = de_leaves_flex(&mut de).unwrap();
+        assert_eq!(v, vec![(3u64, "0x1".to_string()), (5u64, "0x2".to_string())]);
     }
 
     #[test]

@@ -115,7 +115,7 @@ fn build(l: &Ledger, tx: &Tx) -> Option<C> {
         let (b, bl) = l.accts.get(&key(id, tx.asset)).copied().unwrap_or((0, open_blind(id)));
         Party { id, blinding: bl, old_balance: b }
     };
-    let p = SpendParams { secret: tx.secret, salt: tx.salt, sender_blinding: sbl, sender_old_balance: sb, recipient: party(tx.recipient), treasury: party(tx.treasury), asset: tx.asset, amount: tx.amount, domain_id: tx.domain };
+    let p = SpendParams { secret: tx.secret, salt: tx.salt, sender_blinding: sbl, sender_old_balance: sb, recipient: party(tx.recipient), treasury: party(tx.treasury), asset: tx.asset, amount: tx.amount, domain_id: Fr::from(tx.domain) };
     build_spend::<UepPoseidon, D>(&l.trees(), &p, SpendLayout::V6).ok().map(|b| b.circuit)
 }
 

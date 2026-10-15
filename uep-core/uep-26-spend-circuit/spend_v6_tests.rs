@@ -78,7 +78,7 @@ fn return_to_prior_balance(layout: SpendLayout) -> (Fr, Fr, Fr, Fr, Result<Built
         secret: a_sec, salt: a_salt, sender_blinding: a_blind, sender_old_balance: 10_000,
         recipient: Party { id: b_id, blinding: b_blind, old_balance: 1_000 },
         treasury: Party { id: treasury_id(), blinding: t_blind, old_balance: 0 },
-        asset, amount: 1_000, domain_id: 1,
+        asset, amount: 1_000, domain_id: Fr::from(1u64),
     }, layout).unwrap();
     assert!(sat(&s1.circuit));
     let nf1 = s1.circuit.nullifier;
@@ -88,7 +88,7 @@ fn return_to_prior_balance(layout: SpendLayout) -> (Fr, Fr, Fr, Fr, Result<Built
         secret: b_sec, salt: b_salt, sender_blinding: b_blind, sender_old_balance: 2_000,
         recipient: Party { id: a_id, blinding: a_blind2, old_balance: 8_999 },
         treasury: Party { id: treasury_id(), blinding: t_blind, old_balance: 1 },
-        asset, amount: 1_001, domain_id: 1,
+        asset, amount: 1_001, domain_id: Fr::from(1u64),
     }, layout).unwrap();
     assert!(sat(&s2.circuit));
     let a_leaf2 = s2.trees.state.get_leaf(state_index::<P>(a_id, asset, 8));
@@ -98,7 +98,7 @@ fn return_to_prior_balance(layout: SpendLayout) -> (Fr, Fr, Fr, Fr, Result<Built
         secret: a_sec, salt: a_salt, sender_blinding: a_blind2, sender_old_balance: 10_000,
         recipient: Party { id: b_id, blinding: s2.sender_next_blinding, old_balance: 998 },
         treasury: Party { id: treasury_id(), blinding: t_blind, old_balance: 2 },
-        asset, amount: 500, domain_id: 1,
+        asset, amount: 500, domain_id: Fr::from(1u64),
     };
     let nf2 = {
         let s_old = note_commitment::<P>(h_account::<P>(a_sec, a_salt), asset, Fr::from(10_000u64), a_blind2);
@@ -128,7 +128,7 @@ fn f1_legacy_repeats_nullifier_and_blocks_spend_with_real_poseidon() {
             secret: a_sec, salt: a_salt, sender_blinding: Fr::from(3u64), sender_old_balance: 10_000,
             recipient: Party { id: b_id, blinding: Fr::from(4u64), old_balance: 998 },
             treasury: Party { id: treasury_id(), blinding: Fr::from(5u64), old_balance: 2 },
-            asset, amount: 500, domain_id: 1,
+            asset, amount: 500, domain_id: Fr::from(1u64),
         };
         build_spend::<P, 8>(&fresh, &p, SpendLayout::V5Legacy).unwrap().circuit
     };
@@ -171,7 +171,7 @@ fn v6_long_chain_has_distinct_nullifiers() {
             secret: acc[s].0, salt: acc[s].1, sender_blinding: blind[s], sender_old_balance: bal[s],
             recipient: Party { id: acc[r].2, blinding: blind[r], old_balance: bal[r] },
             treasury: Party { id: treasury_id(), blinding: t_blind, old_balance: t_bal },
-            asset, amount: 1_000, domain_id: 1,
+            asset, amount: 1_000, domain_id: Fr::from(1u64),
         }, SpendLayout::V6).unwrap();
         assert!(sat(&built.circuit), "round {round}");
         assert_eq!(built.circuit.treasury_slot_empty, round == 0);
@@ -203,7 +203,7 @@ fn pay_to_empty_recipient_slot() {
         secret: acc[0].0, salt: acc[0].1, sender_blinding: Fr::from(3u64), sender_old_balance: 10_000,
         recipient: Party { id: acc[1].2, blinding: Fr::from(4u64), old_balance: 0 },
         treasury: Party { id: treasury_id(), blinding: Fr::from(5u64), old_balance: 0 },
-        asset, amount: 1_000, domain_id: 1,
+        asset, amount: 1_000, domain_id: Fr::from(1u64),
     };
     // v5 had no way to open an empty slot (old leaf 0 ≠ commitment of balance 0).
     let e = build_spend::<P, 8>(&trees, &p, SpendLayout::V5Legacy).err().unwrap();
@@ -218,7 +218,7 @@ fn pay_to_empty_recipient_slot() {
         secret: acc[1].0, salt: acc[1].1, sender_blinding: Fr::from(4u64), sender_old_balance: 1_000,
         recipient: Party { id: acc[0].2, blinding: built.sender_next_blinding, old_balance: 8_999 },
         treasury: Party { id: treasury_id(), blinding: Fr::from(5u64), old_balance: 1 },
-        asset, amount: 100, domain_id: 1,
+        asset, amount: 100, domain_id: Fr::from(1u64),
     }, SpendLayout::V6).unwrap();
     assert!(sat(&next.circuit));
 
@@ -269,7 +269,7 @@ fn random_honest<const D: usize>(rng: &mut StdRng, layout: SpendLayout) -> Spend
         secret: acc[0].0, salt: acc[0].1, sender_blinding: s_blind, sender_old_balance: s_bal,
         recipient: Party { id: acc[1].2, blinding: r_blind, old_balance: r_bal },
         treasury: Party { id: treasury_id(), blinding: t_blind, old_balance: t_bal },
-        asset, amount, domain_id: rng.gen_range(1u64..3),
+        asset, amount, domain_id: Fr::from(rng.gen_range(1u64..3)),
     };
     match build_spend::<P, D>(&trees, &p, layout) {
         Ok(b) => b.circuit,
@@ -523,7 +523,7 @@ fn migrate_v5_d32_snapshot_to_d64_and_spend_old_leaf_under_v6() {
         secret: acc[0].0, salt: acc[0].1, sender_blinding: Fr::from(3u64), sender_old_balance: 10_000,
         recipient: Party { id: acc[1].2, blinding: Fr::from(4u64), old_balance: 50 },
         treasury: Party { id: treasury_id(), blinding: Fr::from(5u64), old_balance: 0 },
-        asset, amount: 1_000, domain_id: 1,
+        asset, amount: 1_000, domain_id: Fr::from(1u64),
     }, SpendLayout::V6).unwrap();
     assert!(spend_valid::<P, 64>(&built.circuit));
     let cs = ConstraintSystem::<Fr>::new_ref();

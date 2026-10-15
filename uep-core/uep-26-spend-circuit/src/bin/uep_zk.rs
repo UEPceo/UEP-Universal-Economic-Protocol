@@ -64,7 +64,7 @@ fn v6_fixture<const D: usize>() -> uep_26_spend_circuit::spend_circuit::SpendCir
         secret, salt, sender_blinding: Fr::from(3u64), sender_old_balance: 10_000,
         recipient: Party { id: rid, blinding: Fr::from(4u64), old_balance: 0 },
         treasury: Party { id: tid, blinding: Fr::from(5u64), old_balance: 0 },
-        asset, amount: 1_000, domain_id: 1,
+        asset, amount: 1_000, domain_id: Fr::from(1u64),
     };
     build_spend::<UepPoseidon, D>(&trees, &p, SpendLayout::V6).expect("v6 fixture").circuit
 }
@@ -327,6 +327,7 @@ fn main() {
                 if req.circuit_version == 6 && depth == 64 {
                     let t0 = Instant::now();
                     let c = circuit_from_request::<64>(&req)?;
+                    let c_blind = c.sender_new_blinding;
                     let publics = public_inputs_from_circuit(&c);
                     let (pk, vk) = setup(c.clone(), &mut setup_rng).map_err(|e| format!("{e:?}"))?;
                     let setup_ms = t0.elapsed().as_millis();
@@ -344,6 +345,7 @@ fn main() {
                     println!("setup_ms={setup_ms}");
                     println!("prove_ms={prove_ms}");
                     println!("tag={CIRCUIT_TAG_V6}");
+                    println!("sender_new_blinding={}", fr_to_hex(&c_blind));
                     println!("vk_id={}", vk_id(&vk_b));
                     println!("vk_hex={}", hex_encode(&vk_b));
                     println!("proof_hex={}", hex_encode(&proof_b));
@@ -359,6 +361,9 @@ fn main() {
                             let c = circuit_from_request::<4>(&req)?;
                             let publics = public_inputs_from_circuit(&c);
                             println!("leaf_sender_index={}", c.sender_index);
+                            if req.circuit_version == 6 {
+                                println!("sender_new_blinding={}", fr_to_hex(&c.sender_new_blinding));
+                            }
                             println!("leaf_sender_new={}", fr_to_hex(&c.sender_new_leaf));
                             println!("leaf_recipient_index={}", c.recipient_index);
                             println!("leaf_recipient_new={}", fr_to_hex(&c.recipient_new_leaf));
