@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { fetchBytes, scaled, nfc, SourceError } from "./lib.mjs";
 import { parseUsgs, parseGeofon, seismicClaimFromBytes, compareSources, fetchSeismic, SEISMIC_SOURCES } from "./seismic.mjs";
-import { LAB_PARSERS, LAB_SOURCES, fetchLab } from "./lab-sources.mjs";
+import { CELESTRAK_MIN_INTERVAL_MS, CelestrakClient, LAB_PARSERS, LAB_SOURCES, fetchLab } from "./lab-sources.mjs";
 import { canonicalEvidenceClaim } from "../../src/marketplace/evidence.ts";
 
 globalThis.fetch = () => { throw new Error("network disabled in adapter tests"); };
@@ -40,7 +40,7 @@ test("each seismic source emits the 0.5.82 canonical SEISMIC claim, ready for at
     assert.equal(r.matches.length, 1);
     assert.ok(!r.canonicalClaim.includes("Ms") && !("fromMs" in r.claim), "source time never enters the claim");
   }
-  assert.equal(b.attribution, "GEOFON Data Centre, GFZ Helmholtz Centre Potsdam (CC BY 4.0)");
+  assert.equal(b.attribution, "Event locations were obtained from the GEOFON program of the GFZ Helmholtz Centre for Geosciences using data from the GEVN partner networks.");
   assert.equal(b.licence, "CC BY 4.0");
   assert.notEqual(a.sourceId, b.sourceId);
 });
@@ -140,7 +140,7 @@ test("lab adapters refuse malformed data, timeouts and down sources", async () =
   assert.throws(() => LAB_PARSERS.OPEN_METEO(b(JSON.stringify(om)), LAB), /UTC expected/);
   await assert.rejects(fetchLab("DSN", "", { lab: true, timeoutMs: 50, fetchImpl: hang }), /SOURCE_TIMEOUT/);
   await assert.rejects(fetchLab("OPEN_METEO", "latitude=40&longitude=-3", { lab: true, fetchImpl: async () => ({ status: 429 }) }), /HTTP 429/);
-  const r = await fetchLab("CELESTRAK", "CATNR=25544&FORMAT=json", { lab: true, fetchImpl: ok(fx(LAB_FIXTURES.CELESTRAK)) });
+  const r = await fetchLab("CELESTRAK", "CATNR=25544&FORMAT=json", { lab: true, celestrak: new CelestrakClient({ nowMs: () => 0 }), fetchImpl: ok(fx(LAB_FIXTURES.CELESTRAK)) });
   assert.equal(r.records[0].noradId, 25544);
 });
 
@@ -149,4 +149,42 @@ test("excluded sources are not present", () => {
   for (const s of ["emsc", "seismicportal", "iers", "leap", "iana", "coingecko", "weather.gov", "imf.org", "openaq", "copernicus"]) assert.ok(!all.includes(s), s);
   for (const s of Object.values({ ...SEISMIC_SOURCES, ...LAB_SOURCES })) assert.equal(s.account, false);
   assert.ok(SourceError);
+});
+
+test("CelesTrak usage policy: OMM JSON only, one download per 2-hour update, hard stop on non-200", async () => {
+  let calls = 0, now = 1_000_000;
+  const counting = (status, body) => async () => { calls++; return status === 200 ? { status: 200, arrayBuffer: async () => body } : { status }; };
+  const c = new CelestrakClient({ nowMs: () => now });
+  // TLE formats and a missing format are refused before any request.
+  await assert.rejects(c.fetch("CATNR=25544&FORMAT=tle", { lab: true, fetchImpl: counting(200) }), /CELESTRAK_TLE_FORBIDDEN/);
+  await assert.rejects(c.fetch("CATNR=25544&FORMAT=3LE", { lab: true, fetchImpl: counting(200) }), /CELESTRAK_TLE_FORBIDDEN/);
+  await assert.rejects(c.fetch("CATNR=25544", { lab: true, fetchImpl: counting(200) }), /CELESTRAK_FORMAT_REQUIRED/);
+  assert.equal(calls, 0);
+  const body = fx(LAB_FIXTURES.CELESTRAK);
+  const a = await c.fetch("CATNR=25544&FORMAT=json", { lab: true, fetchImpl: counting(200, body) });
+  assert.equal(a.cached, false);
+  // Same query (parameter order irrelevant) within 2 hours: served from cache, no request.
+  now += CELESTRAK_MIN_INTERVAL_MS - 1;
+  const b2 = await c.fetch("FORMAT=json&CATNR=25544", { lab: true, fetchImpl: counting(200, body) });
+  assert.equal(b2.cached, true); assert.equal(calls, 1);
+  // After the update interval: one new download.
+  now += 1;
+  await c.fetch("CATNR=25544&FORMAT=json", { lab: true, fetchImpl: counting(200, body) });
+  assert.equal(calls, 2);
+  // Any non-200 stops every further query (also other queries) until reset by an operator.
+  await assert.rejects(c.fetch("CATNR=99999&FORMAT=json", { lab: true, fetchImpl: counting(403) }), /HTTP 403/);
+  assert.ok(c.stopped);
+  await assert.rejects(c.fetch("CATNR=11111&FORMAT=json", { lab: true, fetchImpl: counting(200, body) }), /CELESTRAK_STOPPED/);
+  assert.equal(calls, 3, "no request after the stop");
+  c.resetAfterReview();
+  await c.fetch("CATNR=11111&FORMAT=json", { lab: true, fetchImpl: counting(200, body) });
+  assert.equal(calls, 4);
+  assert.throws(() => new CelestrakClient({ minIntervalMs: 60_000 }), /SOURCE_CONFIG_INVALID/);
+});
+
+test("licence notes: GEOFON attribution, DSN CC0 (logos excluded), CelesTrak usage policy", () => {
+  assert.equal(SEISMIC_SOURCES.GEOFON.attribution, "Event locations were obtained from the GEOFON program of the GFZ Helmholtz Centre for Geosciences using data from the GEVN partner networks.");
+  assert.match(LAB_SOURCES.DSN.licence, /CC0 unless noted/);
+  assert.match(LAB_SOURCES.DSN.licence, /logos/);
+  assert.match(LAB_SOURCES.CELESTRAK.licence, /usage policy/);
 });

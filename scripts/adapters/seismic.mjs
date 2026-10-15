@@ -18,8 +18,8 @@ export const SEISMIC_SOURCES = Object.freeze({
   GEOFON: {
     sourceId: "geofon-fdsnws-event",
     endpoint: "https://geofon.gfz.de/fdsnws/event/1/query",
-    licence: "CC BY 4.0",
-    attribution: "GEOFON Data Centre, GFZ Helmholtz Centre Potsdam (CC BY 4.0)",
+    licence: "CC BY 4.0 (event products, https://geofon.gfz.de/eqinfo/faq/); waveforms have network-specific licences and are not used",
+    attribution: "Event locations were obtained from the GEOFON program of the GFZ Helmholtz Centre for Geosciences using data from the GEVN partner networks.",
     account: false,
   },
 });

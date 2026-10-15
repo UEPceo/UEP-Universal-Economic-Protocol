@@ -107,11 +107,11 @@ Tests: `src/oracle/oracle-hardening.test.ts` (one negative test per issue).
 | Source | Adapter (off-node) | Use | Licence (re-checked 2026-10-15) | Attribution | Account |
 |---|---|---|---|---|---|
 | USGS FDSN event | `scripts/adapters/seismic.mjs`, `usgs-seismic.mjs` | Phase 2.3 seismic HOLD, origin 1 (canonical SEISMIC claim; not wired to settlement) | Public domain (U.S. Government work) | "U.S. Geological Survey, Earthquake Hazards Program" | No |
-| GEOFON FDSN event | `scripts/adapters/seismic.mjs`, `geofon-seismic.mjs` | Phase 2.3 seismic HOLD, origin 2 | CC BY 4.0 | **Required:** "GEOFON Data Centre, GFZ Helmholtz Centre Potsdam (CC BY 4.0)" | No |
+| GEOFON FDSN event | `scripts/adapters/seismic.mjs`, `geofon-seismic.mjs` | Phase 2.3 seismic HOLD, origin 2 | CC BY 4.0 for event products ([FAQ](https://geofon.gfz.de/eqinfo/faq/)); waveforms are under different, network-specific licences and are **not used** | **Required, exactly:** "Event locations were obtained from the GEOFON program of the GFZ Helmholtz Centre for Geosciences using data from the GEVN partner networks." | No |
 | NOAA SWPC Kp, F10.7 | `scripts/adapters/lab-sources.mjs` | Lab only (`UEP_LAB_SOURCES=1`) | Public domain (U.S. Government work) | "NOAA Space Weather Prediction Center" | No |
 | JPL Horizons | `lab-sources.mjs` | Lab only; offline SPK kernels preferred | U.S. Government work (NASA/JPL) | "JPL Solar System Dynamics, Horizons" | No |
-| CelesTrak GP | `lab-sources.mjs` | Lab only | No explicit licence published; attribution, respect rate limits | "CelesTrak (T.S. Kelso)" | No |
-| NASA DSN Now | `lab-sources.mjs` | Lab only | NASA public data, no explicit licence on the feed | "NASA Deep Space Network" | No |
+| CelesTrak GP | `lab-sources.mjs` (`CelestrakClient`) | Lab only | No licence; [usage policy](https://celestrak.org/usage-policy.php): download once per update (GP data every 2 hours), stop on any non-200, no TLE format. The adapter only accepts `FORMAT=json` (OMM), caches each query for 2 hours and stops all queries after any non-200 until an operator resets it | "CelesTrak (T.S. Kelso)" | No |
+| NASA DSN Now | `lab-sources.mjs` | Lab only | NASA data CC0 unless noted ([NASA licence](https://science.data.nasa.gov/about/license)); NASA logos and insignia are not public domain and are not used | "NASA Deep Space Network" | No |
 | Open-Meteo | `lab-sources.mjs` | Lab only, **non-commercial only** (free API terms, < 10,000 calls/day); never a deployed service | CC BY 4.0 data | "Weather data by Open-Meteo.com (CC BY 4.0)" | No |
 | ECB, BIS, Eurostat | `src/service/indicative-display.ts` (0.5.82) | UI display only, never state | see that file | shown in the UI | No |
 | GLEIF | `src/oracle/lei.ts` (offline), `src/service/gleif-display.ts` | Offline checksum; UI display only | CC0 | shown in the UI | No |

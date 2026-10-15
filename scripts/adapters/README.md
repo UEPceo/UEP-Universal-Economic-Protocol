@@ -20,8 +20,8 @@ Rules (docs/ORACLE.md, docs/EVIDENCE.md):
 | File | Source | Use | Licence / attribution |
 |---|---|---|---|
 | `seismic.mjs`, `usgs-seismic.mjs` | USGS FDSN event | Phase 2.3 seismic claim (origin 1) | Public domain; "U.S. Geological Survey, Earthquake Hazards Program" |
-| `seismic.mjs`, `geofon-seismic.mjs` | GEOFON FDSN event | Phase 2.3 seismic claim (origin 2) | CC BY 4.0; "GEOFON Data Centre, GFZ Helmholtz Centre Potsdam (CC BY 4.0)" |
-| `lab-sources.mjs` | NOAA SWPC Kp / F10.7, JPL Horizons, CelesTrak, NASA DSN Now, Open-Meteo | Lab only, `UEP_LAB_SOURCES=1`; Open-Meteo non-commercial only | see `LAB_SOURCES` and `docs/ORACLE.md` |
+| `seismic.mjs`, `geofon-seismic.mjs` | GEOFON FDSN event | Phase 2.3 seismic claim (origin 2) | CC BY 4.0 (event products; waveforms not used); "Event locations were obtained from the GEOFON program of the GFZ Helmholtz Centre for Geosciences using data from the GEVN partner networks." |
+| `lab-sources.mjs` | NOAA SWPC Kp / F10.7, JPL Horizons, CelesTrak, NASA DSN Now, Open-Meteo | Lab only, `UEP_LAB_SOURCES=1`; Open-Meteo non-commercial only | see `LAB_SOURCES` and `docs/ORACLE.md`. CelesTrak: `CelestrakClient` (OMM JSON only, one download per 2-hour update, hard stop on any non-200). NASA DSN: CC0 unless noted; NASA logos not used |
 
 Run with `node --experimental-strip-types` (the seismic adapter reuses
 `canonicalEvidenceClaim` from `src/marketplace/evidence.ts`; the dependency only
