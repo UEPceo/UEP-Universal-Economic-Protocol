@@ -2,6 +2,7 @@
  * UEP-API-001.1 — local HTTP adapter over UepServiceApi.
  * LAB. Not consensus. A dead provider returns an error and does not halt the node.
  */
+import { parseAmount } from "../core/amount.ts";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { UepServiceApi } from "./uep-service-api.ts";
@@ -239,6 +240,11 @@ function decimalField(value: unknown, fallback = "0"): bigint {
   return BigInt(raw);
 }
 
+/** 0.5.81 item 8: amounts, prices, capacities and quantities are u64 (decimalField stays for field-sized seeds). */
+function amountField(value: unknown, fallback = "0"): bigint {
+  try { return parseAmount(decimalField(value, fallback)); } catch { throw new Error("AMOUNT_INVALID"); }
+}
+
 async function readBody(req: IncomingMessage, limit = 64 * 1024): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let n = 0;
@@ -393,13 +399,13 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
       }
       if (req.method === "POST" && path === "/v1/bridge/withdraw") {
         const body = JSON.parse((await readBody(req)).toString() || "{}");
-        const result = opts.api.bridgeWithdraw(String(body.buyerId ?? ""), String(body.recipient ?? ""), decimalField(body.amount), decimalField(body.openingSeed), String(body.nonce ?? ""), Number(body.expiresAtHeight ?? 0), String(body.signature ?? ""), metaOf(req));
+        const result = opts.api.bridgeWithdraw(String(body.buyerId ?? ""), String(body.recipient ?? ""), amountField(body.amount), decimalField(body.openingSeed), String(body.nonce ?? ""), Number(body.expiresAtHeight ?? 0), String(body.signature ?? ""), metaOf(req));
         send(res, httpStatusOf(result), result);
         return;
       }
       if (req.method === "POST" && path === "/v1/marketplace/credits") {
         const body = JSON.parse((await readBody(req)).toString() || "{}");
-        const result = opts.api.marketplaceCreditAccount(String(body.identityId ?? ""), String(body.asset ?? ""), decimalField(body.amount), String(body.creditId ?? ""), metaOf(req));
+        const result = opts.api.marketplaceCreditAccount(String(body.identityId ?? ""), String(body.asset ?? ""), amountField(body.amount), String(body.creditId ?? ""), metaOf(req));
         send(res, httpStatusOf(result, 201), result);
         return;
       }
@@ -412,8 +418,8 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
           description: String(body.description ?? ""),
           category: String(body.category ?? "API") as any,
           asset: String(body.asset ?? ""),
-          unitPrice: decimalField(body.unitPrice),
-          capacity: decimalField(body.capacity),
+          unitPrice: amountField(body.unitPrice),
+          capacity: amountField(body.capacity),
         }, metaOf(req));
         send(res, httpStatusOf(result, 201), result);
         return;
@@ -439,7 +445,7 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
       }
       if (req.method === "GET" && path === "/v1/marketplace/quote") {
         const listingId = url.searchParams.get("listingId") ?? "";
-        const quantity = decimalField(url.searchParams.get("quantity"));
+        const quantity = amountField(url.searchParams.get("quantity"));
         const result = opts.api.marketplaceCheckoutQuote(listingId, quantity, metaOf(req));
         send(res, httpStatusOf(result), result);
         return;
@@ -451,7 +457,7 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         const result = opts.api.marketplaceAcceptOrder({
           listingId: String(body.listingId ?? ""),
           buyerId: String(body.buyerId ?? ""),
-          quantity: decimalField(body.quantity),
+          quantity: amountField(body.quantity),
           idempotencyKey: String(body.idempotencyKey ?? meta.idempotencyKey ?? ""),
           signature: String(body.signature ?? ""),
           orderId: body.orderId ? String(body.orderId) : undefined,
@@ -472,7 +478,7 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         const meta = metaOf(req);
         if (action === "fund") {
           const body = JSON.parse((await readBody(req)).toString() || "{}");
-          const result = opts.api.marketplaceFundOrder(orderId, decimalField(body.amount), meta);
+          const result = opts.api.marketplaceFundOrder(orderId, amountField(body.amount), meta);
           send(res, httpStatusOf(result), result);
           return;
         }

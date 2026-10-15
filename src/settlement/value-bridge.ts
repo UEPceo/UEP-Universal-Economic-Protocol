@@ -9,6 +9,7 @@
  * not a payment recipient. Replay ids are the ledger transaction ids and
  * live in the Marketplace snapshot. This module does not read the clock.
  */
+import { parseAmount } from "../core/amount.ts";
 import { Fr } from "../core/field.ts";
 import { creatorFee } from "../core/fee.ts";
 import { protocolFeeFloor } from "../testnet/ledger.ts";
@@ -35,7 +36,7 @@ function received(tx: UepTransaction, recipient: Fr): bigint {
   const want = recipient.toHex();
   const note = tx.outputNotes?.find((n) => (typeof n.owner === "string" ? n.owner : n.owner.toHex()) === want);
   if (!note) throw new Error("BRIDGE_OUTPUT_MISSING");
-  return typeof note.amount === "bigint" ? note.amount : BigInt(note.amount);
+  return parseAmount(note.amount as never, "bridge.output");
 }
 
 export class ValueBridge {

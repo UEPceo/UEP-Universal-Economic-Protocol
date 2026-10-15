@@ -95,6 +95,18 @@ export const RULES = [
  */
 export const ALLOWLIST = [
   {
+    file: "src/core/amount.test.ts",
+    rule: "process-state",
+    match: ["process.env.UEP_NUM_SEED"],
+    reason: "0.5.81: test-only seed override for a reproducible property run; the seed is printed in the test name and never reaches a transition.",
+  },
+  {
+    file: "src/marketplace/order-state-machine.test.ts",
+    rule: "process-state",
+    match: ["process.env.UEP_MKT_SEED"],
+    reason: "0.5.81: test-only seed override for a reproducible property run; the seed is printed in the test name and never reaches a transition.",
+  },
+  {
     file: "src/marketplace/listing-index.test.ts",
     rule: "performance-now",
     reason: "Test-only timing of the listing index benchmark; the measured duration is asserted by the test and never reaches a transition.",

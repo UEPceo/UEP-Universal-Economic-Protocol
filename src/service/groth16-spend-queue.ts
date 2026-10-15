@@ -2,6 +2,7 @@
  * UEP-API-001.3 — spend inbox drained by the existing Groth16 prover.
  * A proved spend is not network-final. Finality still requires quorum apply.
  */
+import { parseAmount } from "../core/amount.ts";
 import { SmtEconomicState } from "../lab/uep37-smt-economic-state.ts";
 import {
   bindCircuitAccounts,
@@ -52,7 +53,8 @@ export class Groth16SpendQueue {
     if (input.recipient !== party.recipientLabel) {
       return { accepted: false, reason: "RECIPIENT_NOT_ALIGNED" };
     }
-    const amount = BigInt(input.amount);
+    let amount: bigint;
+    try { amount = parseAmount(input.amount as never); } catch { return { accepted: false, reason: "BAD_AMOUNT" }; }
     if (this.state.balance(who) < amount) return { accepted: false, reason: "INSUFFICIENT" };
     this.pending.push({
       ...input,

@@ -13,6 +13,8 @@ Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`
 
 - Item 7 (partial): src/lab/zk-binding-0581.test.ts mutates each of the 13 Groth16 public inputs (all refused), mutates each tx-binding field (all refused), recomputes the Rust transaction_commitment with the TS hFoldV2 (cross-check), and pins a reproducible public-input vector (src/lab/fixtures/zk-binding-0581-vector.json). Circuit and VK versioning stay on the existing circuit tag + VK pins; DEV keys stay behind zk-dev-keys-guard.
 
+- Item 8 (partial): src/core/amount.ts (parseAmount, parseDecimalUnits, addU64/subU64). Amounts crossing a trust boundary are u64 integers: negative, NaN, Infinity, floats, exponents, hex, signs, leading zeros and > u64 are refused (AMOUNT_INVALID/AMOUNT_OUT_OF_RANGE); decimal input with too many digits is refused, not rounded. Wired into note deserialization, snapshot balances (INVALID_SNAPSHOT_AMOUNT), HTTP amount/price/capacity/quantity fields, the Groth16 spend queue, service backends and the value bridge.
+
 ## 0.5.80 — 2026-10-13
 
 - Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.

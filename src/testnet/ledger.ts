@@ -2,6 +2,7 @@
  * In-process UEP ledger. One instance per network (and per planetary domain).
  * Status: IMPLEMENTED (local). Multi-node P2P: CONCEPTUAL.
  */
+import { parseAmount } from "../core/amount.ts";
 import { Fr } from "../core/field.ts";
 import { ACCOUNT_DEPTH } from "../core/smt.ts";
 import { NullifierSet } from "../core/nullifier.ts";
@@ -2230,7 +2231,7 @@ export class UepLedger {
     }
     l.installSigningKeys(keys.snapshotSigningKeys ?? [], keys.faucetSigningKey, keys.issuerSigningKeys);
     l.state = SparseMerkleTree.fromJSON(data.state);
-    l.balances = new Map(data.balances.map(([k, v]) => [k, BigInt(v)]));
+    l.balances = new Map(data.balances.map(([k, v]) => { try { return [k, parseAmount(v as never, "balance")]; } catch { fail("AMOUNT", `balance ${k} is not a u64 amount`); } }));
     l.notes = data.notes.map(deserializeNote);
     l.rebuildOwnerIndex();
     l.txs = data.txs.map(deserializeTx);
