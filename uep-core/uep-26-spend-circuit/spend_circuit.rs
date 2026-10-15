@@ -22,13 +22,27 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisE
 use crate::hash_gadget::{
     domain_hash_gadget, enforce_domain_hash, enforce_tx_commitment, h_account, h_nullifier,
     note_commitment, note_nonce, tx_commitment, Hash2, Hash2Gadget, StructuralTestHash,
-    UepPoseidon, D_ACCOUNT, D_LEAF, D_NULLIFIER, ENCODING_VERSION,
+    UepPoseidon, D_ACCOUNT, D_BLIND, D_LEAF, D_NULLIFIER, ENCODING_VERSION,
 };
+use ark_r1cs_std::{boolean::Boolean, select::CondSelectGadget};
 use crate::smt_gadget::{
     enforce_low_bits_index, enforce_not_equal, enforce_nullifier_insert, enforce_update,
     index_to_direction_bits, low_bits_u64, state_index,
 };
 use crate::{enforce_fee_policy, enforce_u64, expected_fee};
+
+/// Constraint layout of the spend circuit.
+///
+/// - `V5Legacy`: the v5 layout (tag `UEP-27-SPEND-POSEIDON-D32-v5-foldv2`). Kept byte-for-byte so
+///   v5 verifying keys stay reproducible and existing v5 proofs keep verifying under their pin.
+/// - `V6`: 0.5.83 layout. The sender leaf moves to a rotated blinding
+///   (`new = H(D_BLIND, secret, nonce)`), and a recipient/treasury slot may start empty
+///   (old leaf = 0, old balance = 0). Production depth is 64 (see circuit_id.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpendLayout {
+    V5Legacy,
+    V6,
+}
 
 /// Witness + public inputs for a single-asset transfer with Merkle depth D.
 #[derive(Clone)]
@@ -97,6 +111,16 @@ pub struct SpendCircuit<const D: usize> {
     pub nullifier_leaf: Fr,
 
     pub use_poseidon: bool,
+
+    // 0.5.83 (layout V6). Ignored by V5Legacy.
+    pub layout: SpendLayout,
+    /// Blinding of the sender's new leaf. V6: must equal H(D_BLIND, secret, note_nonce).
+    /// V5Legacy: must equal `note_blinding` (not constrained separately; the v5 layout reuses it).
+    pub sender_new_blinding: Fr,
+    /// V6: the recipient slot is empty before this spend (old leaf = 0, old balance = 0).
+    pub recipient_slot_empty: bool,
+    /// V6: the treasury slot is empty before this spend (old leaf = 0, old balance = 0).
+    pub treasury_slot_empty: bool,
 }
 
 fn bind_balance_leaf<G: Hash2Gadget>(
@@ -111,6 +135,35 @@ fn bind_balance_leaf<G: Hash2Gadget>(
     let payload = domain_hash_gadget::<G>(cs.clone(), D_LEAF, owner, &inner)?;
     let computed = domain_hash_gadget::<G>(cs, D_LEAF, &payload, blinding)?;
     computed.enforce_equal(leaf_out)
+}
+
+/// Old leaf of a receiving party (recipient or treasury).
+/// V5Legacy: always the bound commitment. V6: either the bound commitment, or an empty slot
+/// (leaf = 0) whose old balance is 0. `empty` is a boolean witness; the Merkle update then
+/// proves the slot really is 0 under the old root.
+#[allow(clippy::too_many_arguments)]
+fn bind_party_old_leaf<G: Hash2Gadget>(
+    cs: ConstraintSystemRef<Fr>,
+    layout: SpendLayout,
+    empty_hint: bool,
+    owner: &FpVar<Fr>,
+    asset: &FpVar<Fr>,
+    amount: &FpVar<Fr>,
+    blinding: &FpVar<Fr>,
+    leaf_out: &FpVar<Fr>,
+) -> Result<(), SynthesisError> {
+    if layout == SpendLayout::V5Legacy {
+        return bind_balance_leaf::<G>(cs, owner, asset, amount, blinding, leaf_out);
+    }
+    let inner = domain_hash_gadget::<G>(cs.clone(), D_LEAF, asset, amount)?;
+    let payload = domain_hash_gadget::<G>(cs.clone(), D_LEAF, owner, &inner)?;
+    let computed = domain_hash_gadget::<G>(cs.clone(), D_LEAF, &payload, blinding)?;
+    let empty = Boolean::new_witness(cs.clone(), || Ok(empty_hint))?;
+    let zero = FpVar::<Fr>::new_constant(cs, Fr::from(0u64))?;
+    let expected = FpVar::conditionally_select(&empty, &zero, &computed)?;
+    expected.enforce_equal(leaf_out)?;
+    // empty ⇒ old balance is 0
+    (FpVar::from(empty) * amount).enforce_equal(&zero)
 }
 
 impl<const D: usize> SpendCircuit<D> {
@@ -209,14 +262,16 @@ impl<const D: usize> SpendCircuit<D> {
             &s_blind,
             &s_old_leaf,
         )?;
-        bind_balance_leaf::<G>(
-            cs.clone(),
-            &sender_id,
-            &asset_id,
-            &sender_new,
-            &s_blind,
-            &s_new_leaf,
-        )?;
+        if self.layout == SpendLayout::V5Legacy {
+            bind_balance_leaf::<G>(
+                cs.clone(),
+                &sender_id,
+                &asset_id,
+                &sender_new,
+                &s_blind,
+                &s_new_leaf,
+            )?;
+        }
 
         // ---- note_nonce must be the protocol nonce of the spent note ----
         // note_nonce = H_LEAF(sender_old_leaf, sender_blinding)
@@ -224,11 +279,28 @@ impl<const D: usize> SpendCircuit<D> {
             domain_hash_gadget::<G>(cs.clone(), D_LEAF, &s_old_leaf, &s_blind)?;
         expected_nonce.enforce_equal(&note_nonce_v)?;
 
+        if self.layout == SpendLayout::V6 {
+            // Liveness fix (0.5.83): the sender's new leaf takes a fresh blinding derived
+            // in-circuit from the secret and the spent nonce. Not a free witness.
+            let s_new_blind = FpVar::new_witness(cs.clone(), || Ok(self.sender_new_blinding))?;
+            enforce_domain_hash::<G>(cs.clone(), D_BLIND, &secret, &note_nonce_v, &s_new_blind)?;
+            bind_balance_leaf::<G>(
+                cs.clone(),
+                &sender_id,
+                &asset_id,
+                &sender_new,
+                &s_new_blind,
+                &s_new_leaf,
+            )?;
+        }
+
         let r_blind = FpVar::new_witness(cs.clone(), || Ok(self.recipient_blinding))?;
         let r_old_leaf = FpVar::new_witness(cs.clone(), || Ok(self.recipient_old_leaf))?;
         let r_new_leaf = FpVar::new_witness(cs.clone(), || Ok(self.recipient_new_leaf))?;
-        bind_balance_leaf::<G>(
+        bind_party_old_leaf::<G>(
             cs.clone(),
+            self.layout,
+            self.recipient_slot_empty,
             &recipient_id,
             &asset_id,
             &recipient_old,
@@ -247,8 +319,10 @@ impl<const D: usize> SpendCircuit<D> {
         let t_blind = FpVar::new_witness(cs.clone(), || Ok(self.treasury_blinding))?;
         let t_old_leaf = FpVar::new_witness(cs.clone(), || Ok(self.treasury_old_leaf))?;
         let t_new_leaf = FpVar::new_witness(cs.clone(), || Ok(self.treasury_new_leaf))?;
-        bind_balance_leaf::<G>(
+        bind_party_old_leaf::<G>(
             cs.clone(),
+            self.layout,
+            self.treasury_slot_empty,
             &treasury_id,
             &asset_id,
             &treasury_old,
@@ -533,6 +607,10 @@ pub fn honest_spend_fixture_structural<const D: usize>(
         nullifier_index_bits: nf_bits,
         nullifier_leaf: nullifier,
         use_poseidon: false,
+        layout: SpendLayout::V5Legacy,
+        sender_new_blinding: s_blind,
+        recipient_slot_empty: false,
+        treasury_slot_empty: false,
     }
 }
 

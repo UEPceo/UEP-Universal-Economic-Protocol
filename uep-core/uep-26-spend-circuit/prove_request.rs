@@ -57,6 +57,20 @@ pub struct PoseidonSpendRequest {
     pub expected_old_state_root: Option<String>,
     #[serde(default)]
     pub expected_old_nullifier_root: Option<String>,
+    /// 0.5.83: circuit version. 5 (default, deprecated) = v5 layout at depth 4 or 32, same
+    /// output as before; 6 = v6 layout (rotated sender blinding, empty receiving slots) at
+    /// depth 4 or 64. A v6 request may mark a receiving slot empty with an old balance of 0.
+    #[serde(default = "default_circuit_version")]
+    pub circuit_version: u32,
+    /// v6 only: the recipient / treasury slot is empty in the current state (no leaf yet).
+    #[serde(default)]
+    pub recipient_slot_empty: bool,
+    #[serde(default)]
+    pub treasury_slot_empty: bool,
+}
+
+fn default_circuit_version() -> u32 {
+    5
 }
 
 fn default_network_profile() -> String {
@@ -217,6 +231,92 @@ fn to_bits<const D: usize>(v: &[bool]) -> [bool; D] {
 
 /// Build Poseidon SpendCircuit from wallet economic request (depth fixed at compile time).
 pub fn circuit_from_request<const D: usize>(req: &PoseidonSpendRequest) -> Result<SpendCircuit<D>, String> {
+    match req.circuit_version {
+        5 => {
+            if D != 4 && D != 32 {
+                return Err("UNSUPPORTED_DEPTH: circuit v5 runs at depth 4 or 32".into());
+            }
+            circuit_from_request_v5::<D>(req)
+        }
+        6 => {
+            if D != 4 && D != 64 {
+                return Err("UNSUPPORTED_DEPTH: circuit v6 runs at depth 4 or 64".into());
+            }
+            circuit_from_request_v6::<D>(req)
+        }
+        v => Err(format!("UNSUPPORTED_CIRCUIT_VERSION {v}")),
+    }
+}
+
+/// v6 request: the same economic fields, built with `spend_v6::build_spend` against the
+/// canonical multi-leaf state (extra leaves + parties), with rotated sender blinding.
+fn circuit_from_request_v6<const D: usize>(req: &PoseidonSpendRequest) -> Result<SpendCircuit<D>, String> {
+    use crate::spend_v6::{build_spend, Party, SpendParams, SpendTrees};
+    if req.fee != crate::expected_fee(req.amount) {
+        return Err("FEE_POLICY: fee must equal the protocol fee".into());
+    }
+    let secret = parse_fr(&req.sender_secret)?;
+    let salt = parse_fr(&req.sender_salt)?;
+    let sender_id = h_account::<UepPoseidon>(secret, salt);
+    let asset = parse_fr(&req.asset_id)?;
+    let params = SpendParams {
+        secret,
+        salt,
+        sender_blinding: parse_fr(&req.note_blinding)?,
+        sender_old_balance: req.sender_old_balance,
+        recipient: Party { id: parse_fr(&req.recipient_id)?, blinding: parse_fr(&req.recipient_blinding)?, old_balance: req.recipient_old_balance },
+        treasury: Party { id: parse_fr(&req.treasury_id)?, blinding: parse_fr(&req.treasury_blinding)?, old_balance: req.treasury_old_balance },
+        asset,
+        amount: req.amount,
+        domain_id: req.domain_id,
+    };
+    if (req.recipient_slot_empty && req.recipient_old_balance != 0) || (req.treasury_slot_empty && req.treasury_old_balance != 0) {
+        return Err("EMPTY_SLOT_WITH_BALANCE".into());
+    }
+    let mut trees = SpendTrees::<UepPoseidon, D>::new();
+    let mut parties = vec![
+        (state_index::<UepPoseidon>(sender_id, asset, D), note_commitment::<UepPoseidon>(sender_id, asset, Fr::from(req.sender_old_balance), params.sender_blinding)),
+    ];
+    if !req.recipient_slot_empty {
+        parties.push((state_index::<UepPoseidon>(params.recipient.id, asset, D), note_commitment::<UepPoseidon>(params.recipient.id, asset, Fr::from(req.recipient_old_balance), params.recipient.blinding)));
+    }
+    if !req.treasury_slot_empty {
+        parties.push((state_index::<UepPoseidon>(params.treasury.id, asset, D), note_commitment::<UepPoseidon>(params.treasury.id, asset, Fr::from(req.treasury_old_balance), params.treasury.blinding)));
+    }
+    let mut pre: Vec<(u64, Fr)> = Vec::new();
+    for (idx, leaf_s) in &req.extra_state_leaves {
+        let leaf = parse_fr(leaf_s)?;
+        if parties.iter().any(|(pi, pl)| pi == idx && *pl != leaf)
+            || (req.recipient_slot_empty && *idx == state_index::<UepPoseidon>(params.recipient.id, asset, D))
+            || (req.treasury_slot_empty && *idx == state_index::<UepPoseidon>(params.treasury.id, asset, D))
+        {
+            return Err("SMT_INDEX_COLLISION: a state slot of this spend holds another leaf".into());
+        }
+        pre.push((*idx, leaf));
+    }
+    pre.extend(parties);
+    trees.state = crate::canonical_state::build_state_from_leaves::<D>(&pre);
+    if let Some(ref exp) = req.expected_old_state_root {
+        if parse_fr(exp)? != trees.state.root() {
+            return Err("STALE_ROOT: old_state_root mismatch vs expected_old_state_root".into());
+        }
+    }
+    let mut nf_pre = Vec::new();
+    for ns in &req.existing_nullifiers {
+        let n = parse_fr(ns)?;
+        nf_pre.push((low_bits_u64(n, D), n));
+    }
+    trees.nullifiers = crate::canonical_state::build_state_from_leaves::<D>(&nf_pre);
+    if let Some(ref exp) = req.expected_old_nullifier_root {
+        if parse_fr(exp)? != trees.nullifiers.root() {
+            return Err("STALE_NULLIFIER_ROOT: mismatch vs expected".into());
+        }
+    }
+    let built = build_spend::<UepPoseidon, D>(&trees, &params, crate::spend_circuit::SpendLayout::V6)?;
+    Ok(built.circuit)
+}
+
+fn circuit_from_request_v5<const D: usize>(req: &PoseidonSpendRequest) -> Result<SpendCircuit<D>, String> {
     if req.amount as u128 + req.fee as u128 > req.sender_old_balance as u128 {
         return Err("insufficient sender_old_balance for amount+fee".into());
     }
@@ -390,6 +490,10 @@ pub fn circuit_from_request<const D: usize>(req: &PoseidonSpendRequest) -> Resul
         nullifier_index_bits: to_bits(&nf_bits_v),
         nullifier_leaf: nullifier,
         use_poseidon: true,
+        layout: crate::spend_circuit::SpendLayout::V5Legacy,
+        sender_new_blinding: s_blind,
+        recipient_slot_empty: false,
+        treasury_slot_empty: false,
     })
 }
 
@@ -437,6 +541,48 @@ mod parse_tests {
         bad.extra_state_leaves = vec![(c.recipient_index, "0x01".into())];
         let err = circuit_from_request::<32>(&bad).err().expect("must fail");
         assert!(err.contains("SMT_INDEX_COLLISION"), "{err}");
+    }
+
+    #[test]
+    fn v6_request_builds_and_satisfies_at_d4_and_rejects_bad_depth() {
+        use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
+        let mut req = base_request();
+        req.circuit_version = 6;
+        let c = circuit_from_request::<4>(&req).unwrap();
+        assert_eq!(c.layout, crate::spend_circuit::SpendLayout::V6);
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        c.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+        assert!(circuit_from_request::<32>(&req).is_err(), "v6 is not offered at depth 32");
+        req.circuit_version = 5;
+        assert!(circuit_from_request::<64>(&req).is_err(), "v5 is not offered at depth 64");
+        req.circuit_version = 7;
+        assert!(circuit_from_request::<4>(&req).is_err());
+    }
+
+    #[test]
+    fn v6_request_empty_recipient_slot() {
+        use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
+        let mut req = base_request();
+        req.circuit_version = 6;
+        req.recipient_slot_empty = true;
+        let c = circuit_from_request::<4>(&req).unwrap();
+        assert!(c.recipient_slot_empty);
+        assert_eq!(c.recipient_old_leaf, Fr::from(0u64));
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        c.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+        req.recipient_old_balance = 5;
+        assert!(circuit_from_request::<4>(&req).is_err());
+    }
+
+    #[test]
+    fn v5_request_default_is_unchanged() {
+        let req = base_request();
+        assert_eq!(req.circuit_version, 5);
+        let c = circuit_from_request::<4>(&req).unwrap();
+        assert_eq!(c.layout, crate::spend_circuit::SpendLayout::V5Legacy);
+        assert_eq!(c.sender_new_blinding, c.note_blinding);
     }
 
     #[test]

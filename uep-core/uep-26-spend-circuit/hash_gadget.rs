@@ -28,6 +28,10 @@ pub const D_NULLIFIER: u64 = 2;
 pub const D_MERKLE: u64 = 3;
 pub const D_LEAF: u64 = 4;
 pub const D_TX: u64 = 5;
+/// 0.5.83 (circuit v6): domain of the in-circuit sender blinding rotation.
+/// new_blinding = H(D_BLIND, secret, note_nonce). Distinct from every frozen tag above
+/// and from D_FOLD_V2 (6).
+pub const D_BLIND: u64 = 7;
 
 /// Two-input hash used by the frozen composition.
 pub trait Hash2 {
@@ -162,6 +166,13 @@ pub fn note_commitment<H: Hash2>(owner: Fr, asset: Fr, amount: Fr, blinding: Fr)
 
 pub fn note_nonce<H: Hash2>(commitment: Fr, blinding: Fr) -> Fr {
     h_leaf::<H>(commitment, blinding)
+}
+
+/// Circuit v6: blinding of the sender's next leaf, derived from the spend secret and the
+/// nonce of the leaf being spent. Each spend moves the sender to a fresh blinding, so the
+/// next nonce (and nullifier) differs even if the balance returns to an earlier value.
+pub fn rotate_blinding<H: Hash2>(secret: Fr, nonce: Fr) -> Fr {
+    domain_hash::<H>(D_BLIND, secret, nonce)
 }
 
 /// In-circuit domain hash using the same nested composition.
