@@ -18,7 +18,12 @@ const suites = [
   { name: "marketplace-state-machine", file: "src/property/marketplace-state-machine.property.test.ts", env: "UEP_MKT_SEED" },
   { name: "numeric-amounts", file: "src/property/amount.property.test.ts", env: "UEP_NUM_SEED" },
 ];
-if (process.argv.includes("--include-multiprocess")) suites.push({ name: "bft-multiprocess", file: "src/node/bft-multiprocess.test.ts", env: "UEP_BFT_FAULT_SEED" });
+if (process.argv.includes("--include-multiprocess")) {
+  suites.push({ name: "bft-multiprocess", file: "src/node/bft-multiprocess.test.ts", env: "UEP_BFT_FAULT_SEED" });
+  // 0.5.83 Blocks B and C (separate OS processes, fault-injecting proxies, SIGKILL + restart). First three seeds (run time).
+  suites.push({ name: "bft-recovery-multiprocess", file: "src/node/bft-recovery-multiprocess.test.ts", env: "UEP_BFT_FAULT_SEED", maxSeeds: 3 });
+  suites.push({ name: "bft-crash-points-multiprocess", file: "src/node/bft-crash-points-multiprocess.test.ts", env: "UEP_BFT_FAULT_SEED", maxSeeds: 3 });
+}
 
 let commit = "unknown";
 try { commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(); } catch { /* not a git checkout */ }
@@ -28,9 +33,9 @@ const record = {
   startedAt: new Date().toISOString(), runs: [],
 };
 let failed = 0;
-for (const suite of suites) for (const seed of seeds) {
+for (const suite of suites) for (const seed of seeds.slice(0, suite.maxSeeds ?? seeds.length)) {
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, ["--experimental-strip-types", "--test", suite.file], { cwd: root, env: { ...process.env, [suite.env]: String(seed) }, encoding: "utf8", timeout: 300_000 });
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", "--test", suite.file], { cwd: root, env: { ...process.env, [suite.env]: String(seed) }, encoding: "utf8", timeout: 900_000 });
   const out = (r.stdout ?? "") + (r.stderr ?? "");
   const num = (k) => Number((new RegExp(`^(?:ℹ|#) ${k} (\\d+)`, "m").exec(out) ?? [])[1] ?? NaN);
   const ok = r.status === 0;

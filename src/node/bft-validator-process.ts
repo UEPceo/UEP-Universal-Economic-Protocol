@@ -23,6 +23,9 @@ type Config = {
   id: string; voterPem: string; stateDir: string; peerPort: number; controlPort: number;
   validators: BftValidator[]; faultTolerance: number; peers: Peer[];
   genesisFile: string; trust: { authorities: string[]; faucetPublicKeys: string[] };
+  /** 0.5.83 Block B: when set, an internal height-producer ticker feeds the round timer every autoTickMs (ticks are counted heights, not wall time inside the protocol). */
+  autoTickMs?: number;
+  roundTimer?: { baseTicks: number; maxDoublings: number };
 };
 
 const decode = (_k: string, v: unknown) => v && typeof v === "object" && "$b" in v && typeof (v as { $b: unknown }).$b === "string" ? BigInt((v as { $b: string }).$b) : v;
@@ -38,7 +41,60 @@ const net = new PeerNet(cfg.id, ledger, key, me.publicKeyHex, cfg.peers, voters,
 const domain = { networkId: ledger.networkId, domainId: ledger.domainId };
 const kernel = createDurableBftConsensusKernel(domain, cfg.validators, cfg.faultTolerance, join(cfg.stateDir, "bft-kernel.json"));
 net.configureBftConsensus(kernel);
-await net.recoverBftCommits();
+// 0.5.83 Block C: crash injection (test harness only). UEP_CRASH_AT="<write point>@<height>" kills this
+// process with SIGKILL (kill -9) at that write point of that BFT height: no cleanup, no flush.
+const crashAt = process.env.UEP_CRASH_AT?.match(/^([a-z-]+)@(\d+)$/);
+if (crashAt) {
+  const [, point, h] = crashAt;
+  const committer = () => (net as unknown as { committer: { log: { all(): readonly { height: number }[] } } }).committer;
+  // Height of the commit in progress: the open height before the INTENT exists, else the last log entry's height.
+  const isTarget = (p: string) => (p === "before-intent" || p === "intent-torn" ? net.bftOpenHeight() : committer().log.all().at(-1)?.height) === Number(h);
+  const die = () => { process.kill(process.pid, "SIGKILL"); };
+  net.commitFaultInjector = (p) => {
+    if (p !== point || !isTarget(p)) return;
+    if (p.endsWith("-torn")) throw new Error("CRASH_TORN"); // write half a line, then afterTornWrite kills
+    die();
+  };
+  net.commitAfterTornWrite = () => { if (point!.endsWith("-torn")) die(); };
+}
+const recovered = await net.recoverBftCommits();
+if (cfg.roundTimer) net.configureRoundTimer(cfg.roundTimer);
+
+// 0.5.83 Block B: pending transactions (harness-submitted) and automatic round change / re-proposal.
+const mempool = new Map<string, ReturnType<typeof txFromWire>>();
+const proposedAt = new Set<string>();
+const chosen = new Map<string, string>();
+let tick = 0;
+let ticking = false;
+async function autoStep(): Promise<void> {
+  if (ticking) return; ticking = true;
+  try {
+    tick += 1;
+    await net.bftTick(tick);
+    const height = net.bftOpenHeight();
+    for (const [id, tx] of mempool) if (net.ledger.txs.some(t => t.txId.toHex() === id)) mempool.delete(id);
+    const round = net.bftRound();
+    if (round < 1 || net.bftLeader(height, round) !== cfg.id || proposedAt.has(`${height}:${round}`)) return;
+    if (!net.bftRoundChangeCertificate(height, round)) return;
+    proposedAt.add(`${height}:${round}`);
+    // Prefer the block a round-change certificate forces (highest lock), else any pending transaction that applies.
+    const rc = net.bftRoundChangeCertificate(height, round)!;
+    const required = kernel.requiredProposalFromRoundChanges(rc);
+    const chosenId = chosen.get(`${height}:${round}`);
+    const candidates = chosenId ? [net.bftTransaction(chosenId) ?? mempool.get(chosenId)].filter(Boolean)
+      : required ? [net.bftTransaction(required.blockId) ?? mempool.get(required.blockId)].filter(Boolean) : [...mempool.values()];
+    for (const tx of candidates) {
+      chosen.set(`${height}:${round}`, tx!.txId.toHex());
+      try { await net.bftProposeAfterRoundChange(tx!); console.log(`[auto] ${cfg.id} proposed height=${height} round=${round}`); return; } catch (e) { const msg = (e as Error).message; console.error(`[auto] ${cfg.id} propose failed: ${msg}`); if (msg !== "BFT_QUORUM_NOT_MET" && msg !== "BFT_ALREADY_PROPOSED_OTHER_BLOCK") { chosen.delete(`${height}:${round}`); continue; } break; }
+    }
+    // No quorum yet (drops, partition): retry the same proposal on a later tick of this round.
+    // Re-sending the identical signed proposal is idempotent for honest voters (same proposal core).
+    proposedAt.delete(`${height}:${round}`);
+  } catch (e) {
+    console.error(`[auto] ${cfg.id} tick failed: ${(e as Error).message}`);
+  } finally { ticking = false; }
+}
+if (cfg.autoTickMs) setInterval(() => { void autoStep(); }, cfg.autoTickMs).unref();
 await net.listen(cfg.peerPort);
 
 const reply = (res: import("node:http").ServerResponse, code: number, body: unknown) => {
@@ -69,6 +125,32 @@ createServer(async (req, res) => {
       const cert = await net.bftPropose(proposal, tx);
       return reply(res, 200, { height, blockId: cert.blockId, votes: cert.votes.length });
     }
+    if (url.pathname === "/ctl/audit") {
+      // 0.5.83 Block C: re-open the commit log from disk (hash chain verified by CommitLog), then check
+      // height continuity, that the ledger applied exactly the APPLIED blocks in order, and the state root.
+      const { CommitLog } = await import("./certified-commit.ts");
+      const log = new CommitLog(join(cfg.stateDir, "bft-commit-log.jsonl"));
+      const entries = log.all();
+      const decided = entries.filter(e => e.type !== "INTENT");
+      const problems: string[] = [];
+      for (let i = 1; i < decided.length; i++) if (decided[i]!.height !== decided[i - 1]!.height + 1) problems.push(`height gap ${decided[i - 1]!.height}->${decided[i]!.height}`);
+      const applied = entries.filter(e => e.type === "APPLIED");
+      const ledgerTxs = net.ledger.txs.map(t => t.txId.toHex());
+      const tail = ledgerTxs.slice(ledgerTxs.length - applied.length);
+      if (JSON.stringify(tail) !== JSON.stringify(applied.map(e => e.blockId))) problems.push("ledger txs differ from APPLIED blocks");
+      for (let i = 1; i < applied.length; i++) if (applied[i]!.preRoot !== applied[i - 1]!.postRoot) problems.push(`root chain broken at ${applied[i]!.height}`);
+      const lastRoot = applied.at(-1)?.postRoot ?? null;
+      if (lastRoot && lastRoot !== net.ledger.stateRoot().toHex()) problems.push("state root differs from last APPLIED post-root");
+      if (net.bftCommitStatus(net.bftOpenHeight() - 1) === "CERTIFIED_NOT_APPLIED") problems.push("certified height left unapplied");
+      return reply(res, 200, { ok: problems.length === 0, problems, head: log.headHash, entries: entries.length, repairedTornBytes: (net as unknown as { committer: { log: { repairedTornBytes: number } } }).committer.log.repairedTornBytes, pending: (net as unknown as { committer: { pending(): number[] } }).committer.pending(), recoveredAtStart: recovered, ...state() });
+    }
+    if (url.pathname === "/ctl/submit") {
+      const tx = txFromWire(body.tx as never);
+      mempool.set(tx.txId.toHex(), tx);
+      return reply(res, 200, { pending: mempool.size });
+    }
+    if (url.pathname === "/ctl/evidence") return reply(res, 200, { evidence: net.bftEquivocationEvidence(), round: net.bftRound(), openHeight: net.bftOpenHeight() });
+    if (url.pathname === "/ctl/tick") { await autoStep(); return reply(res, 200, { tick, round: net.bftRound() }); }
     if (url.pathname === "/ctl/equivocate") {
       // Byzantine behaviour: two signed proposals for the same height/round with different blocks,
       // each sent to a different half of the peers. Honest validators must never certify both.
@@ -78,7 +160,7 @@ createServer(async (req, res) => {
       const out: unknown[] = [];
       for (const [i, peer] of cfg.peers.entries()) {
         const tx = txs[i % 2]!;
-        const proposal: BftProposal = { ...domain, height, round: 0, proposerId: cfg.id, parentRoot, blockId: tx.txId.toHex() };
+        const proposal: BftProposal = { ...domain, height, round: Number(body.round ?? 0), proposerId: cfg.id, parentRoot, blockId: tx.txId.toHex() };
         const payload = { proposal, proposalSignature: kernel.signProposal(proposal, key), tx: txToWire(tx) };
         const signature = signEd25519(`uep-peer:${cfg.id}:/bft/proposal:${JSON.stringify(payload)}`, key);
         const r = await fetch(peer.url + "/bft/proposal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: cfg.id, payload, signature }, encode) }).then(x => x.json()).catch(() => null);

@@ -90,7 +90,7 @@ jobs:
   property:
     name: Seeded property and fault runs (blocking)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
