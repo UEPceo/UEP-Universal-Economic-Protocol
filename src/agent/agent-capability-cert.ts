@@ -6,6 +6,7 @@
  * Still NOT part of consensus / SpendCircuit.
  */
 
+import { randomBytes } from "node:crypto";
 import {
   type AgentCapability,
   type AgentKeypair,
@@ -72,7 +73,7 @@ export function issueSignedCapability(opts: {
   grantId?: string;
 }): SignedCapability {
   const now = Date.now();
-  const grantId = opts.grantId ?? `grant-${now}-${Math.random().toString(16).slice(2, 10)}`;
+  const grantId = opts.grantId ?? `grant-${now}-${randomBytes(8).toString("hex")}`;
   const capability: AgentCapability = {
     agentId: opts.agentId,
     publicKeyHex: opts.agentPublicKeyHex,

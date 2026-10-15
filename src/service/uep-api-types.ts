@@ -2,6 +2,7 @@
  * UEP-API-001 — Universal Service Interface types (v36.2).
  * External to UEP CORE. No consensus dependency.
  */
+import { randomBytes } from "node:crypto";
 
 export const UEP_API_VERSION = "1.0.0";
 
@@ -108,7 +109,7 @@ export type ApiResult<T> = ApiSuccess<T> | ApiFailure;
 
 export function newRequestId(): string {
   const t = Date.now().toString(36);
-  const r = Math.floor(Math.random() * 1e9).toString(36);
+  const r = randomBytes(6).toString("hex");
   return `req_${t}_${r}`;
 }
 

@@ -9,6 +9,7 @@
  *   - three hosts (set sequencerHost / listenHost=0.0.0.0)
  */
 
+import os from "node:os";
 import {
   createNodeIdentity,
   NodeRegistry,
@@ -65,7 +66,7 @@ export async function bootUep33Cluster(
   const requireZkVerify = cfg.requireZkVerify === true;
   const dataDir =
     cfg.dataDir ??
-    path.join("/tmp", `uep33-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    fs.mkdtempSync(path.join(os.tmpdir(), "uep33-"));
   fs.mkdirSync(dataDir, { recursive: true });
 
   const seqId = createNodeIdentity("node-a-seq");

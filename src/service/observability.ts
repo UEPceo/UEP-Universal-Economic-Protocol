@@ -2,6 +2,7 @@
  * UEP-OBSERVABILITY-001 — OpenTelemetry-style layer (local implementation).
  * Failure of telemetry MUST NOT affect UEP CORE or transactions.
  */
+import { randomBytes } from "node:crypto";
 
 export type SpanStatus = "ok" | "error";
 
@@ -56,7 +57,7 @@ export class InMemoryExporter implements TelemetryExporter {
 }
 
 function rid(): string {
-  return Math.random().toString(16).slice(2, 10) + Date.now().toString(16);
+  return randomBytes(4).toString("hex") + Date.now().toString(16);
 }
 
 /**

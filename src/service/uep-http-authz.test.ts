@@ -1,3 +1,4 @@
+// Secret-scan note: "test-only-objects-token" is a test fixture, not a credential (see .gitleaks.toml).
 /**
  * v0.5.0 API authorization hardening: end-to-end HTTP tests. Marketplace calls
  * that change or read private state need the actor's signed authorization
