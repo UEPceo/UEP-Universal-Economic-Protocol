@@ -63,3 +63,30 @@ The BFT HTTP endpoints are `/bft/proposal`, `/bft/prevote-certificate` and `/bft
 Use `createDurableBftConsensusKernel(domain, validators, faultTolerance, statePath)` for the experimental durable path. The factory validates the stored envelope and restores the full BFT state before returning a kernel. Do not construct a plain `BftConsensusKernel` and assume that `exportState()` is durable. Keep the state path on a local filesystem with atomic rename/fsync semantics and protect the host and directory; the checksum is for corruption detection, not adversarial authenticity. The current format is BFT state v3 and intentionally rejects older state shapes instead of silently dropping round-change anti-equivocation records.
 
 The store currently covers local vote reservations, certified locks, commit records and round-change signing intent. It does not persist a complete timeout scheduler, authenticated peer inbox/outbox, or ledger state. The separate PeerNet commit journal introduced in 0.5.79 and hardened in 0.5.80 records certified transaction payloads, but the journal and ledger snapshot are not one atomic durable store. It is therefore not a complete node recovery system.
+
+
+## Vote binding, locks and round change: written rules (0.5.81)
+
+These are the rules the kernel (`src/node/bft-consensus.ts`) enforces. They are written down and tested; they are
+**not** machine-checked (no TLA+/model-checker proof yet).
+
+- **B1 Vote binding.** A vote signs `uep-bft-vote-v2:` + canonical JSON of network, domain, **epoch**, **validator-set
+  hash** (sorted ids and keys plus `f`), height, round, phase, voter, block and the **proposal core hash**
+  (`uep-bft-proposal-core-v1`: domain, epoch, validator set, height, round, proposer, parent root, block). A vote of
+  another epoch or validator-set configuration does not verify.
+- **B2 Certificates.** A certificate counts only votes that sign the same proposal core; votes for two cores never add up.
+  A precommit's justification is a prevote certificate for the same core.
+- **L1 Anti-equivocation.** Per (height, round, phase, validator) the kernel remembers the proposal core hash and persists
+  it **before** releasing the signature; a failed write means no signature. A different core at the same position is
+  `BFT_EQUIVOCATION`, also after restart.
+- **L2 Lock before precommit.** A valid 2f+1 prevote certificate becomes the lock for the height and is persisted before
+  any precommit can be signed; precommit requires the registered lock for the same round and block.
+- **L3 Unlock.** A locked validator prevotes another block only with a prevote certificate (POL) from a round higher than
+  its lock (`validRound > lockedRound`).
+- **R1 Round change.** A round-change message names the sender's lock and its certificate, is signed, persisted before
+  release and refused for a target round not above the lock. A proposal for round > 0 needs a 2f+1 round-change
+  certificate and must carry the highest certified lock it contains; conflicting locks at the same round are refused.
+- **C1 Commit.** A precommit certificate is finality for the kernel; the ledger counts a height as applied only through
+  `applyCertifiedCommit` (ADR 0007).
+
+Tests: `src/node/bft-consensus.test.ts`, `src/node/bft-binding.test.ts` (`npm run test:consensus`).

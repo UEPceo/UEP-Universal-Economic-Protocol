@@ -17,6 +17,7 @@
  *
  * Status: IMPLEMENTED / TESTED (native openings). ZK spend: CONCEPTUAL.
  */
+import { parseAmount } from "./amount.ts";
 import { Fr } from "./field.ts";
 import { hLeaf } from "./hash.ts";
 import { encodeStringToFr, u64ToFr } from "./encoding.ts";
@@ -80,7 +81,7 @@ export function serializeNote(note: Note) {
 export function deserializeNote(data: ReturnType<typeof serializeNote>): Note {
   return {
     assetId: new Fr(data.assetId),
-    amount: BigInt(data.amount),
+    amount: parseAmount(data.amount, "note.amount"),
     owner: new Fr(data.owner),
     blinding: new Fr(data.blinding),
     commitment: new Fr(data.commitment),

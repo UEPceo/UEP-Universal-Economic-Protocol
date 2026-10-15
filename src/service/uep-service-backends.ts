@@ -2,6 +2,7 @@
  * UEP-API-001.2 — lab backends for spend submit, compute, relay, oracle.
  * None of these write consensus state. A missing backend is an API error, not a halt.
  */
+import { parseAmount } from "../core/amount.ts";
 import { createHash, randomBytes } from "node:crypto";
 import type { ProviderHealth } from "./provider-model.ts";
 
@@ -42,7 +43,7 @@ export class SpendInbox {
       return { spendId: "", status: "REJECTED", final: false, reason: "INVALID_REQUEST" };
     }
     let amount: bigint;
-    try { amount = BigInt(input.amount); } catch { return { spendId: "", status: "REJECTED", final: false, reason: "BAD_AMOUNT" }; }
+    try { amount = parseAmount(input.amount as never); } catch { return { spendId: "", status: "REJECTED", final: false, reason: "BAD_AMOUNT" }; }
     if (amount <= 0n) return { spendId: "", status: "REJECTED", final: false, reason: "BAD_AMOUNT" };
     const key = canonicalSpendId(input.domainId, input.sender, input.nonce);
     if (this.seen.has(key)) return { spendId: key, status: "REJECTED", final: false, reason: "REPLAY" };
