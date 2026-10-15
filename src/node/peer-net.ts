@@ -12,7 +12,7 @@ type WireTx = Parameters<typeof deserializeTx>[0];
 import type { UepLedger } from "../testnet/ledger.ts";
 import { TxQuorum, type QuorumVote } from "./quorum.ts";
 import { BftConsensusKernel, type BftCertificate, type BftProposal, type BftVote } from "./bft-consensus.ts";
-import { CertifiedCommitter, CommitLog, migrateJournalV1, type CommitResult, type CommitStatus, type CommitterOptions } from "./certified-commit.ts";
+import { CertifiedCommitter, CommitLog, migrateJournalV1, txFromWire, type CommitResult, type CommitStatus, type CommitterOptions } from "./certified-commit.ts";
 
 /**
  * `publicKeyHex` pins the voter key. `snapshotPublicKeyHex` and `faucetPublicKeyHex` pin the keys
@@ -146,7 +146,10 @@ export class PeerNet {
     const commitCertificate = kernel.voteCertificate(proposal.height, proposal.round, "precommit", proposal.blockId, precommits);
     if (tx) await this.applyBftCommit(lockedProposal, commitCertificate, tx);
     else kernel.recordCommit(commitCertificate);
-    const commits = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/commit-certificate", this.signed("/bft/commit-certificate", { certificate: commitCertificate }))));
+    // The commit message carries the signed proposal and the transaction, so a validator that missed
+    // the proposal can still apply through applyCertifiedCommit (it re-verifies everything).
+    const commitPayload = { certificate: commitCertificate, proposal: lockedProposal, proposalSignature: lockedSignature, ...(wireTx ? { tx: wireTx } : {}) };
+    const commits = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/commit-certificate", this.signed("/bft/commit-certificate", commitPayload))));
     const accepted = commits.filter(reply => reply?.accepted === true).length;
     if (accepted < kernel.quorum - 1) throw new Error("BFT_TRANSPORT_COMMIT_ACKS_INSUFFICIENT");
     return commitCertificate;
@@ -169,6 +172,34 @@ export class PeerNet {
     if (!proposalSignature) throw new Error("BFT_JOURNAL_PROPOSAL_SIGNATURE_INVALID");
     const committer = this.requireCommitter();
     return this.enqueue(() => committer.applyCertifiedCommit({ proposal, proposalSignature, certificate, tx }));
+  }
+
+  /**
+   * Catch up from peers: fetch certified commits from the next expected height and apply each
+   * through applyCertifiedCommit. Nothing from a peer is trusted: certificate, proposal signature,
+   * height, parent root and spend are all re-checked locally. Returns the number of heights applied.
+   */
+  async bftSync(): Promise<number> {
+    const committer = this.requireCommitter();
+    let applied = 0;
+    for (const peer of this.peers) {
+      for (;;) {
+        const reply = await get(`${peer.url}/bft/commits?from=${committer.expectedHeight()}`);
+        const list = Array.isArray(reply?.commits) ? reply!.commits as Array<{ proposal: BftProposal; proposalSignature: string; certificate: BftCertificate; tx: WireTx }> : [];
+        let progressed = false;
+        for (const c of list) {
+          if (c.proposal?.height !== committer.expectedHeight()) continue;
+          try {
+            const tx = txFromWire(c.tx);
+            await this.enqueue(() => committer.applyCertifiedCommit({ proposal: c.proposal, proposalSignature: c.proposalSignature, certificate: c.certificate, tx }));
+            this.bftProposals.set(this.bftPosition(c.proposal), { proposal: structuredClone(c.proposal), signature: c.proposalSignature });
+            applied++; progressed = true;
+          } catch { break; }
+        }
+        if (!progressed) break;
+      }
+    }
+    return applied;
   }
 
   /** After a restart: restore the ledger snapshot, configure BFT, then call this. Returns the heights re-applied to the ledger. */
@@ -253,6 +284,16 @@ export class PeerNet {
         if (req.method === "GET" && url.pathname === "/snapshot") {
           return send(res, 200, this.ledger.snapshot());
         }
+        if (req.method === "GET" && url.pathname === "/bft/commits" && this.committer) {
+          const from = Math.max(0, Number(url.searchParams.get("from") ?? 0) | 0);
+          const out = [];
+          for (const e of this.committer.log.all()) {
+            if (e.type !== "INTENT" || e.height < from || this.committer.status(e.height) !== "APPLIED") continue;
+            out.push({ proposal: e.proposal, proposalSignature: e.proposalSignature, certificate: e.certificate, tx: e.tx });
+            if (out.length >= 64) break;
+          }
+          return send(res, 200, { commits: out });
+        }
         if (req.method === "GET" && url.pathname === "/txs") {
           const txs = this.ledger.txs.slice(-20).map((tx) => tx.txId.toHex());
           return send(res, 200, { id: this.id, height: this.ledger.height, stateRoot: this.ledger.stateRoot().toHex(), txCount: this.ledger.txs.length, recent: txs });
@@ -318,15 +359,35 @@ export class PeerNet {
             if (!certificate || certificate.phase !== "precommit" || !kernel.verifyCertificate(certificate)) {
               return send(res, 400, { error: "BFT_COMMIT_CERTIFICATE_INVALID" });
             }
+            const carried = body.proposal as BftProposal | undefined;
+            const carriedSig = typeof body.proposalSignature === "string" ? body.proposalSignature : undefined;
+            if (carried && carriedSig && carried.blockId === certificate.blockId && kernel.verifyProposal(carried, carriedSig)) {
+              const position = this.bftPosition(carried);
+              const prior = this.bftProposals.get(position);
+              if (!prior || prior.proposal.blockId === carried.blockId) this.bftProposals.set(position, { proposal: structuredClone(carried), signature: carriedSig });
+            }
+            if (body.tx !== undefined && !this.bftTransactions.has(certificate.blockId)) {
+              const carriedTx = deserializeTx(body.tx as WireTx);
+              if (carriedTx.txId.toHex() === certificate.blockId) this.bftTransactions.set(certificate.blockId, carriedTx);
+            }
             const committedProposal = this.bftProposals.get(`${certificate.height}:${certificate.round}`)?.proposal;
             const tx = this.bftTransactions.get(certificate.blockId);
+            let applied = false;
             if (tx) {
               if (!committedProposal || committedProposal.blockId !== certificate.blockId) return send(res, 400, { error: "BFT_COMMIT_PROPOSAL_MISSING" });
-              await this.applyBftCommit(committedProposal, certificate, tx);
+              try {
+                await this.applyBftCommit(committedProposal, certificate, tx);
+                applied = true;
+              } catch (error) {
+                const code = (error as Error).message;
+                // A lagging validator keeps the certificate (CERTIFIED_NOT_APPLIED) and catches up with bftSync().
+                if (code === "BFT_HEIGHT_MISMATCH" || code === "BFT_PARENT_STATE_MISMATCH") kernel.recordCommit(certificate);
+                else return send(res, 409, { error: code });
+              }
             } else {
               kernel.recordCommit(certificate);
             }
-            return send(res, 200, { accepted: true, applied: !!tx, height: certificate.height, round: certificate.round, blockId: certificate.blockId, stateRoot: this.ledger.stateRoot().toHex() });
+            return send(res, 200, { accepted: true, applied, height: certificate.height, round: certificate.round, blockId: certificate.blockId, stateRoot: this.ledger.stateRoot().toHex() });
           }
         }
         if (req.method === "POST" && url.pathname === "/propose") {
