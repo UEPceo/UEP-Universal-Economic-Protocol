@@ -1,3 +1,4 @@
 * text=auto eol=lf
 *.ts text eol=lf
 *.md text eol=lf
+scripts/adapters/fixtures/** -text
