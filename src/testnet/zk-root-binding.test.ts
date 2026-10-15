@@ -82,7 +82,7 @@ function zkTx(tx: UepTransaction, inst: ZkSpendInstance, proof: string, tweak?: 
 }
 
 async function setup(v: ZkSpendVerifier, zkRootBinding: "off" | "circuit-projection" = "circuit-projection") {
-  const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, zkSpendVerifier: v, zkRootBinding });
+  const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, zkSpendVerifier: v, zkRootBinding, zkAcceptLegacyV5: true });
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const b = await identityFromMnemonic(await generateMnemonic(128));
   l.faucet(a.accountId, EUR, 10_000n, clientBlinding(16801625135n));
@@ -92,7 +92,7 @@ async function setup(v: ZkSpendVerifier, zkRootBinding: "off" | "circuit-project
 function prepared(l: UepLedger, a: Awaited<ReturnType<typeof identityFromMnemonic>>, b: { accountId: Fr }, v: ReturnType<typeof witnessVerifier>, amount: bigint, id: string) {
   const p = l.prepareSpend(a, b.accountId, EUR, amount);
   assert.ok("tx" in p);
-  const t = l.zkTransitionFor(p.tx);
+  const t = l.zkTransitionFor(p.tx, 5);
   assert.ok("ok" in t, "error" in t ? t.error : "");
   const inst = instanceFor(l, p.tx, t.ok);
   v.instances.set(id, inst);
@@ -107,7 +107,7 @@ test("projection: depth-32 view of a full-key tree, slot collisions refused", ()
   const manual = new SparseMerkleTree(CIRCUIT_TREE_DEPTH);
   manual.setIndex(5n, new Fr(11n)); manual.setIndex(6n, new Fr(22n));
   assert.ok(proj.root().eq(manual.root()));
-  assert.ok(CircuitTreeProjection.of(full, circuitBalanceLeaf).get(k1).eq(circuitBalanceLeaf(new Fr(11n))));
+  assert.ok(CircuitTreeProjection.of(full, (x) => circuitBalanceLeaf(x)).get(k1).eq(circuitBalanceLeaf(new Fr(11n))));
   const clash = new Fr((3n << 200n) | 5n); // same low 32 bits as k1
   assert.throws(() => proj.set(clash, new Fr(1n)), /ZK_SLOT_COLLISION/);
   full.set(clash, new Fr(33n));
@@ -138,7 +138,7 @@ test("root binding: a zk-spend must prove the projected ledger roots (old and ne
   assert.equal(code(l.submit(zkTx(next.tx, next.inst, "p2"))), "OK");
 });
 
-test("root binding off (default): roots stay unbound; restore re-verifies zk-spends", async () => {
+test("root binding off (explicit compat setting since 0.5.83): roots stay unbound; restore re-verifies zk-spends", async () => {
   const v = witnessVerifier();
   const { l, a, b } = await setup(v, "off");
   const { tx, inst } = prepared(l, a, b, v, 1_000n, "p1");
@@ -147,7 +147,7 @@ test("root binding off (default): roots stay unbound; restore re-verifies zk-spe
   assert.throws(() => UepLedger.restore(structuredClone(snap), trust), /INVALID_SNAPSHOT_ZK_VERIFIER/);
   const reject: ZkSpendVerifier = { keyMode: "development", verify: () => false };
   assert.throws(() => UepLedger.restore(structuredClone(snap), trust, {}, { zkSpendVerifier: reject }), /INVALID_SNAPSHOT_TX_ZK_PROOF/);
-  const restored = UepLedger.restore(structuredClone(snap) as UepLedgerSnapshot, trust, {}, { zkSpendVerifier: v });
+  const restored = UepLedger.restore(structuredClone(snap) as UepLedgerSnapshot, trust, {}, { zkSpendVerifier: v, zkRootBinding: "off" });
   assert.equal(restored.balanceOfAsset(b.accountId, EUR), 1_000n);
   assert.throws(() => new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, zkRootBinding: "x" as "off" }), /ZK_ROOT_BINDING_INVALID/);
 });

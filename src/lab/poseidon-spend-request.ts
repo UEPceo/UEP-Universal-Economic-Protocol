@@ -6,7 +6,11 @@ import { Fr } from "../core/field.ts";
 import { creatorFee } from "../core/fee.ts";
 
 export type PoseidonSpendRequestJson = {
-  depth: 4 | 32;
+  depth: 4 | 32 | 64;
+  /** 0.5.83: 5 = legacy circuit (default), 6 = depth-64 rotation circuit (depth 4 or 64). */
+  circuit_version?: 5 | 6;
+  recipient_slot_empty?: boolean;
+  treasury_slot_empty?: boolean;
   /** Test-only reproducible RNG; omit in production. */
   seed?: number;
   sender_secret: string;

@@ -29,14 +29,26 @@
 import { Fr } from "./field.ts";
 import { hAccount, hLeaf } from "./hash.ts";
 import { EMPTY_LEAF, SparseMerkleTree, type MerklePath } from "./smt.ts";
+import { BN254_FR_MODULUS as BN254_P } from "./field.ts";
 import { accountIdsFromSecrets } from "./spend-key.ts";
 import { u64ToFr } from "./encoding.ts";
 import { isProductionEnvironment } from "./test-only.ts";
 import { SPEND_PUBLIC_INPUT_NAMES, type SpendProof } from "./spend-proof.ts";
 import type { UepTransaction } from "./transaction.ts";
+import { encodeStringToFr } from "./encoding.ts";
+import { spendCircuitTxCommitment } from "./spend-circuit-freeze.ts";
 
-/** Depth of the UEP-26 circuit state / nullifier trees. */
+/** Depth of the UEP-26 circuit v5 state / nullifier trees (legacy). */
 export const CIRCUIT_TREE_DEPTH = 32;
+/**
+ * 0.5.83: circuit v6 (tag UEP-27-SPEND-POSEIDON-D64-v6-rotblind). Depth 64, 13 public inputs
+ * (domain_id last), sender leaf moves to a fresh blinding on every spend.
+ */
+export const CIRCUIT_TREE_DEPTH_V6 = 64;
+export const ZK_PUBLIC_INPUT_COUNT_V6 = 13;
+/** Legacy v5 ledger payloads carry 12 public inputs (domain_id not bound). */
+export const ZK_PUBLIC_INPUT_COUNT_V5 = SPEND_PUBLIC_INPUT_NAMES.length;
+export type ZkPayloadVersion = 5 | 6;
 /** Public-input indices the ledger binds to transaction fields. */
 export const ZK_BOUND_PUBLIC_INPUTS = [4, 5, 6, 7, 8, 9, 10, 11] as const;
 /** Root public inputs: bound only under `zkRootBinding: "circuit-projection"`. */
@@ -83,9 +95,18 @@ export function ledgerBalanceKey(account: Fr, asset: Fr): Fr {
   return hAccount(account, asset);
 }
 
-/** Circuit leaf of a ledger balance leaf: balanceLeaf(owner, asset, amount, blinding 0). */
-export function circuitBalanceLeaf(ledgerLeaf: Fr): Fr {
-  return hLeaf(ledgerLeaf, Fr.zero());
+/**
+ * Circuit leaf of a ledger balance leaf: balanceLeaf(owner, asset, amount, blinding).
+ * v5 projection: blinding 0 for every account. v6 projection: the slot's current circuit
+ * blinding (0 until the account's first v6 zk-spend, then the rotated value it published).
+ */
+export function circuitBalanceLeaf(ledgerLeaf: Fr, blinding: Fr = Fr.zero()): Fr {
+  return hLeaf(ledgerLeaf, blinding);
+}
+
+/** Circuit domain_id (public input 12) of a ledger domain: encodeStringToFr(domainId). */
+export function circuitDomainId(domainId: string): Fr {
+  return encodeStringToFr(domainId);
 }
 
 /**
@@ -104,11 +125,12 @@ export class CircuitTreeProjection {
   }
 
   /** Projection of a full-key tree; `mapLeaf` turns a stored leaf into the circuit leaf. */
-  static of(full: SparseMerkleTree, mapLeaf: (leaf: Fr) => Fr = (x) => x, depth = CIRCUIT_TREE_DEPTH): CircuitTreeProjection {
+  static of(full: SparseMerkleTree, mapLeaf: (leaf: Fr, key: Fr) => Fr = (x) => x, depth = CIRCUIT_TREE_DEPTH): CircuitTreeProjection {
     const p = new CircuitTreeProjection(depth);
     for (const [k, v] of full.toJSON().leaves) {
       const leaf = new Fr(v);
-      if (!leaf.eq(EMPTY_LEAF)) p.set(new Fr(BigInt(k)), mapLeaf(leaf));
+      const key = new Fr(BigInt(k));
+      if (!leaf.eq(EMPTY_LEAF)) p.set(key, mapLeaf(leaf, key));
     }
     return p;
   }
@@ -168,14 +190,21 @@ export function zkLedgerTransition(
   parties: [{ account: Fr; newBalance: bigint }, { account: Fr; newBalance: bigint }, { account: Fr; newBalance: bigint }],
   asset: Fr,
   nullifier: Fr,
+  /**
+   * v6: `senderNewBlinding` is the rotated sender blinding the proof commits to (the circuit
+   * forces it to H(D_BLIND, secret, nonce)); `blindingOf` gives the current blinding of the
+   * receiving slots. Omitted: blinding 0 everywhere (v5 projection).
+   */
+  blinding?: { senderNewBlinding: Fr; blindingOf: (key: Fr) => Fr },
 ): ZkLedgerTransition {
   const s = state.clone();
   const oldStateRoot = s.root();
-  const steps = parties.map(({ account, newBalance }) => {
+  const steps = parties.map(({ account, newBalance }, i) => {
     const key = ledgerBalanceKey(account, asset);
     const path = s.path(key);
     const oldLeaf = s.get(key);
-    const newLeaf = circuitBalanceLeaf(ledgerBalanceLeaf(account, asset, newBalance));
+    const b = !blinding ? Fr.zero() : i === 0 ? blinding.senderNewBlinding : blinding.blindingOf(key);
+    const newLeaf = circuitBalanceLeaf(ledgerBalanceLeaf(account, asset, newBalance), b);
     s.set(key, newLeaf);
     return { key, path, oldLeaf, newLeaf, rootAfter: s.root() };
   }) as ZkLedgerTransition["steps"];
@@ -208,15 +237,29 @@ export function zkTxBinding(tx: UepTransaction, treasuryId: Fr): Record<(typeof 
   };
 }
 
-export type ZkSpendPayload = { publicInputsHex: string[]; proof: string };
+/**
+ * zk-spend payload. v6 (13 public inputs) also carries `senderNextBlinding`, the rotated
+ * blinding of the sender's new circuit leaf (public: the ledger's balances are public, and the
+ * value is a Poseidon output that reveals nothing about the secret). v5 payloads have 12.
+ */
+export type ZkSpendPayload = { publicInputsHex: string[]; proof: string; senderNextBlinding?: string };
+
+const HEX_FR = /^(0x)?[0-9a-f]{1,64}$/i;
 
 export function parseZkSpendPayload(proof: SpendProof): ZkSpendPayload | undefined {
   if (proof?.kind !== "zk-spend" || typeof proof.payload !== "string") return undefined;
   try {
     const p = JSON.parse(proof.payload) as ZkSpendPayload;
-    if (!Array.isArray(p.publicInputsHex) || p.publicInputsHex.length !== SPEND_PUBLIC_INPUT_NAMES.length) return undefined;
-    if (p.publicInputsHex.some((x) => typeof x !== "string" || !/^(0x)?[0-9a-f]{1,64}$/i.test(x))) return undefined;
+    if (!Array.isArray(p.publicInputsHex)) return undefined;
+    const n = p.publicInputsHex.length;
+    if (n !== ZK_PUBLIC_INPUT_COUNT_V5 && n !== ZK_PUBLIC_INPUT_COUNT_V6) return undefined;
+    if (p.publicInputsHex.some((x) => typeof x !== "string" || !HEX_FR.test(x))) return undefined;
     if (typeof p.proof !== "string") return undefined;
+    if (n === ZK_PUBLIC_INPUT_COUNT_V6 && (typeof p.senderNextBlinding !== "string" || !HEX_FR.test(p.senderNextBlinding))) return undefined;
+    // Non-canonical field encodings are refused (value must be < p).
+    for (const x of [...p.publicInputsHex, ...(p.senderNextBlinding ? [p.senderNextBlinding] : [])]) {
+      if (BigInt(x.startsWith("0x") ? x : `0x${x}`) >= BN254_P) return undefined;
+    }
     return p;
   } catch {
     return undefined;
@@ -224,11 +267,44 @@ export function parseZkSpendPayload(proof: SpendProof): ZkSpendPayload | undefin
 }
 
 const norm = (x: string) => new Fr(BigInt(x.startsWith("0x") ? x : `0x${x}`)).toHex();
+const frOf = (x: string) => new Fr(BigInt(x.startsWith("0x") ? x : `0x${x}`));
 
-/** Which bound public inputs of the proof disagree with the transaction (empty = bound). */
-export function zkBindingMismatches(tx: UepTransaction, treasuryId: Fr, payload: ZkSpendPayload): number[] {
+/** Circuit version a payload was made for (by public-input count). */
+export function zkPayloadVersion(p: ZkSpendPayload): ZkPayloadVersion {
+  return p.publicInputsHex.length === ZK_PUBLIC_INPUT_COUNT_V6 ? 6 : 5;
+}
+
+/**
+ * Public input 11 the circuit proves: hFoldV2(D_TX, [2, PI0..PI10, PI12]) over the proof's own
+ * public inputs (spend-circuit-freeze.ts). This is not the ledger's canonicalTxCommitment.
+ */
+export function circuitTxCommitmentOf(pi: string[]): Fr {
+  const f = pi.map(frOf);
+  return spendCircuitTxCommitment({
+    oldStateRoot: f[0]!, newStateRoot: f[1]!, oldNullifierRoot: f[2]!, newNullifierRoot: f[3]!,
+    senderId: f[4]!, recipientId: f[5]!, treasuryId: f[6]!, assetId: f[7]!, amount: f[8]!, fee: f[9]!,
+    nullifier: f[10]!, domainId: f[12]!,
+  });
+}
+
+/**
+ * Which bound public inputs of the proof disagree with the transaction (empty = bound).
+ *
+ * v6 (13 inputs): 4..10 equal the transaction fields; 11 equals the circuit commitment of the
+ * proof's own public inputs (the transaction's canonicalTxCommitment is a different function and
+ * is covered by the sender signature); 12 equals the ledger's circuit domain id.
+ * v5 (12 inputs, legacy): 4..11 against the transaction, as before 0.5.83.
+ */
+export function zkBindingMismatches(tx: UepTransaction, treasuryId: Fr, payload: ZkSpendPayload, domainId?: Fr): number[] {
   const want = zkTxBinding(tx, treasuryId);
-  return ZK_BOUND_PUBLIC_INPUTS.filter((i) => norm(payload.publicInputsHex[i]!) !== norm(want[i]));
+  if (zkPayloadVersion(payload) === 5) {
+    return ZK_BOUND_PUBLIC_INPUTS.filter((i) => norm(payload.publicInputsHex[i]!) !== norm(want[i]));
+  }
+  const pi = payload.publicInputsHex;
+  const out: number[] = ZK_BOUND_PUBLIC_INPUTS.filter((i) => i !== 11 && norm(pi[i]!) !== norm(want[i]));
+  if (!circuitTxCommitmentOf(pi).eq(frOf(pi[11]!))) out.push(11);
+  if (!domainId || !frOf(pi[12]!).eq(domainId)) out.push(12);
+  return out;
 }
 
 /** Synchronous verifier the ledger calls after the binding check. */
@@ -243,4 +319,13 @@ export function assertVerifierAllowed(v: ZkSpendVerifier, production = isProduct
   if (v.keyMode === "development" && production) {
     throw new Error("ZK_DEV_KEYS_IN_PRODUCTION: development Groth16 keys are refused under NODE_ENV=production");
   }
+}
+
+/**
+ * 0.5.83: root binding is on by default. "off" leaves public inputs 0..3 unbound (a proof about
+ * other trees would pass), so it is refused under NODE_ENV=production; it stays available for
+ * labs and for replaying pre-0.5.83 configurations.
+ */
+export function assertRootBindingAllowed(mode: ZkRootBindingMode, production = isProductionEnvironment()): void {
+  if (mode === "off" && production) throw new Error("ZK_ROOT_BINDING_OFF_IN_PRODUCTION: zk-spend root binding cannot be disabled under NODE_ENV=production");
 }

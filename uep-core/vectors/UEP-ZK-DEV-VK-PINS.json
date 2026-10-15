@@ -27,6 +27,18 @@
       "depth": 32,
       "domainId": "1",
       "vkSha256": "78c93ffc0352817936962e600fd34dc7c72ffdfd95b09d976fcd8d679e2864a3"
+    },
+    {
+      "circuitTag": "UEP-27-SPEND-POSEIDON-D64-v6-rotblind",
+      "depth": 4,
+      "domainId": "1",
+      "vkSha256": "f169554a071475efb975ea3641c2afe0c1326598a19fc677b7559ffb5c41370c"
+    },
+    {
+      "circuitTag": "UEP-27-SPEND-POSEIDON-D64-v6-rotblind",
+      "depth": 64,
+      "domainId": "1",
+      "vkSha256": "cbf3b9b84f9c570ed1238163e6c772e49b00050dc31e5c99aaf540fd47b8122d"
     }
   ]
 }

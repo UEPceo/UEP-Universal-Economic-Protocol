@@ -1,5 +1,14 @@
 ## 0.5.83 — 2026-10-15
 
+Spend circuit liveness fix (circuit v6). Poseidon BN254 unchanged; arkworks only, no new dependencies.
+
+- New circuit tag `UEP-27-SPEND-POSEIDON-D64-v6-rotblind`: tree depth 64 (fits the u64 slot indices), note blinding rotated in-circuit on every spend (`H(D_BLIND=7, secret, nonce)`), receiving slots may be empty. Same fold and public-input order as v5 (13 inputs, domain_id at 12). 278,503 constraints at depth 64; on 8 cores prove 6.9 s vs 3.7 s for v5 at depth 32 (setup 7.1 s, verify 3 ms, proving key 60 MB).
+- v5 (`UEP-27-SPEND-POSEIDON-D32-v5-foldv2`) is kept byte-identical: v5 pins unchanged, historical v5 transactions re-verify on restore; new v5 submissions need `zkAcceptLegacyV5: true`. Helper migration `migrate_state_d32_to_d64` / `migrate_nullifiers_d32_to_d64` (Rust, with tests).
+- Ledger: v6 payloads carry `senderNextBlinding`; the depth-64 projection keeps per-slot blindings, rebuilt from committed transactions on restore (no snapshot format change). PI[11] is checked against the circuit commitment of the proof's publics and PI[12] against the ledger domain. `zkRootBinding` now defaults to `"circuit-projection"`; `"off"` stays available for labs and is refused under NODE_ENV=production.
+- Witness contract: Poseidon witnesses get the tree checks with the Poseidon backend, plus index-bit checks.
+- `uep-zk`: `circuit_version` in spend requests (default 5), `dev-vk-v6 <4|64>`, `bench-v6 <depth>`; pin script covers v6.
+- Tests: Rust spec predicate `spend_valid` with differential tests both ways, mutation sweep, nightly `#[ignore]` perturbation probe with positive control; TS ledger v6 tests and real Groth16 proof tests (depth 4).
+
 External source adapters requested by Research (reports UEP-RR-2026-10-08-001 and UEP-RR-2026-10-15-002). All off-node in `scripts/adapters/`; no state transition, snapshot format or signed format changes. With every source down, every node behaves exactly as before. No price enters state. Protocol fee 0.1 %, Marketplace fee 3 %, no native token.
 
 - `scripts/adapters/lib.mjs`: hard timeout, non-200 = unavailable, strict UTF-8/JSON, NFC without trimming or case folding, BigInt decimal scaling (no float on values).

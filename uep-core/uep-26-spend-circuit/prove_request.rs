@@ -236,6 +236,9 @@ pub fn circuit_from_request<const D: usize>(req: &PoseidonSpendRequest) -> Resul
             if D != 4 && D != 32 {
                 return Err("UNSUPPORTED_DEPTH: circuit v5 runs at depth 4 or 32".into());
             }
+            if req.recipient_slot_empty || req.treasury_slot_empty {
+                return Err("EMPTY_SLOT_NOT_SUPPORTED_IN_V5".into());
+            }
             circuit_from_request_v5::<D>(req)
         }
         6 => {
@@ -574,6 +577,9 @@ mod parse_tests {
         assert!(cs.is_satisfied().unwrap());
         req.recipient_old_balance = 5;
         assert!(circuit_from_request::<4>(&req).is_err());
+        req.recipient_old_balance = 0;
+        req.circuit_version = 5;
+        assert_eq!(circuit_from_request::<4>(&req).err().as_deref(), Some("EMPTY_SLOT_NOT_SUPPORTED_IN_V5"));
     }
 
     #[test]
