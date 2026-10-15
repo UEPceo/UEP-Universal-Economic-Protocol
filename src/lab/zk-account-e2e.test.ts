@@ -14,7 +14,9 @@ import { Fr } from "../core/field.ts";
 import { clientBlinding } from "../core/client-note.ts";
 import { ledgerAssetIdToFr } from "../core/assets.ts";
 import { signZkAccountLink, zkAccountIdOf, zkAccountLinkError } from "../core/zk-account.ts";
-import type { ZkSpendVerifier } from "../core/zk-tx-adapter.ts";
+import { parseZkSpendPayload, zkBindingMismatches, zkRootMismatches, type ZkSpendVerifier } from "../core/zk-tx-adapter.ts";
+import { zkProveSpendJson } from "./zk-bridge.ts";
+import { zkAccountSpendRequest } from "./zk-account-spend.ts";
 import { findUepZkBinary, runUepZk, zkVerifyHex } from "./zk-bridge.ts";
 import { proveZkAccountSpend } from "./zk-account-spend.ts";
 
@@ -62,6 +64,21 @@ test("zk account: real proof accepted end to end; replay and reused nullifier re
   const s1 = proveZkAccountSpend(l, a, zkB, asset, 1_000n);
   assert.ok(s1.ok, s1.ok ? "" : s1.error);
   assert.ok(s1.tx.senderId.eq(zkA));
+  // EXP-098 cross-check: all 13 inputs agree with the ledger before the verifier runs.
+  const p1 = parseZkSpendPayload(s1.tx.spendProof)!;
+  assert.equal(p1.publicInputsHex.length, 13);
+  assert.deepEqual(zkBindingMismatches(s1.tx, TREASURY_ID, p1, l.zkDomainId()), []);
+  const t1 = l.zkTransitionFor(s1.tx, p1);
+  assert.ok("ok" in t1);
+  assert.deepEqual(zkRootMismatches(p1, t1.ok.roots), []);
+  assert.ok(s1.tx.nullifier.eq(new Fr(BigInt(`0x${s1.publicInputsHex[10]!.replace(/^0x/, "")}`))));
+  // A proof with the lab domain number (1) instead of the node's domain is refused on PI[12].
+  const req1 = { ...zkAccountSpendRequest(l, a, zkB, asset, 1_000n, 4) } as Record<string, unknown>;
+  delete req1.domain_fr;
+  const art1 = zkProveSpendJson(req1 as never);
+  assert.ok(art1.ok);
+  const wrongDomain = l.zkAccountSpendTx({ recipientId: zkB, assetId: asset, amount: 1_000n, publicInputsHex: art1.publicInputsHex, proof: art1.proofHex!, senderNextBlinding: s1.senderNextBlinding });
+  assert.match(msg(l.submit(wrongDomain)), /public inputs 12 do not match/);
   const r1 = l.submit(s1.tx);
   assert.equal(code(r1), "OK", msg(r1));
   assert.equal(l.balanceOfAsset(zkB, EUR), 1_000n);
