@@ -7,6 +7,7 @@ External source adapters requested by Research (reports UEP-RR-2026-10-08-001 an
 - Lab only, behind `UEP_LAB_SOURCES=1`: NOAA SWPC Kp and F10.7, JPL Horizons, CelesTrak, NASA DSN Now, Open-Meteo (non-commercial only).
 - Not added: EMSC (written permission needed), IANA/IERS leap-second files (waiting for the exporter), discarded sources.
 - Docs: sources table with licence, attribution and account requirement in `docs/ORACLE.md`; `docs/EVIDENCE.md`; README module table and `docs/MODULES.md` section 22.
+- Removed: the World Bank display-only indicator added in 0.5.82 (`src/service/indicative-display.ts`, `/v1/display/indicators`), by director decision. UEP does not use the World Bank API. Compat: the old `WORLDBANK` id is still accepted by `displayIndicative()` and answers "no disponible" without any request (test in `indicative-display.test.ts`). No persisted field or config key was involved.
 - Tests: `npm run test:adapters` (11 tests, recorded fixtures, network disabled), in `test:core`: normalization, claim output, lab flag, malformed data, timeouts, down sources and discrepant sources.
 
 ## 0.5.82 — 2026-10-15

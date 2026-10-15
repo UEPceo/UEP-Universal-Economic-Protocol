@@ -96,7 +96,7 @@ Tests: `src/oracle/oracle-hardening.test.ts` (one negative test per issue).
 
 ## Data sources: what may and may not enter policies or state
 
-- **FX reference rates and statistics (ECB, BIS, Eurostat, World Bank) are display-only.** Since 0.5.82 `src/service/indicative-display.ts` (`GET /v1/display/indicators`) shows them with attribution, the time of the consultation and "no disponible" when a source does not answer (same pattern as the GLEIF display). Their reuse terms have not been reviewed for this project. They may be shown to users next to a price; they never enter a policy, a quote feed, a settlement or any state. UEP has no common currency or reference unit, and an oracle price is always a price between two concrete assets.
+- **FX reference rates and statistics (ECB, BIS, Eurostat) are display-only. The World Bank source shown in 0.5.82 was removed in 0.5.83 by director decision and is not used anywhere in UEP.** Since 0.5.82 `src/service/indicative-display.ts` (`GET /v1/display/indicators`) shows them with attribution, the time of the consultation and "no disponible" when a source does not answer (same pattern as the GLEIF display). Their reuse terms have not been reviewed for this project. They may be shown to users next to a price; they never enter a policy, a quote feed, a settlement or any state. UEP has no common currency or reference unit, and an oracle price is always a price between two concrete assets.
 - **Physical-trigger oracle adapters** (USGS and GEOFON adapters since 0.5.83, off-node, not wired to settlement) must: use at least **2 distinct origins** plus **k-of-n signed evidence**; store the URL and the HTTP status per evidence leaf; discard any non-200 response. Adapters run outside transitions (no network access inside a transition, ADR 0002).
 - **Discarded (not used, not planned):** IERS Bulletin A, CoinGecko or any crypto price API, NWS, IMF, OpenAQ, Copernicus downloads, and any binding spot price. UEP has no reference price in state.
 - **Phase 2.3 seismic HOLD (design only):** USGS (public domain) and GEOFON (CC BY 4.0, attribution "GEOFON Data Centre, GFZ Helmholtz Centre Potsdam" required). **EMSC:** only with written permission; not used until then.
@@ -113,7 +113,7 @@ Tests: `src/oracle/oracle-hardening.test.ts` (one negative test per issue).
 | CelesTrak GP | `lab-sources.mjs` | Lab only | No explicit licence published; attribution, respect rate limits | "CelesTrak (T.S. Kelso)" | No |
 | NASA DSN Now | `lab-sources.mjs` | Lab only | NASA public data, no explicit licence on the feed | "NASA Deep Space Network" | No |
 | Open-Meteo | `lab-sources.mjs` | Lab only, **non-commercial only** (free API terms, < 10,000 calls/day); never a deployed service | CC BY 4.0 data | "Weather data by Open-Meteo.com (CC BY 4.0)" | No |
-| ECB, BIS, Eurostat, World Bank | `src/service/indicative-display.ts` (0.5.82) | UI display only, never state | see that file | shown in the UI | No |
+| ECB, BIS, Eurostat | `src/service/indicative-display.ts` (0.5.82) | UI display only, never state | see that file | shown in the UI | No |
 | GLEIF | `src/oracle/lei.ts` (offline), `src/service/gleif-display.ts` | Offline checksum; UI display only | CC0 | shown in the UI | No |
 
 Not integrated: **EMSC** (commercial use needs written permission), **IANA leap-seconds.list / IERS Leap_Second.dat** (waiting for the exporter), NAIF LSK (lab, offline file, no adapter yet), watch list (MPC, data.europa.eu, Copernicus STAC), and every discarded source below.

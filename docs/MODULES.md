@@ -160,7 +160,7 @@ k-of-n arbiter quorum with bonds (per-asset minimum since v0.5.3); timeout outco
 Subsidy claims bound to the settlement index written by swap / relay; at most 50 % of an order's Marketplace fee, once per order, from DISTRIBUTABLE_PROFIT within an administrator-signed budget.
 
 ## 10. Oracle policy layer (`src/oracle`)
-- **Purpose:** signed, height-bounded observations (domain-separated with the `networkId` since v0.5.3) aggregated with per-key weight caps. `OraclePolicyGate` (v0.5.3) checks Marketplace listing prices, IoT tariffs and hashlock-swap rates against a reference band and fails closed. Never holds balances; not on the spend or consensus path. FX reference rates are display-only. Since v0.5.82, ECB/BIS/Eurostat/World Bank indicators are display-only in the UI with attribution; discarded sources are listed in `docs/ORACLE.md`.
+- **Purpose:** signed, height-bounded observations (domain-separated with the `networkId` since v0.5.3) aggregated with per-key weight caps. `OraclePolicyGate` (v0.5.3) checks Marketplace listing prices, IoT tariffs and hashlock-swap rates against a reference band and fails closed. Never holds balances; not on the spend or consensus path. FX reference rates are display-only. Since v0.5.82, ECB/BIS/Eurostat indicators are display-only (World Bank removed in 0.5.83 by director decision) in the UI with attribution; discarded sources are listed in `docs/ORACLE.md`.
 - **Status:** Implemented (testnet). Sources are configured keys; no on-network oracle consensus.
 - **Introduced:** v0.5.2; hardening and gate v0.5.3.
 - **Tests:** `npm run test:oracle`. See [`ORACLE.md`](./ORACLE.md).
