@@ -41,7 +41,7 @@ test("each seismic source emits the 0.5.82 canonical SEISMIC claim, ready for at
     assert.ok(!r.canonicalClaim.includes("Ms") && !("fromMs" in r.claim), "source time never enters the claim");
   }
   assert.equal(b.attribution, "Event locations were obtained from the GEOFON program of the GFZ Helmholtz Centre for Geosciences using data from the GEVN partner networks.");
-  assert.equal(b.licence, "CC BY 4.0");
+  assert.match(b.licence, /^CC BY 4.0 \(event products/);
   assert.notEqual(a.sourceId, b.sourceId);
 });
 

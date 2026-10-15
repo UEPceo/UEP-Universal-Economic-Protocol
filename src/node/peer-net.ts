@@ -531,6 +531,13 @@ export class PeerNet {
             }
             const key = this.bftPosition(proposal);
             const prior = this.bftProposals.get(key);
+            // 0.5.83: a leader retry may re-send the bare proposal after this validator already stored the
+            // prevote-certificate form of it (same core, same block). That is a resend, not an equivocation:
+            // prevote the same block again and keep the stored (certificate-carrying) form.
+            if (prior && prior.proposal.blockId === proposal.blockId && prior.signature !== proposalSignature && prior.proposal.prevoteCertificate &&
+                !proposal.prevoteCertificate && JSON.stringify({ ...prior.proposal, prevoteCertificate: undefined }) === JSON.stringify({ ...proposal, prevoteCertificate: undefined })) {
+              return send(res, 200, { accepted: true, vote: kernel.createVote(proposal, "prevote", this.id, this.privateKey, proposalSignature) });
+            }
             if (prior && (prior.proposal.blockId !== proposal.blockId || prior.signature !== proposalSignature)) {
               // 0.5.83: keep the proof and leave the round.
               if (prior.proposal.blockId !== proposal.blockId) await this.checkProposalConflict(proposal, proposalSignature).catch(() => false);

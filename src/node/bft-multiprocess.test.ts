@@ -127,7 +127,7 @@ test(`item 3: four validator processes under loss/delay/duplication, restart, pa
       const dir = join(base, `v${i}`); mkdirSync(dir, { recursive: true });
       const file = join(dir, "config.json");
       writeFileSync(file, JSON.stringify({
-        id: `v${i}`, voterPem: keys[i]!.pem, stateDir: join(dir, "state"), peerPort: peerPorts[i], controlPort: ctlPorts[i],
+        id: `v${i}`, voterPem: keys[i]!.pem, stateDir: join(dir, "state"), peerPort: peerPorts[i], controlPort: ctlPorts[i], peerRateMax: 1_200,
         validators, faultTolerance: 1, genesisFile, trust,
         peers: [0, 1, 2, 3].filter(j => j !== i).map(j => ({ id: `v${j}`, url: `http://127.0.0.1:${proxyPort.get(`${i}>${j}`)}`, publicKeyHex: keys[j]!.publicKeyHex })),
       }), { mode: 0o600 });
