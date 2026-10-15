@@ -15,6 +15,8 @@ Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`
 
 - Item 8 (partial): src/core/amount.ts (parseAmount, parseDecimalUnits, addU64/subU64). Amounts crossing a trust boundary are u64 integers: negative, NaN, Infinity, floats, exponents, hex, signs, leading zeros and > u64 are refused (AMOUNT_INVALID/AMOUNT_OUT_OF_RANGE); decimal input with too many digits is refused, not rounded. Wired into note deserialization, snapshot balances (INVALID_SNAPSHOT_AMOUNT), HTTP amount/price/capacity/quantity fields, the Groth16 spend queue, service backends and the value bridge.
 
+- Item 9 (partial): src/node/peer-envelope.ts. PeerNet now sends v2 envelopes signed over {network, domain, epoch, sender, path, height, nonce, payload hash}; receivers refuse other networks/domains/epochs, envelopes older than 64 heights, and repeated nonces (409 PEER_REPLAY). v1 envelopes are still accepted for 0.5.80 peers with a one-time UEP_DEP_PEER_ENVELOPE_V1 warning, and refused once ledger.height >= legacyEnvelopeUntilHeight. Server limits: 256 connections, 64 in-flight requests (503 BUSY), header/request/keep-alive timeouts; the 2 MiB body cap and per-IP rate limit stay. PeerKeyRegistry: key rotation needs the old key plus a validator quorum, revocation needs a validator quorum; both are height-scoped and sequence-checked.
+
 ## 0.5.80 — 2026-10-13
 
 - Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.

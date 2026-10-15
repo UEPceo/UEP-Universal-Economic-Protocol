@@ -12,6 +12,8 @@ type WireTx = Parameters<typeof deserializeTx>[0];
 import type { UepLedger } from "../testnet/ledger.ts";
 import { TxQuorum, type QuorumVote } from "./quorum.ts";
 import { BftConsensusKernel, type BftCertificate, type BftProposal, type BftVote } from "./bft-consensus.ts";
+import { randomBytes } from "node:crypto";
+import { PEER_ENVELOPE_LIMITS, PeerKeyRegistry, PeerReplayGuard, signPeerEnvelope, type KeyStatement, type PeerEnvelopeV2 } from "./peer-envelope.ts";
 import { CertifiedCommitter, CommitLog, migrateJournalV1, txFromWire, type CommitResult, type CommitStatus, type CommitterOptions } from "./certified-commit.ts";
 
 /**
@@ -27,6 +29,8 @@ const decode = (_k: string, v: unknown) => v && typeof v === "object" && "$b" in
 const MAX_PEER_BODY = 2 * 1024 * 1024; // 2 MiB
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 120; // generous for local harness; still bounds floods
+/** 0.5.81 item 9: connection limits, timeouts and backpressure for the peer HTTP server. */
+export const PEER_SERVER_LIMITS = Object.freeze({ maxConnections: 256, maxInFlight: 64, headersTimeoutMs: 10_000, requestTimeoutMs: 20_000, keepAliveTimeoutMs: 5_000 });
 const NODE_VERSION = "0.5.81";
 
 export class PeerNet {
@@ -52,6 +56,14 @@ export class PeerNet {
   private committer?: CertifiedCommitter;
   /** Crash-test hook passed to the certified committer. */
   commitFaultInjector?: CommitterOptions["faultInjector"];
+  /** 0.5.81 item 9: v1 (unbound, replayable) envelopes are accepted while ledger.height < this. Default: always (deprecated, warns once). */
+  legacyEnvelopeUntilHeight = Number.POSITIVE_INFINITY;
+  private legacyWarned = false;
+  private readonly bootId = randomBytes(8).toString("hex");
+  private envelopeSeq = 0;
+  private replayGuard?: PeerReplayGuard;
+  private keyRegistry?: PeerKeyRegistry;
+  private inFlight = 0;
 
   constructor(id: string, ledger: UepLedger, privateKey: PrivateKeyLike, publicKeyHex: string, peers: Peer[], voters: Map<string, string>, threshold = 2, stateDir?: string) {
     this.id = id;
@@ -227,9 +239,34 @@ export class PeerNet {
     return (this.quorum as unknown as { voters: Map<string, string> }).voters.get(id);
   }
 
+  private peerDomain() {
+    return { networkId: this.ledger.networkId, domainId: this.ledger.domainId, epoch: this.bftKernel?.epoch ?? 0 };
+  }
+
+  private guard(): PeerReplayGuard {
+    const d = this.peerDomain();
+    if (!this.replayGuard || this.replayGuard.domain.epoch !== d.epoch) this.replayGuard = new PeerReplayGuard(d);
+    return this.replayGuard;
+  }
+
+  /** Peer key at a height: the verified rotation/revocation registry when it knows the peer, else the pinned voter key. */
+  peerKeyAt(id: string, height: number): string | undefined {
+    if (this.keyRegistry && this.keyRegistry.keyAt(id, 0) !== undefined) return this.keyRegistry.keyAt(id, height);
+    return this.knownVoter(id);
+  }
+
+  /** 0.5.81 item 9: apply a verifiable key rotation or revocation (old key + threshold validators, or threshold validators). */
+  applyPeerKeyStatement(st: KeyStatement): void {
+    if (!this.keyRegistry) {
+      const voters = (this.quorum as unknown as { voters: Map<string, string> }).voters;
+      this.keyRegistry = new PeerKeyRegistry(this.ledger.networkId, new Map(voters), this.threshold);
+    }
+    this.keyRegistry.apply(st, this.ledger.height);
+  }
+
   private signed(path: string, payload: unknown): Record<string, unknown> {
-    const message = `uep-peer:${this.id}:${path}:${JSON.stringify(payload)}`;
-    return { from: this.id, signature: signEd25519(message, this.privateKey), payload };
+    // 0.5.81 item 9: v2 envelope bound to network, domain, epoch and height, with a one-time nonce.
+    return signPeerEnvelope(this.peerDomain(), this.id, path, this.ledger.height, `${this.bootId}-${++this.envelopeSeq}`, payload, this.privateKey) as unknown as Record<string, unknown>;
   }
 
   private saveQuorum(): void {
@@ -254,10 +291,13 @@ export class PeerNet {
 
   listen(port = 0): Promise<number> {
     this.server = createServer(async (req, res) => {
+      let counted = false;
       try {
         const url = new URL(req.url ?? "/", "http://127.0.0.1");
         const ip = req.socket.remoteAddress ?? "unknown";
         if (!this.rateOk(ip)) return send(res, 429, { error: "RATE_LIMITED" });
+        if (this.inFlight >= PEER_SERVER_LIMITS.maxInFlight) return send(res, 503, { error: "BUSY" });
+        this.inFlight++; counted = true;
         if (req.method !== "GET" && req.method !== "POST") return send(res, 405, { error: "METHOD_NOT_ALLOWED" });
         if (req.method === "POST") {
           const ct = String(req.headers["content-type"] ?? "").toLowerCase();
@@ -305,11 +345,23 @@ export class PeerNet {
         if (req.method === "POST" && peerPaths.has(url.pathname)) {
           const from = String(raw.from ?? "");
           authenticatedFrom = from;
-          const expected = this.knownVoter(from);
-          const message = `uep-peer:${from}:${url.pathname}:${JSON.stringify(raw.payload)}`;
-          if (!expected || !verifyEd25519(message, String(raw.signature ?? ""), expected)) {
-            console.error(`[uep-peer] PEER_AUTH failed from=${from} path=${url.pathname} ip=${ip}`);
-            return send(res, 401, { error: "PEER_AUTH" });
+          if (raw.v === 2) {
+            try {
+              this.guard().verify(raw as unknown as PeerEnvelopeV2, url.pathname, this.ledger.height, (id, h) => this.peerKeyAt(id, h));
+            } catch (e) {
+              const code = e instanceof Error ? e.message : "PEER_AUTH";
+              console.error(`[uep-peer] ${code} from=${from} path=${url.pathname} ip=${ip}`);
+              return send(res, code === "PEER_REPLAY" ? 409 : 401, { error: code });
+            }
+          } else {
+            if (this.ledger.height >= this.legacyEnvelopeUntilHeight) return send(res, 401, { error: "PEER_ENVELOPE_V1_RETIRED" });
+            if (!this.legacyWarned) { this.legacyWarned = true; console.warn("[uep-peer] UEP_DEP_PEER_ENVELOPE_V1: accepted an unbound v1 peer envelope; set legacyEnvelopeUntilHeight to retire v1 (removed in 0.6.0)"); }
+            const expected = this.peerKeyAt(from, this.ledger.height);
+            const message = `uep-peer:${from}:${url.pathname}:${JSON.stringify(raw.payload)}`;
+            if (!expected || !verifyEd25519(message, String(raw.signature ?? ""), expected)) {
+              console.error(`[uep-peer] PEER_AUTH failed from=${from} path=${url.pathname} ip=${ip}`);
+              return send(res, 401, { error: "PEER_AUTH" });
+            }
           }
           body = raw.payload as Record<string, unknown>;
         }
@@ -432,8 +484,14 @@ export class PeerNet {
         const msg = error instanceof Error ? error.message : "PEER_ERROR";
         const status = msg === "PAYLOAD_TOO_LARGE" ? 413 : 400;
         send(res, status, { error: msg });
+      } finally {
+        if (counted) this.inFlight--;
       }
     });
+    this.server.maxConnections = PEER_SERVER_LIMITS.maxConnections;
+    this.server.headersTimeout = PEER_SERVER_LIMITS.headersTimeoutMs;
+    this.server.requestTimeout = PEER_SERVER_LIMITS.requestTimeoutMs;
+    this.server.keepAliveTimeout = PEER_SERVER_LIMITS.keepAliveTimeoutMs;
     return new Promise((resolve) => this.server!.listen(port, "127.0.0.1", () => {
       const address = this.server!.address();
       resolve(typeof address === "object" && address ? address.port : port);
