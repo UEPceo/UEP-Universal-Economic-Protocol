@@ -11,6 +11,8 @@ Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`
 
 - Item 6 (partial): marketplace order state machine written as data (src/marketplace/order-state-machine.ts: phases HOLD/EVIDENCE/SETTLEMENT/CLOSED, transition table). Every status write is checked (ORDER_TRANSITION_INVALID); SETTLED/REFUNDED are checked before value moves and require the settlement-engine receipt hash (SETTLEMENT_RECEIPT_REQUIRED).
 
+- Item 7 (partial): src/lab/zk-binding-0581.test.ts mutates each of the 13 Groth16 public inputs (all refused), mutates each tx-binding field (all refused), recomputes the Rust transaction_commitment with the TS hFoldV2 (cross-check), and pins a reproducible public-input vector (src/lab/fixtures/zk-binding-0581-vector.json). Circuit and VK versioning stay on the existing circuit tag + VK pins; DEV keys stay behind zk-dev-keys-guard.
+
 ## 0.5.80 — 2026-10-13
 
 - Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.
