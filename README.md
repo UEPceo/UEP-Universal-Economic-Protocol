@@ -63,6 +63,9 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | [Service gateways and adapters (IoT gateway, GLEIF display, storage adapters)](docs/MODULES.md#12-serviceapi-lab-srcserviceuep-ts-storage-adapters-groth16-spend-queuets) | `src/service/*` | Experimental (lab) | 0.5.x | `test:lab`, `test:marketplace` |
 
 | [External source adapters (off-node: USGS, GEOFON; lab: NOAA SWPC, JPL Horizons, CelesTrak, DSN, Open-Meteo)](docs/MODULES.md#22-external-source-adapters-scriptsadapters) | `scripts/adapters/` | Experimental (lab), off-node | 0.5.83 | `test:adapters`, `check:adapters` |
+| [Signed payload v2 (network/domain/nonce/height-window bound signatures)](docs/MODULES.md#23-signed-payload-v2-srcmarketplacesignature-v2ts) | `src/marketplace/signature-v2.ts` | Implemented (testnet) | 0.5.83 | `test:marketplace`, `test:security` |
+| [BFT equivocation evidence, recovery and crash-point tests](docs/MODULES.md#24-bft-equivocation-evidence-recovery-and-crash-point-harness-srcnode) | `src/node/bft-equivocation.ts`, `bft-mp-harness.ts` | Experimental (lab) | 0.5.83 | `test:consensus`, `test:bft-adversarial`, `test:property:full` |
+| [Asset registry store and network policy](docs/MODULES.md#25-asset-registry-store-and-network-policy-srcnodeasset-registry-storets) | `src/node/asset-registry-store.ts` | Implemented (testnet) | 0.5.83 | `test:consensus`, `test:security` |
 
 "Hashlock swap" (`src/category/swap.ts`) is a bilateral settlement between two parties; the "AMM lab pool" (`src/lab/liquidity.ts`) is a research simulation that never moves testnet value. Full module map: [`docs/MODULES.md`](docs/MODULES.md).
 

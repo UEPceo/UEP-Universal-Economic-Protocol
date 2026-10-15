@@ -1,0 +1,345 @@
+{
+  "schema": "uep-evidence-run-v1",
+  "commit": "eb8a3f73f09423fe88bc1fa742994c8ab8700103",
+  "node": "v24.21.0",
+  "platform": "linux-x64",
+  "cpus": 8,
+  "runs": [
+    {
+      "command": "npm run test:security",
+      "exitCode": 0,
+      "ms": 41707,
+      "pass": 81,
+      "fail": 0,
+      "output": "test_security-node24.log",
+      "sha256": "5b27b8ae81a8a468a63c5da2bcb1bc673492800f855b9aeb60b7ca9fbe21fb50"
+    },
+    {
+      "command": "npm run test:core",
+      "exitCode": 0,
+      "ms": 573014,
+      "pass": 1169,
+      "fail": 0,
+      "output": "test_core-node24.log",
+      "sha256": "c08cd020e7f8d378a8a85ec0ce91d9881a5ccf86c755761ac73c8dfde4a30388"
+    },
+    {
+      "command": "npm run test:property:full",
+      "exitCode": 0,
+      "ms": 439132,
+      "pass": 0,
+      "fail": 0,
+      "output": "test_property_full-node24.log",
+      "sha256": "e5e10321e4159b2d499ae12ca7dd3254352aaf84f6a59f5166c9aa942bef23a4"
+    }
+  ],
+  "seededRuns": [
+    {
+      "schema": "uep-seeded-run-v1",
+      "commit": "eb8a3f73f09423fe88bc1fa742994c8ab8700103",
+      "environment": {
+        "node": "v24.21.0",
+        "platform": "linux",
+        "arch": "x64",
+        "cpus": 8,
+        "ci": false
+      },
+      "startedAt": "2026-10-15T14:27:26.642Z",
+      "runs": [
+        {
+          "suite": "marketplace-state-machine",
+          "file": "src/property/marketplace-state-machine.property.test.ts",
+          "seedEnv": "UEP_MKT_SEED",
+          "seed": 20261015,
+          "ok": true,
+          "pass": 3,
+          "fail": 0,
+          "ms": 5098,
+          "failures": [],
+          "reproduce": "UEP_MKT_SEED=20261015 node --experimental-strip-types --test src/property/marketplace-state-machine.property.test.ts"
+        },
+        {
+          "suite": "marketplace-state-machine",
+          "file": "src/property/marketplace-state-machine.property.test.ts",
+          "seedEnv": "UEP_MKT_SEED",
+          "seed": 1,
+          "ok": true,
+          "pass": 3,
+          "fail": 0,
+          "ms": 5731,
+          "failures": [],
+          "reproduce": "UEP_MKT_SEED=1 node --experimental-strip-types --test src/property/marketplace-state-machine.property.test.ts"
+        },
+        {
+          "suite": "marketplace-state-machine",
+          "file": "src/property/marketplace-state-machine.property.test.ts",
+          "seedEnv": "UEP_MKT_SEED",
+          "seed": 7,
+          "ok": true,
+          "pass": 3,
+          "fail": 0,
+          "ms": 4803,
+          "failures": [],
+          "reproduce": "UEP_MKT_SEED=7 node --experimental-strip-types --test src/property/marketplace-state-machine.property.test.ts"
+        },
+        {
+          "suite": "marketplace-state-machine",
+          "file": "src/property/marketplace-state-machine.property.test.ts",
+          "seedEnv": "UEP_MKT_SEED",
+          "seed": 42,
+          "ok": true,
+          "pass": 3,
+          "fail": 0,
+          "ms": 4571,
+          "failures": [],
+          "reproduce": "UEP_MKT_SEED=42 node --experimental-strip-types --test src/property/marketplace-state-machine.property.test.ts"
+        },
+        {
+          "suite": "marketplace-state-machine",
+          "file": "src/property/marketplace-state-machine.property.test.ts",
+          "seedEnv": "UEP_MKT_SEED",
+          "seed": 2026,
+          "ok": true,
+          "pass": 3,
+          "fail": 0,
+          "ms": 3970,
+          "failures": [],
+          "reproduce": "UEP_MKT_SEED=2026 node --experimental-strip-types --test src/property/marketplace-state-machine.property.test.ts"
+        },
+        {
+          "suite": "marketplace-state-machine",
+          "file": "src/property/marketplace-state-machine.property.test.ts",
+          "seedEnv": "UEP_MKT_SEED",
+          "seed": 31337,
+          "ok": true,
+          "pass": 3,
+          "fail": 0,
+          "ms": 4171,
+          "failures": [],
+          "reproduce": "UEP_MKT_SEED=31337 node --experimental-strip-types --test src/property/marketplace-state-machine.property.test.ts"
+        },
+        {
+          "suite": "numeric-amounts",
+          "file": "src/property/amount.property.test.ts",
+          "seedEnv": "UEP_NUM_SEED",
+          "seed": 20261015,
+          "ok": true,
+          "pass": 5,
+          "fail": 0,
+          "ms": 247,
+          "failures": [],
+          "reproduce": "UEP_NUM_SEED=20261015 node --experimental-strip-types --test src/property/amount.property.test.ts"
+        },
+        {
+          "suite": "numeric-amounts",
+          "file": "src/property/amount.property.test.ts",
+          "seedEnv": "UEP_NUM_SEED",
+          "seed": 1,
+          "ok": true,
+          "pass": 5,
+          "fail": 0,
+          "ms": 264,
+          "failures": [],
+          "reproduce": "UEP_NUM_SEED=1 node --experimental-strip-types --test src/property/amount.property.test.ts"
+        },
+        {
+          "suite": "numeric-amounts",
+          "file": "src/property/amount.property.test.ts",
+          "seedEnv": "UEP_NUM_SEED",
+          "seed": 7,
+          "ok": true,
+          "pass": 5,
+          "fail": 0,
+          "ms": 252,
+          "failures": [],
+          "reproduce": "UEP_NUM_SEED=7 node --experimental-strip-types --test src/property/amount.property.test.ts"
+        },
+        {
+          "suite": "numeric-amounts",
+          "file": "src/property/amount.property.test.ts",
+          "seedEnv": "UEP_NUM_SEED",
+          "seed": 42,
+          "ok": true,
+          "pass": 5,
+          "fail": 0,
+          "ms": 249,
+          "failures": [],
+          "reproduce": "UEP_NUM_SEED=42 node --experimental-strip-types --test src/property/amount.property.test.ts"
+        },
+        {
+          "suite": "numeric-amounts",
+          "file": "src/property/amount.property.test.ts",
+          "seedEnv": "UEP_NUM_SEED",
+          "seed": 2026,
+          "ok": true,
+          "pass": 5,
+          "fail": 0,
+          "ms": 247,
+          "failures": [],
+          "reproduce": "UEP_NUM_SEED=2026 node --experimental-strip-types --test src/property/amount.property.test.ts"
+        },
+        {
+          "suite": "numeric-amounts",
+          "file": "src/property/amount.property.test.ts",
+          "seedEnv": "UEP_NUM_SEED",
+          "seed": 31337,
+          "ok": true,
+          "pass": 5,
+          "fail": 0,
+          "ms": 274,
+          "failures": [],
+          "reproduce": "UEP_NUM_SEED=31337 node --experimental-strip-types --test src/property/amount.property.test.ts"
+        },
+        {
+          "suite": "bft-multiprocess",
+          "file": "src/node/bft-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 20261015,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 15740,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=20261015 node --experimental-strip-types --test src/node/bft-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-multiprocess",
+          "file": "src/node/bft-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 1,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 16011,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=1 node --experimental-strip-types --test src/node/bft-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-multiprocess",
+          "file": "src/node/bft-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 7,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 15808,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=7 node --experimental-strip-types --test src/node/bft-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-multiprocess",
+          "file": "src/node/bft-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 42,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 16127,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=42 node --experimental-strip-types --test src/node/bft-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-multiprocess",
+          "file": "src/node/bft-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 2026,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 15790,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=2026 node --experimental-strip-types --test src/node/bft-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-multiprocess",
+          "file": "src/node/bft-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 31337,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 16161,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=31337 node --experimental-strip-types --test src/node/bft-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-recovery-multiprocess",
+          "file": "src/node/bft-recovery-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 20261015,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 26720,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=20261015 node --experimental-strip-types --test src/node/bft-recovery-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-recovery-multiprocess",
+          "file": "src/node/bft-recovery-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 1,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 25237,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=1 node --experimental-strip-types --test src/node/bft-recovery-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-recovery-multiprocess",
+          "file": "src/node/bft-recovery-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 7,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 26724,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=7 node --experimental-strip-types --test src/node/bft-recovery-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-crash-points-multiprocess",
+          "file": "src/node/bft-crash-points-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 20261015,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 80509,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=20261015 node --experimental-strip-types --test src/node/bft-crash-points-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-crash-points-multiprocess",
+          "file": "src/node/bft-crash-points-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 1,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 77054,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=1 node --experimental-strip-types --test src/node/bft-crash-points-multiprocess.test.ts"
+        },
+        {
+          "suite": "bft-crash-points-multiprocess",
+          "file": "src/node/bft-crash-points-multiprocess.test.ts",
+          "seedEnv": "UEP_BFT_FAULT_SEED",
+          "seed": 7,
+          "ok": true,
+          "pass": 1,
+          "fail": 0,
+          "ms": 77040,
+          "failures": [],
+          "reproduce": "UEP_BFT_FAULT_SEED=7 node --experimental-strip-types --test src/node/bft-crash-points-multiprocess.test.ts"
+        }
+      ],
+      "finishedAt": "2026-10-15T14:34:45.450Z",
+      "summary": {
+        "runs": 24,
+        "failed": 0
+      }
+    }
+  ]
+}

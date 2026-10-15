@@ -92,6 +92,9 @@ ledger verifies anchored settlement receipts itself and never calls the Marketpl
 | 20 | SDK (client, Marketplace, IoT/M2M, CLI) | `sdk/` | Implemented (testnet) | 0.5.20 | `test:sdk`, `test:node` |
 | 21 | Configuration and examples | `config/`, `examples/` | Implemented (testnet) | 0.5.42 / 0.5.23 | `test:consensus`, `examples/sample-service.test.ts` |
 | 22 | External source adapters (off-node) | `scripts/adapters/` | Experimental (lab), off-node | 0.5.83 | `test:adapters`, `check:adapters` |
+| 23 | Signed payload v2 | `src/marketplace/signature-v2.ts` | Implemented (testnet) | 0.5.83 | `test:marketplace`, `test:security` |
+| 24 | BFT equivocation evidence, recovery and crash-point harness | `src/node/bft-equivocation.ts`, `src/node/bft-mp-harness.ts` | Experimental (lab) | 0.5.83 | `test:consensus`, `test:bft-adversarial`, `test:property:full` |
+| 25 | Asset registry store and network policy | `src/node/asset-registry-store.ts` | Implemented (testnet) | 0.5.83 | `test:consensus`, `test:security` |
 
 ---
 
@@ -226,3 +229,15 @@ Client library for the node HTTP API: `sdk/client`, `sdk/marketplace`, `sdk/iot-
 ## 22. External source adapters (`scripts/adapters/`)
 
 Off-node code run by attesters or in the lab, never by a node, `src/` or the ledger worker (`npm run check:adapters` fails on any `src/` import of it). `seismic.mjs` (USGS, public domain; GEOFON, CC BY 4.0 with attribution) parses each source into integer events and emits the 0.5.82 canonical SEISMIC claim with its `claimHash` and the `dataHash` of the fetched bytes; cross-source agreement stays undecided while the tolerances are unset (residual, 30-day study), and the claims are not wired to settlement. `lab-sources.mjs` (NOAA SWPC Kp and F10.7, JPL Horizons, CelesTrak, DSN, Open-Meteo non-commercial only) runs only with `UEP_LAB_SOURCES=1`. Shared helpers in `lib.mjs`: timeout, strict UTF-8 and schema checks, NFC without trimming or case folding, BigInt decimal scaling. Recorded fixtures in `fixtures/` keep the tests offline. Sources table: [`ORACLE.md`](./ORACLE.md#sources-table-0583). Since 0.5.83. Tests: `test:adapters` (in `test:core`).
+
+## 23. Signed payload v2 (`src/marketplace/signature-v2.ts`)
+- **Purpose:** binds Marketplace action, reservation and IoT telemetry signatures to `networkId`, `domainId` (Marketplace id), signer, nonce, operation (type, ids, details) and a height window. Nonces are single-use per signer until the window closes and are kept in the Marketplace snapshot. Legacy v1 signatures pass only through the deprecation shim (`legacyV1Signatures: { sunsetHeight }`, one warning, refused from the sunset height; refused by default under `NODE_ENV=production`).
+- **Status:** Implemented (testnet). Since 0.5.83. Tests: `src/marketplace/signature-v2.test.ts`.
+
+## 24. BFT equivocation evidence, recovery and crash-point harness (`src/node`)
+- **Purpose:** `bft-equivocation.ts` keeps self-verifying evidence of a leader that signed two blocks for one height/round (persisted JSONL); PeerNet relays proposals seen, records evidence, gossips it and changes round at once; `bft-validator-process.ts` runs an internal height-tick timer and re-proposes automatically as leader of later rounds. `bft-mp-harness.ts` starts N validator OS processes behind seeded fault-injecting proxies, with SIGKILL/restart and crash injection at commit write points (`UEP_CRASH_AT`).
+- **Status:** Experimental (lab). Evidence from scripted adversaries on one machine; not a claim about arbitrary adversaries or WAN conditions. Since 0.5.83. Tests: `bft-equivocation.test.ts`, `bft-recovery-multiprocess.test.ts`, `bft-crash-points-multiprocess.test.ts`.
+
+## 25. Asset registry store and network policy (`src/node/asset-registry-store.ts`)
+- **Purpose:** persistent, versioned governance of the signed asset manifest chain (`asset-registry.json`: governance key set, chain, chain hash; atomic writes; migration from the pre-0.5.83 layout; rollback refused against the version the ledger binds). With `requireAssetRegistry` a reference node (`assembleNode`, CLI `UEP_REGISTRY_POLICY`) refuses to operate without the registry.
+- **Status:** Implemented (testnet). The registry is not yet the reference-node default (a real governance key ceremony is required and has not been performed). Since 0.5.83. Tests: `src/node/asset-registry-store.test.ts`.
