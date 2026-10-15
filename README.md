@@ -2,7 +2,7 @@
 ## Public Testnet Reference + Digital Marketplace
 
 > **Public evaluation release — October 2026**  
-> **Version:** `0.5.83` on branch `feat/0.5.83-sources` (experimental BFT safety kernel, certified commit log, authenticated PeerNet transport) · Latest GitHub Release: **v0.5.82**
+> **Version:** `0.5.83` (experimental BFT safety kernel, hash-chained commit log, authenticated PeerNet transport, spend circuit v6) · Latest GitHub Release: **v0.5.83**
 
 [![CI](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/UEPceo/UEP-Universal-Economic-Protocol/actions/workflows/ci.yml)
 
@@ -57,7 +57,7 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | [Agents](docs/MODULES.md#15-agents-srcagent) | `src/agent` | Experimental (lab) | 0.5.0 | `test:lab` |
 | [Rust / ZK](docs/MODULES.md#16-rust--zk-core-uep-core) | `uep-core` | Experimental (lab) | 0.5.0 | `test:rust` |
 | [Ledger service adapters (height producer, submit queue, worker host)](docs/MODULES.md#17-ledger-service-adapters-srcserviceheight-producerts-ledger-submit-queuets-ledger-worker-hostts) | `src/service/height-producer.ts`, `ledger-*.ts` | Implemented (testnet) | 0.5.1 / 0.5.3 | `test:marketplace` |
-| [Reference node + BFT safety kernel + PeerNet](docs/MODULES.md#19-reference-node-bft-safety-kernel-and-peernet-srcnode) | `src/node` | Experimental (lab) | 0.5.10 (BFT kernel 0.5.74, PeerNet 0.5.78, certified commit log, vote activation, round timer, peer envelope v2, height floor 0.5.81) | `test:consensus`, `test:node` |
+| [Reference node + BFT safety kernel + PeerNet](docs/MODULES.md#19-reference-node-bft-safety-kernel-and-peernet-srcnode) | `src/node` | Experimental (lab) | 0.5.10 (BFT kernel 0.5.74, PeerNet 0.5.78, hash-chained commit log, vote activation, round timer, peer envelope v2, height floor 0.5.81) | `test:consensus`, `test:node` |
 | [SDK (client, Marketplace, IoT/M2M, CLI)](docs/MODULES.md#20-sdk-sdk) | `sdk/` | Implemented (testnet) | 0.5.20 | `test:sdk`, `test:node` |
 | [Node configuration examples](docs/MODULES.md#21-configuration-and-examples-config-examples) | `config/`, `examples/` | Implemented (testnet) | 0.5.42 / 0.5.23 | `test:consensus`, sample service test |
 | [Service gateways and adapters (IoT gateway, GLEIF display, storage adapters)](docs/MODULES.md#12-serviceapi-lab-srcserviceuep-ts-storage-adapters-groth16-spend-queuets) | `src/service/*` | Experimental (lab) | 0.5.x | `test:lab`, `test:marketplace` |
@@ -66,14 +66,15 @@ There was no predefined commercial goal. As the protocol gains capabilities, som
 | [Signed payload v2 (network/domain/nonce/height-window bound signatures)](docs/MODULES.md#23-signed-payload-v2-srcmarketplacesignature-v2ts) | `src/marketplace/signature-v2.ts` | Implemented (testnet) | 0.5.83 | `test:marketplace`, `test:security` |
 | [BFT equivocation evidence, recovery and crash-point tests](docs/MODULES.md#24-bft-equivocation-evidence-recovery-and-crash-point-harness-srcnode) | `src/node/bft-equivocation.ts`, `bft-mp-harness.ts` | Experimental (lab) | 0.5.83 | `test:consensus`, `test:bft-adversarial`, `test:property:full` |
 | [Asset registry store and network policy](docs/MODULES.md#25-asset-registry-store-and-network-policy-srcnodeasset-registry-storets) | `src/node/asset-registry-store.ts` | Implemented (testnet) | 0.5.83 | `test:consensus`, `test:security` |
+| [Spend circuit v6 and zk accounts](docs/MODULES.md#26-spend-circuit-v6-and-zk-accounts-uep-coreuep-26-spend-circuit-srccorezk-accountts) | `uep-core/uep-26-spend-circuit`, `src/core/zk-account.ts` | Experimental (lab, development keys) | 0.5.83 | `test:rust`, `test:protocol`, labs |
 
 "Hashlock swap" (`src/category/swap.ts`) is a bilateral settlement between two parties; the "AMM lab pool" (`src/lab/liquidity.ts`) is a research simulation that never moves testnet value. Full module map: [`docs/MODULES.md`](docs/MODULES.md).
 
-### Current status (v0.5.83, draft branch)
+### Current status (v0.5.83)
 
 | Item | Status |
 |---|---|
-| Version | `0.5.83` (2026-10-15, branch `feat/0.5.83-sources`, not released; Latest GitHub Release `v0.5.82`): off-node external source adapters (USGS, GEOFON; lab-only NOAA SWPC, JPL Horizons, CelesTrak, DSN, Open-Meteo); experimental BFT safety kernel with authenticated PeerNet transport, hash-chained certified commit log, height-based vote-format activation and round-change timeout; resolution matrices in [`docs/audit/0.5.81-RESOLUTION.md`](docs/audit/0.5.81-RESOLUTION.md) and [`docs/audit/0.5.82-RESOLUTION.md`](docs/audit/0.5.82-RESOLUTION.md), reference node in `src/node`, SDK, node configuration examples, ledger snapshot format 10, development ZK verifying-key pins for circuit v5-foldv2. Changes since v0.5.3 are in the [CHANGELOG](./CHANGELOG.md) (0.5.4 – 0.5.83) |
+| Version | `0.5.83` (2026-10-15, Latest GitHub Release `v0.5.83`): spend circuit v6 (depth 64) with ledger proof checks, zk accounts and exit path (lab, development keys); off-node external source adapters (USGS, GEOFON; lab-only NOAA SWPC, JPL Horizons, CelesTrak, DSN, Open-Meteo); experimental BFT safety kernel with authenticated PeerNet transport, hash-chained commit log, height-based vote-format activation and round-change timeout; resolution matrices in [`docs/audit/0.5.81-RESOLUTION.md`](docs/audit/0.5.81-RESOLUTION.md) and [`docs/audit/0.5.82-RESOLUTION.md`](docs/audit/0.5.82-RESOLUTION.md), reference node in `src/node`, SDK, node configuration examples, ledger snapshot format 10, development ZK verifying-key pins for circuits v5-foldv2 and v6-rotblind; resolution matrix [`docs/audit/0.5.83-RESOLUTION.md`](docs/audit/0.5.83-RESOLUTION.md). Changes since v0.5.3 are in the [CHANGELOG](./CHANGELOG.md) (0.5.4 – 0.5.83) |
 | Tests (testnet) | Per-suite counts for this version are in the [CHANGELOG 0.5.83 entry](./CHANGELOG.md) (single source of truth) |
 | Tests (research labs) | Rust crates in `uep-core/` and the lab files in `src/lab`, `src/agent`, `src/service`; counts in the [CHANGELOG 0.5.83 entry](./CHANGELOG.md); known-issue list: [`scripts/lab-known-issues.json`](./scripts/lab-known-issues.json) |
 | Test everything | `npm ci && npm run test:all` (see [Quickstart](#quickstart-test-everything)) |
