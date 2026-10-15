@@ -1,9 +1,9 @@
 /** 0.5.81 item 8: numeric rules (u64, integer-only, canonical fee rounding, conservation). Seed: UEP_NUM_SEED (default 20261015). */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { U64_MAX, addU64, parseAmount, parseDecimalUnits, subU64 } from "./amount.ts";
-import { BPS_DENOM, FEE_BPS, MIN_PROTOCOL_FEE, creatorFee, maxPayableFromNote } from "./fee.ts";
-import { deserializeNote } from "./note.ts";
+import { U64_MAX, addU64, parseAmount, parseDecimalUnits, subU64 } from "../core/amount.ts";
+import { BPS_DENOM, FEE_BPS, MIN_PROTOCOL_FEE, creatorFee, maxPayableFromNote } from "../core/fee.ts";
+import { deserializeNote } from "../core/note.ts";
 
 const SEED = Number(process.env.UEP_NUM_SEED ?? 20261015) >>> 0 || 1;
 function prng(seed: number) { let x = seed; return () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x; }; }

@@ -15,8 +15,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const arg = (k) => { const i = process.argv.indexOf(k); return i >= 0 ? process.argv[i + 1] : undefined; };
 const seeds = (arg("--seeds") ?? "20261015,1,7,42,2026,31337").split(",").map((s) => Number(s));
 const suites = [
-  { name: "marketplace-state-machine", file: "src/marketplace/order-state-machine.test.ts", env: "UEP_MKT_SEED" },
-  { name: "numeric-amounts", file: "src/core/amount.test.ts", env: "UEP_NUM_SEED" },
+  { name: "marketplace-state-machine", file: "src/property/marketplace-state-machine.property.test.ts", env: "UEP_MKT_SEED" },
+  { name: "numeric-amounts", file: "src/property/amount.property.test.ts", env: "UEP_NUM_SEED" },
 ];
 if (process.argv.includes("--include-multiprocess")) suites.push({ name: "bft-multiprocess", file: "src/node/bft-multiprocess.test.ts", env: "UEP_BFT_FAULT_SEED" });
 
@@ -32,10 +32,10 @@ for (const suite of suites) for (const seed of seeds) {
   const t0 = Date.now();
   const r = spawnSync(process.execPath, ["--experimental-strip-types", "--test", suite.file], { cwd: root, env: { ...process.env, [suite.env]: String(seed) }, encoding: "utf8", timeout: 300_000 });
   const out = (r.stdout ?? "") + (r.stderr ?? "");
-  const num = (k) => Number((new RegExp(`^ℹ ${k} (\\d+)`, "m").exec(out) ?? [])[1] ?? NaN);
+  const num = (k) => Number((new RegExp(`^(?:ℹ|#) ${k} (\\d+)`, "m").exec(out) ?? [])[1] ?? NaN);
   const ok = r.status === 0;
   if (!ok) failed++;
-  const failures = ok ? [] : out.split("\n").filter((l) => /^✖ /.test(l)).slice(0, 20);
+  const failures = ok ? [] : out.split("\n").filter((l) => /^(✖ |not ok )/.test(l)).slice(0, 20);
   record.runs.push({ suite: suite.name, file: suite.file, seedEnv: suite.env, seed, ok, pass: num("pass"), fail: num("fail"), ms: Date.now() - t0, failures, reproduce: `${suite.env}=${seed} node --experimental-strip-types --test ${suite.file}` });
   console.log(`${ok ? "ok  " : "FAIL"} ${suite.name} seed=${seed} pass=${num("pass")} fail=${num("fail")}`);
 }

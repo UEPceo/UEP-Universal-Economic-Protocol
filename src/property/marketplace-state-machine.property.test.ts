@@ -1,9 +1,9 @@
 /** 0.5.81 item 6: marketplace order state machine (seeded property run, recovery, hold expiry, disputes). Seed: UEP_MKT_SEED (default 20261015). */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DigitalServicesMarketplace, type OrderStatus } from "./marketplace.ts";
-import { ORDER_TRANSITIONS, ORDER_PHASE, assertOrderTransition, isTerminalOrderStatus } from "./order-state-machine.ts";
-import { adoptTestIdentities, cancel, createTestAuthority, deliver, disputeAs, expire, fund, getOrder, publishAs, refundAs, reserveAs, resolveAs, settle } from "./testkit.ts";
+import { DigitalServicesMarketplace, type OrderStatus } from "../marketplace/marketplace.ts";
+import { ORDER_TRANSITIONS, ORDER_PHASE, assertOrderTransition, isTerminalOrderStatus } from "../marketplace/order-state-machine.ts";
+import { adoptTestIdentities, cancel, createTestAuthority, deliver, disputeAs, expire, fund, getOrder, publishAs, refundAs, reserveAs, resolveAs, settle } from "../marketplace/testkit.ts";
 
 const ADMIN = createTestAuthority("sm-admin");
 const ARBITER = createTestAuthority("sm-arbiter");

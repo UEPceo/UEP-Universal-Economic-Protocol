@@ -17,7 +17,7 @@ The critical security set: `certified-commit`, `bft-binding`, `snapshot-rules`, 
 
 ## Seeds and run records
 
-`scripts/run-seeded.mjs` runs each seeded suite over `20261015,1,7,42,2026,31337` (override with `--seeds`). It writes `artifacts/test-runs/<commit>-node<major>.json` with the seed list, Node version, platform, CPU count, commit, per-run pass/fail counts, first failure lines and a reproduce command. CI uploads it as the `seeded-runs` artifact. To reproduce one run: `UEP_MKT_SEED=<seed> node --experimental-strip-types --test src/marketplace/order-state-machine.test.ts` (likewise `UEP_NUM_SEED`, `UEP_BFT_FAULT_SEED`).
+`scripts/run-seeded.mjs` runs each seeded suite over `20261015,1,7,42,2026,31337` (override with `--seeds`). It writes `artifacts/test-runs/<commit>-node<major>.json` with the seed list, Node version, platform, CPU count, commit, per-run pass/fail counts, first failure lines and a reproduce command. CI uploads it as the `seeded-runs` artifact. To reproduce one run: `UEP_MKT_SEED=<seed> node --experimental-strip-types --test src/property/marketplace-state-machine.property.test.ts` (likewise `UEP_NUM_SEED`, `UEP_BFT_FAULT_SEED`).
 
 ## Pending failures (0.5.81)
 
