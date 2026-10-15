@@ -29,7 +29,7 @@ const stub = (keyMode: "development" | "ceremony" = "development"): ZkSpendVerif
 });
 
 async function setup(verifier?: ZkSpendVerifier) {
-  const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, ...(verifier ? { zkSpendVerifier: verifier } : {}) });
+  const l = new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: true, snapshotSigningKeys: [SNAP.privateKey], faucetSigningKey: FAUCET.privateKey, ...(verifier ? { zkSpendVerifier: verifier } : {}), zkRootBinding: "off", zkAcceptLegacyV5: true });
   const a = await identityFromMnemonic(await generateMnemonic(128));
   const b = await identityFromMnemonic(await generateMnemonic(128));
   l.faucet(a.accountId, EUR, 10_000n, clientBlinding(730801615919n));

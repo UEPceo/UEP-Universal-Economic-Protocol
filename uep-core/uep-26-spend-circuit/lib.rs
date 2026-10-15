@@ -14,6 +14,7 @@ pub mod groth16_spend;
 pub mod prove_request;
 pub mod canonical_state;
 pub mod network_profile;
+pub mod spend_v6;
 
 use ark_bn254::Fr;
 use ark_r1cs_std::{
@@ -344,3 +345,7 @@ mod arithmetic_tests {
         assert!(!cs.is_satisfied().unwrap());
     }
 }
+
+// Nightly differential / perturbation bench (Research EXP-093..095, adapted to v6). #[ignore].
+#[cfg(test)]
+mod exp_rr_2026_10_15_003;

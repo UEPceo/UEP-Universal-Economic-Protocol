@@ -42,8 +42,8 @@ test("projected ledger roots at depth 32 equal uep-zk smt-root over circuit leav
     assert.equal(r.stdout.match(/index=(\d+)/)?.[1], slot.toString());
     leaves.push({ index: slot, leafHex: leaf.toHex() });
   }
-  const projected = l.zkCircuitProjection().state.root();
+  const projected = l.zkCircuitProjection(5).state.root();
   assert.equal(padFrHex(projected.toHex()), zkSmtRoot(CIRCUIT_TREE_DEPTH, leaves));
   const nf = p.tx.nullifier;
-  assert.equal(padFrHex(l.zkCircuitProjection().nullifiers.root().toHex()), zkSmtRoot(CIRCUIT_TREE_DEPTH, [{ index: nf.lowBits(CIRCUIT_TREE_DEPTH), leafHex: nf.toHex() }]));
+  assert.equal(padFrHex(l.zkCircuitProjection(5).nullifiers.root().toHex()), zkSmtRoot(CIRCUIT_TREE_DEPTH, [{ index: nf.lowBits(CIRCUIT_TREE_DEPTH), leafHex: nf.toHex() }]));
 });

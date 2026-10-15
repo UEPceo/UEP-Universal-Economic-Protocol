@@ -5,8 +5,10 @@ use ark_ff::{BigInteger, PrimeField};
 use rand::{rngs::StdRng, SeedableRng};
 use uep_26_spend_circuit::circuit_id::{
     artifact_bundle_id, circuit_metadata_id, public_schema_id, vk_id, CIRCUIT_CONSTRAINTS,
-    CIRCUIT_TAG, DEV_SETUP_SEED, NUM_PUBLIC_INPUTS, PUBLIC_INPUT_NAMES,
+    tag_for_layout, CIRCUIT_CONSTRAINTS_V6, CIRCUIT_TAG, CIRCUIT_TAG_V6, DEV_SETUP_SEED,
+    NUM_PUBLIC_INPUTS, PUBLIC_INPUT_NAMES,
 };
+use uep_26_spend_circuit::spend_circuit::SpendLayout;
 use uep_26_spend_circuit::groth16_spend::{
     deserialize_proof, deserialize_vk, prove, public_inputs_from_circuit, serialize_pk,
     serialize_proof, serialize_vk, setup, verify, verify_independent,
@@ -45,6 +47,35 @@ fn fr_from_hex(s: &str) -> Result<Fr, String> {
     parse_canonical_fr_hex(s)
 }
 
+/// Fixed v6 development fixture (same economic spend as the v5 fixture; empty recipient slot
+/// exercised elsewhere). Deterministic so the v6 dev VK can be pinned.
+fn v6_fixture<const D: usize>() -> uep_26_spend_circuit::spend_circuit::SpendCircuit<D> {
+    use uep_26_spend_circuit::hash_gadget::{h_account, note_commitment, UepPoseidon};
+    use uep_26_spend_circuit::smt_gadget::state_index;
+    use uep_26_spend_circuit::spend_v6::{build_spend, Party, SpendParams, SpendTrees};
+    let (secret, salt, asset) = (Fr::from(42u64), Fr::from(7u64), Fr::from(1u64));
+    let sender = h_account::<UepPoseidon>(secret, salt);
+    let (rid, tid) = (Fr::from(99u64), Fr::from(100u64));
+    let mut trees = SpendTrees::<UepPoseidon, D>::new();
+    for (id, bal, b) in [(sender, 10_000u64, 3u64), (rid, 0, 4), (tid, 0, 5)] {
+        trees.state.set(state_index::<UepPoseidon>(id, asset, D), note_commitment::<UepPoseidon>(id, asset, Fr::from(bal), Fr::from(b)));
+    }
+    let p = SpendParams {
+        secret, salt, sender_blinding: Fr::from(3u64), sender_old_balance: 10_000,
+        recipient: Party { id: rid, blinding: Fr::from(4u64), old_balance: 0 },
+        treasury: Party { id: tid, blinding: Fr::from(5u64), old_balance: 0 },
+        asset, amount: 1_000, domain_id: 1,
+    };
+    build_spend::<UepPoseidon, D>(&trees, &p, SpendLayout::V6).expect("v6 fixture").circuit
+}
+
+fn v6_count<const D: usize>() -> usize {
+    let cs = ConstraintSystem::<Fr>::new_ref();
+    v6_fixture::<D>().generate_constraints(cs.clone()).expect("v6 synth");
+    assert!(cs.is_satisfied().expect("sat"), "v6 fixture must satisfy");
+    cs.num_constraints()
+}
+
 fn main() {
     let cmd = std::env::args().nth(1).unwrap_or_else(|| {
         eprintln!(
@@ -62,9 +93,14 @@ fn main() {
             let cs32 = ConstraintSystem::<Fr>::new_ref();
             c32.generate_constraints(cs32.clone()).expect("d32");
             println!("d32={}", cs32.num_constraints());
+            for (name, n) in [("v6_d4", v6_count::<4>()), ("v6_d32", v6_count::<32>()), ("v6_d48", v6_count::<48>()), ("v6_d64", v6_count::<64>())] {
+                println!("{name}={n}");
+            }
             println!("public_inputs={NUM_PUBLIC_INPUTS}");
         }
         "circuit-id" => {
+            println!("tag_v6={CIRCUIT_TAG_V6}");
+            println!("constraints_v6={CIRCUIT_CONSTRAINTS_V6}");
             println!("tag={CIRCUIT_TAG}");
             println!("constraints={CIRCUIT_CONSTRAINTS}");
             println!("public_inputs={NUM_PUBLIC_INPUTS}");
@@ -138,6 +174,58 @@ fn main() {
             println!("keys=DEV-TEST-KEYS");
             println!("vk_id={}", vk_id(&vk_b));
             println!("vk_hex={}", hex_encode(&vk_b));
+        }
+        "dev-vk-v6" => {
+            // Development verifying key of circuit v6 (fixed public seed, no ceremony).
+            let d: u32 = std::env::args().nth(2).and_then(|x| x.parse().ok()).unwrap_or(4);
+            let mut rng = StdRng::seed_from_u64(DEV_SETUP_SEED);
+            let vk_b = match d {
+                4 => serialize_vk(&setup(v6_fixture::<4>(), &mut rng).expect("setup").1).expect("ser vk"),
+                64 => serialize_vk(&setup(v6_fixture::<64>(), &mut rng).expect("setup").1).expect("ser vk"),
+                _ => {
+                    eprintln!("unsupported depth {d}; use 4 or 64");
+                    std::process::exit(2);
+                }
+            };
+            println!("depth={d}");
+            println!("tag={CIRCUIT_TAG_V6}");
+            println!("keys=DEV-TEST-KEYS");
+            println!("vk_id={}", vk_id(&vk_b));
+            println!("vk_hex={}", hex_encode(&vk_b));
+        }
+        "bench-v6" => {
+            // Proving cost per depth (fixed dev setup). Usage: uep-zk bench-v6 <4|32|64>
+            let d: u32 = std::env::args().nth(2).and_then(|x| x.parse().ok()).unwrap_or(4);
+            fn run<const D: usize>(layout: SpendLayout) {
+                let c = if layout == SpendLayout::V6 { v6_fixture::<D>() } else { honest_spend_fixture_poseidon::<D>(1_000, 10_000) };
+                let publics = public_inputs_from_circuit(&c);
+                let cs = ConstraintSystem::<Fr>::new_ref();
+                c.clone().generate_constraints(cs.clone()).expect("synth");
+                let mut rng = StdRng::seed_from_u64(DEV_SETUP_SEED);
+                let t0 = Instant::now();
+                let (pk, vk) = setup(c.clone(), &mut rng).expect("setup");
+                let setup_ms = t0.elapsed().as_millis();
+                let t1 = Instant::now();
+                let proof = prove(&pk, c, &mut rng).expect("prove");
+                let prove_ms = t1.elapsed().as_millis();
+                let t2 = Instant::now();
+                assert!(verify(&vk, &publics, &proof).expect("verify"));
+                let verify_ms = t2.elapsed().as_millis();
+                println!(
+                    "layout={layout:?} depth={D} constraints={} setup_ms={setup_ms} prove_ms={prove_ms} verify_ms={verify_ms} pk_bytes={} vk_bytes={} proof_bytes={}",
+                    cs.num_constraints(),
+                    serialize_pk(&pk).unwrap().len(),
+                    serialize_vk(&vk).unwrap().len(),
+                    serialize_proof(&proof).unwrap().len()
+                );
+            }
+            match d {
+                4 => { run::<4>(SpendLayout::V5Legacy); run::<4>(SpendLayout::V6) }
+                32 => { run::<32>(SpendLayout::V5Legacy); run::<32>(SpendLayout::V6) }
+                48 => run::<48>(SpendLayout::V6),
+                64 => run::<64>(SpendLayout::V6),
+                _ => { eprintln!("depth 4|32|48|64"); std::process::exit(2) }
+            }
         }
         "state-index" => {
             let args: Vec<String> = std::env::args().skip(2).collect();
@@ -236,6 +324,34 @@ fn main() {
             let mut rng = StdRng::seed_from_u64(seed);
 
             let mut run = |depth: u32| -> Result<(), String> {
+                if req.circuit_version == 6 && depth == 64 {
+                    let t0 = Instant::now();
+                    let c = circuit_from_request::<64>(&req)?;
+                    let publics = public_inputs_from_circuit(&c);
+                    let (pk, vk) = setup(c.clone(), &mut setup_rng).map_err(|e| format!("{e:?}"))?;
+                    let setup_ms = t0.elapsed().as_millis();
+                    let t1 = Instant::now();
+                    let proof = prove(&pk, c, &mut rng).map_err(|e| format!("{e:?}"))?;
+                    let prove_ms = t1.elapsed().as_millis();
+                    if !verify(&vk, &publics, &proof).map_err(|e| format!("{e:?}"))? {
+                        return Err("verify returned false".into());
+                    }
+                    let vk_b = serialize_vk(&vk).map_err(|e| format!("{e}"))?;
+                    let proof_b = serialize_proof(&proof).map_err(|e| format!("{e}"))?;
+                    println!("ok=true");
+                    println!("depth=64");
+                    println!("keys=DEV-TEST-KEYS");
+                    println!("setup_ms={setup_ms}");
+                    println!("prove_ms={prove_ms}");
+                    println!("tag={CIRCUIT_TAG_V6}");
+                    println!("vk_id={}", vk_id(&vk_b));
+                    println!("vk_hex={}", hex_encode(&vk_b));
+                    println!("proof_hex={}", hex_encode(&proof_b));
+                    for (i, p) in publics.iter().enumerate() {
+                        println!("public_{i}={}", fr_to_hex(p));
+                    }
+                    return Ok(());
+                }
                 match depth {
                     4 | 32 => {
                         let t0 = Instant::now();
@@ -299,7 +415,8 @@ fn main() {
                         println!("setup_ms={setup_ms}");
                         println!("prove_ms={prove_ms}");
                         println!("verify_ms={verify_ms}");
-                        println!("tag={CIRCUIT_TAG}");
+                        let layout = if req.circuit_version == 6 { SpendLayout::V6 } else { SpendLayout::V5Legacy };
+                        println!("tag={}", tag_for_layout(layout));
                         println!("vk_id={}", vk_id(&vk_b));
                         println!("vk_hex={}", hex_encode(&vk_b));
                         println!("proof_hex={}", hex_encode(&proof_b));
@@ -320,7 +437,7 @@ fn main() {
                         println!("new_nullifier_root={}", fr_to_hex(&publics[3]));
                         Ok(())
                     }
-                    d => Err(format!("unsupported depth {d}; use 4 or 32")),
+                    d => Err(format!("unsupported depth {d}; use 4 or 32 (v5), 4 or 64 (v6)")),
                 }
             };
 
