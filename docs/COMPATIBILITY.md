@@ -242,3 +242,9 @@ Node paths: `PeerNet.catchUp` (peer snapshots) restores with `minHeight` = curre
 peer's history extends this node's (same transactions in the same order, no fewer mints, every BFT-applied
 transaction present); otherwise it keeps its ledger. Evidence: `src/node/snapshot-rules.test.ts` and the snapshot
 suites under `src/testnet/`.
+
+## BFT vote format and peer envelope activation (0.5.81)
+
+- **Votes.** 0.5.80 signs votes as `uep-bft-vote-v2` without epoch, validator-set hash or proposal hash. 0.5.81 adds them (v3). A kernel built with `{ voteV3ActivationHeight: H }` signs and verifies v2 at heights `< H` and only v3 at heights `>= H`; a quorum can never mix the two. To upgrade a running 0.5.80 cluster: pick `H` above the current height, deploy 0.5.81 with that `H` on every validator before the cluster reaches `H`. A validator still on 0.5.80 at `H` cannot verify v3 votes and stops contributing. Default `H = 0` (v3 only). Test: `src/node/bft-vote-compat.test.ts`.
+- **Peer envelopes.** 0.5.81 sends v2 envelopes (network, domain, epoch, height, nonce bound). It still accepts 0.5.80 v1 envelopes, with a one-time `UEP_DEP_PEER_ENVELOPE_V1` warning, until `PeerNet.legacyEnvelopeUntilHeight` is reached. v1 is removed in 0.6.0. A 0.5.80 node does not understand v2 envelopes, so mixed clusters need every node on 0.5.81 before peers can talk both ways. Test: `src/node/transport-0581.test.ts`.
+- **Height floor.** Nodes with a state directory keep `ledger.height-floor.json`. A node started on a ledger below it refuses to run; set `UEP_ALLOW_HEIGHT_REGRESSION=1` for a deliberate rollback (logged). Nodes without the file behave as before.

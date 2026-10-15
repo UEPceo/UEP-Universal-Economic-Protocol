@@ -19,6 +19,12 @@ Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`
 
 - Item 10 (partial): test classes written down in docs/TEST-SUITES.md. npm run test:security (critical security set) runs as a named blocking CI step; npm run test:property(:full) runs the seeded property, fuzz and multi-process fault suites over a fixed seed list in a new blocking CI job and uploads a JSON record (seeds, Node version, platform, commit, per-run results, reproduce command). New seeded parseAmount fuzz (20,000 strings).
 
+- Item 2 follow-up (compatibility): `BftKernelOptions.voteV3ActivationHeight`. Below that height 0.5.81 signs and verifies 0.5.80 (v2) votes, certificates and round changes unchanged, so 0.5.80 and 0.5.81 validators interoperate; from it on only v3. Tested against a frozen copy of the 0.5.80 kernel. Default 0 (v3 everywhere): set the height to upgrade a running 0.5.80 cluster. v3 votes sign with the `uep-bft-vote-v3` tag.
+- Item 3 follow-up: deterministic, height-based round-change timeout (`src/node/bft-round-timer.ts`, `PeerNet.bftTick`, `POST /bft/round-change`, `bftProposeAfterRoundChange`). A height opened by an equivocating proposer now closes in a later round.
+- Item 4 follow-up: own persisted height floor outside BFT mode (`src/node/height-floor.ts`); the CLI and PeerNet refuse to run on a ledger below it (`LEDGER_BELOW_HEIGHT_FLOOR`, `LEDGER_ROOT_AT_FLOOR_MISMATCH`), with a logged `UEP_ALLOW_HEIGHT_REGRESSION=1` override.
+- Item 5: the registry binding is not made the reference-node default in 0.5.81 (needs persistent governance keys and a snapshot migration; see the resolution matrix).
+- Dependencies: the 5 low-severity Dependabot alerts (Rust `tracing-subscriber` < 0.3.20, pulled in by `ark-relations` 0.3 in the lab crates) are not fixed by a patch/minor bump: `ark-relations` 0.3 requires `tracing-subscriber` ^0.2, and moving to arkworks 0.4+ changes the circuit and its verifying keys. No npm runtime dependencies; `npm audit` reports 0.
+
 ## 0.5.80 — 2026-10-13
 
 - Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.
