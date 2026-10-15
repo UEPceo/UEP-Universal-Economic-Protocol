@@ -83,7 +83,7 @@ test("status reports version, uptime and rate-limit counters", async () => {
       rateLimit?: { max: number; windowMs: number };
     };
     assert.equal(res.status, 200);
-    assert.equal(body.version, "0.5.80");
+    assert.equal(body.version, "0.5.81");
     assert.equal(typeof body.uptimeMs, "number");
     assert.ok(body.uptimeMs! >= 0);
     assert.equal(typeof body.peerCount, "number");

@@ -1,6 +1,6 @@
 {
   "name": "uep-public-testnet-marketplace",
-  "version": "0.5.80",
+  "version": "0.5.81",
   "private": false,
   "type": "module",
   "description": "Public reproducible UEP testnet: hardened core, Marketplace and IoT/M2M, plus research labs (consensus, ZK/Groth16 dev circuit, agents, service API).",
@@ -51,7 +51,7 @@
     "cli": "node --experimental-strip-types sdk/cli.ts",
     "audit:surface": "node --experimental-strip-types scripts/audit-surface.ts",
     "test:net": "node --experimental-strip-types --test-concurrency=4 --test src/node/peer-net.test.ts src/node/two-node.test.ts src/node/quorum.test.ts src/node/duplicate-settlement.test.ts src/node/vote-validation.test.ts src/node/cluster-trust.test.ts",
-    "test:consensus": "node --experimental-strip-types --test-concurrency=4 --test src/node/peer-net.test.ts src/node/two-node.test.ts src/node/quorum.test.ts src/node/key-rotation.test.ts src/node/faucet-rotation.test.ts src/node/duplicate-settlement.test.ts src/node/vote-validation.test.ts src/node/cluster-trust.test.ts src/node/cluster-process.test.ts src/node/bft-consensus.test.ts",
+    "test:consensus": "node --experimental-strip-types --test-concurrency=4 --test src/node/peer-net.test.ts src/node/two-node.test.ts src/node/quorum.test.ts src/node/key-rotation.test.ts src/node/faucet-rotation.test.ts src/node/duplicate-settlement.test.ts src/node/vote-validation.test.ts src/node/cluster-trust.test.ts src/node/cluster-process.test.ts src/node/bft-consensus.test.ts src/node/certified-commit.test.ts",
     "test:consensus-bft": "node --experimental-strip-types --test-concurrency=4 --test src/node/bft-consensus.test.ts",
     "check:zk-pins": "node scripts/gen-zk-dev-vk-pins.mjs --check",
     "test:node": "node --experimental-strip-types --test-concurrency=1 --test sdk/cli.test.ts src/node/bridge-api.test.ts src/node/categories-oracle.test.ts src/node/node-e2e.test.ts src/node/paymaster-ledger.test.ts src/node/persist.test.ts"

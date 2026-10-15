@@ -3,8 +3,8 @@
  * A spend is applied only after two of three votes. A silent peer is skipped.
  */
 import { createServer, type Server } from "node:http";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, openSync, fsyncSync, closeSync, unlinkSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
+import { join } from "node:path";
 import { signEd25519, verifyEd25519, type PrivateKeyLike } from "../core/ed25519.ts";
 import { deserializeTx, serializeTx, txNullifiers, type UepTransaction } from "../core/transaction.ts";
 
@@ -12,6 +12,7 @@ type WireTx = Parameters<typeof deserializeTx>[0];
 import type { UepLedger } from "../testnet/ledger.ts";
 import { TxQuorum, type QuorumVote } from "./quorum.ts";
 import { BftConsensusKernel, type BftCertificate, type BftProposal, type BftVote } from "./bft-consensus.ts";
+import { CertifiedCommitter, CommitLog, migrateJournalV1, type CommitResult, type CommitStatus, type CommitterOptions } from "./certified-commit.ts";
 
 /**
  * `publicKeyHex` pins the voter key. `snapshotPublicKeyHex` and `faucetPublicKeyHex` pin the keys
@@ -26,7 +27,7 @@ const decode = (_k: string, v: unknown) => v && typeof v === "object" && "$b" in
 const MAX_PEER_BODY = 2 * 1024 * 1024; // 2 MiB
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 120; // generous for local harness; still bounds floods
-const NODE_VERSION = "0.5.80";
+const NODE_VERSION = "0.5.81";
 
 export class PeerNet {
   readonly id: string;
@@ -47,7 +48,10 @@ export class PeerNet {
   private readonly bftProposals = new Map<string, { proposal: BftProposal; signature: string }>();
   private readonly bftTransactions = new Map<string, UepTransaction>();
   private readonly bftJournalPath?: string;
-  private bftJournal: Array<{ proposal: BftProposal; proposalSignature: string; certificate: BftCertificate; tx: WireTx; applied: boolean }> = [];
+  private readonly commitLogPath?: string;
+  private committer?: CertifiedCommitter;
+  /** Crash-test hook passed to the certified committer. */
+  commitFaultInjector?: CommitterOptions["faultInjector"];
 
   constructor(id: string, ledger: UepLedger, privateKey: PrivateKeyLike, publicKeyHex: string, peers: Peer[], voters: Map<string, string>, threshold = 2, stateDir?: string) {
     this.id = id;
@@ -61,16 +65,7 @@ export class PeerNet {
       mkdirSync(stateDir, { recursive: true });
       this.statePath = join(stateDir, "quorum-votes.json");
       this.bftJournalPath = join(stateDir, "bft-commit-journal.json");
-      if (existsSync(this.bftJournalPath)) {
-        const journal = JSON.parse(readFileSync(this.bftJournalPath, "utf8"));
-        if (journal?.version !== 1 || !Array.isArray(journal.records) || journal.records.length > 10_000 ||
-            readFileSync(this.bftJournalPath, "utf8").length > 32 * 1024 * 1024 ||
-            journal.records.some((record: any) => !record || typeof record !== "object" || !record.proposal ||
-              typeof record.proposalSignature !== "string" || !record.certificate || !record.tx || typeof record.applied !== "boolean")) {
-          throw new Error("BFT_JOURNAL_INVALID");
-        }
-        this.bftJournal = journal.records;
-      }
+      this.commitLogPath = join(stateDir, "bft-commit-log.jsonl");
       if (existsSync(this.statePath)) {
         const raw = JSON.parse(readFileSync(this.statePath, "utf8"));
         if (raw.version === 1 && raw.payload && raw.signature && raw.signer === this.publicKeyHex) {
@@ -98,6 +93,28 @@ export class PeerNet {
       throw new Error("BFT_TRANSPORT_DOMAIN_MISMATCH");
     }
     this.bftKernel = kernel;
+    // H1: one durable, hash-chained commit log per node; the 0.5.80 JSON journal is migrated once.
+    const log = new CommitLog(this.commitLogPath ?? null);
+    if (this.bftJournalPath && existsSync(this.bftJournalPath)) {
+      migrateJournalV1(this.bftJournalPath, log);
+      renameSync(this.bftJournalPath, this.bftJournalPath + ".migrated");
+    }
+    this.committer = new CertifiedCommitter(log, kernel, () => this.ledger, { faultInjector: (p) => this.commitFaultInjector?.(p) });
+  }
+
+  /** Commit status of a BFT height: CERTIFIED_NOT_APPLIED is never counted as applied. */
+  bftCommitStatus(height: number): CommitStatus {
+    const st = this.requireCommitter().status(height);
+    if (st !== "UNKNOWN") return st;
+    // Certified by the kernel (for example a certificate without a ledger transaction) but not applied here.
+    return this.requireBft().exportState().committed.some(([h]) => h === String(height)) ? "CERTIFIED_NOT_APPLIED" : "UNKNOWN";
+  }
+
+  bftCommitResult(height: number): CommitResult | undefined { return this.requireCommitter().result(height); }
+
+  private requireCommitter(): CertifiedCommitter {
+    if (!this.committer) throw new Error("BFT_TRANSPORT_NOT_CONFIGURED");
+    return this.committer;
   }
 
   /** Drive a BFT proposal. Supplying tx binds blockId to txId and enables certified ledger application. */
@@ -137,104 +154,33 @@ export class PeerNet {
 
   private assertBftTransaction(proposal: BftProposal, tx: UepTransaction): void {
     if (proposal.blockId !== tx.txId.toHex()) throw new Error("BFT_TX_ID_MISMATCH");
-    if (proposal.height !== this.ledger.height + 1 || proposal.parentRoot !== this.ledger.stateRoot().toHex()) {
+    const committer = this.requireCommitter();
+    if (proposal.height !== committer.expectedHeight()) throw new Error("BFT_HEIGHT_MISMATCH");
+    if (proposal.parentRoot !== this.ledger.stateRoot().toHex() || proposal.parentRoot !== committer.expectedParentRoot()) {
       throw new Error("BFT_PARENT_STATE_MISMATCH");
     }
     const checked = this.ledger.validateSpend(tx);
     if ("error" in checked) throw new Error(checked.error.code);
   }
 
-  private persistBftJournal(): void {
-    if (!this.bftJournalPath) return;
-    const tmp = `${this.bftJournalPath}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
-    const fd = openSync(tmp, "wx", 0o600);
-    try {
-      writeFileSync(fd, JSON.stringify({ version: 1, records: this.bftJournal }));
-      fsyncSync(fd);
-    } catch (error) {
-      try { closeSync(fd); } catch {}
-      try { unlinkSync(tmp); } catch {}
-      throw error;
-    }
-    closeSync(fd);
-    try {
-      renameSync(tmp, this.bftJournalPath);
-      const dirFd = openSync(dirname(this.bftJournalPath), "r");
-      try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
-    } catch (error) {
-      try { unlinkSync(tmp); } catch {}
-      throw error;
-    }
-  }
-
-  private async applyBftCommit(proposal: BftProposal, certificate: BftCertificate, tx: UepTransaction): Promise<void> {
-    const kernel = this.requireBft();
-    if (certificate.phase !== "precommit" || certificate.height !== proposal.height || certificate.round !== proposal.round ||
-        certificate.blockId !== proposal.blockId || !kernel.verifyCertificate(certificate)) throw new Error("BFT_COMMIT_CERTIFICATE_INVALID");
-    if (proposal.blockId !== tx.txId.toHex()) throw new Error("BFT_TX_ID_MISMATCH");
+  /** Certified ledger application goes through the single idempotent transition (H1, ADR 0007). */
+  private async applyBftCommit(proposal: BftProposal, certificate: BftCertificate, tx: UepTransaction): Promise<CommitResult> {
     const proposalSignature = this.bftProposals.get(this.bftPosition(proposal))?.signature;
-    if (!proposalSignature || !kernel.verifyProposal(proposal, proposalSignature)) throw new Error("BFT_JOURNAL_PROPOSAL_SIGNATURE_INVALID");
-    const txWire = JSON.parse(JSON.stringify(serializeTx(tx), encode)) as WireTx;
-
-    // Serialize the complete commit critical section. The journal is the durable
-    // write-ahead record; the certificate is marked committed only after submit()
-    // succeeds. A crash at any boundary is replayable without double-applying tx.
-    await this.enqueue(() => {
-      const prior = this.bftJournal.find(record => record.proposal.height === proposal.height);
-      if (prior && prior.proposal.blockId !== proposal.blockId) throw new Error("BFT_JOURNAL_HEIGHT_CONFLICT");
-      if (prior && (prior.certificate.blockId !== certificate.blockId || prior.certificate.phase !== "precommit")) {
-        throw new Error("BFT_JOURNAL_CERTIFICATE_CONFLICT");
-      }
-      let record = prior;
-      if (!record) {
-        record = { proposal: structuredClone(proposal), proposalSignature, certificate: structuredClone(certificate), tx: txWire, applied: false };
-        this.bftJournal.push(record);
-        this.persistBftJournal(); // PREPARED: durable certificate + tx before touching ledger
-      }
-
-      const alreadyApplied = this.ledger.txs.some(existing => existing.txId.toHex() === tx.txId.toHex());
-      if (!alreadyApplied) {
-        if (proposal.parentRoot !== this.ledger.stateRoot().toHex() || proposal.height !== this.ledger.height + 1) {
-          throw new Error("BFT_PARENT_STATE_MISMATCH");
-        }
-        this.assertBftTransaction(proposal, tx);
-        const result = this.ledger.submit(tx);
-        if ("error" in result) throw new Error(result.error.code);
-      }
-
-      // COMMIT in the BFT kernel only after the ledger has applied (or was
-      // already found to contain) the exact transaction. If this persistence
-      // fails, the prepared journal lets restart reconcile the kernel safely.
-      kernel.recordCommit(certificate);
-      if (!record.applied) {
-        record.applied = true;
-        this.persistBftJournal(); // APPLIED marker is atomically replaced on disk
-      }
-    });
+    if (!proposalSignature) throw new Error("BFT_JOURNAL_PROPOSAL_SIGNATURE_INVALID");
+    const committer = this.requireCommitter();
+    return this.enqueue(() => committer.applyCertifiedCommit({ proposal, proposalSignature, certificate, tx }));
   }
 
-  /** Replay certified commits from the local write-ahead journal after the caller restores the matching ledger snapshot and configures BFT. */
+  /** After a restart: restore the ledger snapshot, configure BFT, then call this. Returns the heights re-applied to the ledger. */
   async recoverBftCommits(): Promise<number> {
-    const kernel = this.requireBft();
-    let recovered = 0;
-    for (const record of [...this.bftJournal].sort((a, b) => a.proposal.height - b.proposal.height)) {
-      if (!kernel.verifyProposal(record.proposal, record.proposalSignature) || !kernel.verifyCertificate(record.certificate) || record.certificate.phase !== "precommit" ||
-          record.certificate.height !== record.proposal.height || record.certificate.round !== record.proposal.round ||
-          record.certificate.blockId !== record.proposal.blockId) throw new Error("BFT_JOURNAL_CERTIFICATE_INVALID");
-      const tx = deserializeTx(record.tx);
-      if (tx.txId.toHex() !== record.proposal.blockId) throw new Error("BFT_JOURNAL_TX_MISMATCH");
-      this.bftProposals.set(this.bftPosition(record.proposal), { proposal: structuredClone(record.proposal), signature: record.proposalSignature });
-      this.bftTransactions.set(record.proposal.blockId, tx);
-      if (this.ledger.txs.some(existing => existing.txId.toHex() === tx.txId.toHex())) {
-        await this.applyBftCommit(record.proposal, record.certificate, tx);
-        record.applied = true;
-        continue;
+    const committer = this.requireCommitter();
+    const out = await this.enqueue(() => committer.recover());
+    for (const e of committer.log.all()) {
+      if (e.type === "INTENT") {
+        this.bftProposals.set(this.bftPosition(e.proposal!), { proposal: structuredClone(e.proposal!), signature: e.proposalSignature! });
       }
-      await this.applyBftCommit(record.proposal, record.certificate, tx);
-      recovered++;
     }
-    this.persistBftJournal();
-    return recovered;
+    return out.reapplied;
   }
 
   private requireBft(): BftConsensusKernel {
@@ -301,6 +247,7 @@ export class PeerNet {
             peerCount: this.peers.length,
             threshold: this.threshold,
             rateLimit: { windowMs: RATE_WINDOW_MS, max: RATE_MAX, recentHits },
+            ...(this.committer ? { bftCommit: { lastDecidedHeight: this.committer.lastDecidedHeight(), pendingNotApplied: this.committer.pending(), logHead: this.committer.log.headHash } } : {}),
           });
         }
         if (req.method === "GET" && url.pathname === "/snapshot") {

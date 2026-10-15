@@ -88,7 +88,7 @@ ledger verifies anchored settlement receipts itself and never calls the Marketpl
 | 15 | Agents | `src/agent` | Experimental (lab) | 0.5.0 | `test:lab` |
 | 16 | Rust / ZK | `uep-core` | Experimental (lab) | 0.5.0 | `test:rust`, `build:uep-zk` |
 | 17 | Ledger service adapters (height producer, submit queue, worker host) | `src/service/height-producer.ts`, `ledger-submit-queue.ts`, `ledger-worker-host.ts` | Implemented (testnet) | 0.5.1 (queue, worker 0.5.3) | `test:marketplace` |
-| 19 | Reference node, BFT safety kernel, PeerNet | `src/node` | Experimental (lab) | 0.5.10 (BFT kernel 0.5.74, PeerNet 0.5.78, certified apply 0.5.79–0.5.80) | `test:consensus`, `test:node` |
+| 19 | Reference node, BFT safety kernel, PeerNet, certified commit log | `src/node` | Experimental (lab) | 0.5.10 (BFT kernel 0.5.74, PeerNet 0.5.78, certified commit log 0.5.81) | `test:consensus`, `test:node` |
 | 20 | SDK (client, Marketplace, IoT/M2M, CLI) | `sdk/` | Implemented (testnet) | 0.5.20 | `test:sdk`, `test:node` |
 | 21 | Configuration and examples | `config/`, `examples/` | Implemented (testnet) | 0.5.42 / 0.5.23 | `test:consensus`, `examples/sample-service.test.ts` |
 
@@ -212,7 +212,7 @@ Subsidy claims bound to the settlement index written by swap / relay; at most 50
 
 ## 19. Reference node, BFT safety kernel and PeerNet (`src/node`)
 
-`assemble.ts` puts together the ledger, height producer, Marketplace, submit queue and HTTP API (`npm start`). `bft-consensus.ts` is an experimental BFT safety kernel (proposal, prevote and precommit certificates, locks, round change) with a durable local store (`bft-durable-store.ts`); `peer-net.ts` is an authenticated fixed-peer transport (Ed25519-signed requests). Since 0.5.79 a verified precommit certificate drives `UepLedger.submit()`; since 0.5.80 the commit critical section is serialized and recovers from a crash between ledger application and the kernel commit record without applying a transaction twice. It is crash-consistent single-process commit and recovery, not a cross-database atomic transaction, and not production consensus ([`CONSENSUS-BFT-ROADMAP.md`](./CONSENSUS-BFT-ROADMAP.md)). `quorum.ts` and `cluster-trust.ts` cover the earlier two-of-three harness. Tests: `test:consensus`, `test:node`.
+`assemble.ts` puts together the ledger, height producer, Marketplace, submit queue and HTTP API (`npm start`). `bft-consensus.ts` is an experimental BFT safety kernel (proposal, prevote and precommit certificates, locks, round change) with a durable local store (`bft-durable-store.ts`); `peer-net.ts` is an authenticated fixed-peer transport (Ed25519-signed requests). Since 0.5.79 a verified precommit certificate drives `UepLedger.submit()`; since 0.5.80 the commit critical section is serialized and recovers from a crash between ledger application and the kernel commit record without applying a transaction twice. It is crash-consistent single-process commit and recovery, not a cross-database atomic transaction, and not production consensus ([`CONSENSUS-BFT-ROADMAP.md`](./CONSENSUS-BFT-ROADMAP.md)). Since 0.5.81 every certified ledger application goes through `certified-commit.ts`: a hash-chained, fsync'd commit log and the single idempotent `applyCertifiedCommit()`, with crash recovery at each write point ([ADR 0007](./adr/0007-certified-commit.md)). `quorum.ts` and `cluster-trust.ts` cover the earlier two-of-three harness. Tests: `test:consensus`, `test:node`.
 
 ## 20. SDK (`sdk/`)
 

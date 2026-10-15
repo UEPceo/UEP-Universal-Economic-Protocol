@@ -1,3 +1,9 @@
+## 0.5.81 — unreleased
+
+Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`docs/audit/0.5.81-RESOLUTION.md`](docs/audit/0.5.81-RESOLUTION.md)). Protocol fee 0.1 %, Marketplace fee 3 %, no native token, Poseidon BN254 unchanged.
+
+- **H1 — certified commit (ADR 0007).** `src/node/certified-commit.ts`: append-only, fsync'd, hash-chained commit log (`bft-commit-log.jsonl`) and a single idempotent `applyCertifiedCommit()` (certificate, expected height, parent root, prior spend, INTENT → apply → APPLIED → kernel commit). Same certificate returns the stored result with no second balance change; another block at a decided height is `BFT_COMMIT_CONFLICT`; `CERTIFIED_NOT_APPLIED` is a distinct, visible status. Recovery finishes or aborts each pending height deterministically. PeerNet uses it for every certified ledger application; the 0.5.80 JSON journal is migrated once. Tests: `src/node/certified-commit.test.ts` (crash injection at 7 write points × 2 restart modes, replay, conflict, height, prior spend, invalid certificate, tamper, divergence, migration, seeded property test), in `test:consensus`.
+
 ## 0.5.80 — 2026-10-13
 
 - Tightened the BFT commit critical section: journal preparation, ledger application, kernel commit recording, and applied-marker persistence are serialized through the same application queue.
