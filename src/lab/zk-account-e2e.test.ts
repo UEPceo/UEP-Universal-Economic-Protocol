@@ -120,8 +120,8 @@ test("zk account spend: shape and participant rules", async () => {
   const asset = ledgerAssetIdToFr(EUR);
   const pis = Array.from({ length: 13 }, (_, i) => Fr.from(BigInt(i + 1)).toHex());
   pis[4] = zkAccountIdOf(a.secret, a.salt).toHex();
-  // recipient not a linked zk account
-  const tx = l.zkAccountSpendTx({ recipientId: a.accountId, assetId: asset, amount: 10n, publicInputsHex: pis, proof: "00", senderNextBlinding: Fr.zero() });
+  // the treasury is never a recipient of a zk account spend (an Ed25519 recipient is the exit path)
+  const tx = l.zkAccountSpendTx({ recipientId: TREASURY_ID, assetId: asset, amount: 10n, publicInputsHex: pis, proof: "00", senderNextBlinding: Fr.zero() });
   assert.equal(code(l.submit(tx)), "INVALID_PARTICIPANTS");
   // a key-derived id cannot be linked as a zk account
   const link = signZkAccountLink(a, l.networkId, l.domainId);
@@ -133,5 +133,4 @@ test("zk account spend: shape and participant rules", async () => {
   const other = signZkAccountLink({ ...b, accountId: a.accountId }, l.networkId, l.domainId);
   assert.ok("error" in l.linkZkAccount(other));
   assert.throws(() => new UepLedger({ networkId: TESTNET.networkId, domainId: "EARTH", connected: true, allowFaucet: false, zkCircuitDepthV6: 8 as 4 }), /ZK_DEPTH_INVALID/);
-  assert.equal(TREASURY_ID.isZero(), false);
 });

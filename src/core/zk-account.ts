@@ -9,7 +9,9 @@
  * nullifier H_NULLIFIER(secret, nonce)).
  */
 import { Fr } from "./field.ts";
-import { hAccount } from "./hash.ts";
+import { hAccount, hLeaf } from "./hash.ts";
+import { encodeStringToFr } from "./encoding.ts";
+import { makeNote, type Note } from "./note.ts";
 import { signEd25519, verifyEd25519 } from "./ed25519.ts";
 import { deriveSpendKey, spendKeyMatchesAccount } from "./spend-key.ts";
 
@@ -45,4 +47,15 @@ export function zkAccountLinkError(link: ZkAccountLink, networkId: string, domai
   let ok = false;
   try { ok = verifyEd25519(zkLinkMessage(networkId, domainId, account, zk), link.signature, link.publicKey); } catch { ok = false; }
   return ok ? undefined : "ZK_LINK_SIGNATURE";
+}
+
+export const ZK_EXIT_NOTE_DOMAIN = "UEP-ZK-EXIT-NOTE-v1";
+
+/**
+ * 0.5.83 exit path: note credited to an Ed25519 recipient by a zk account spend. Fully
+ * determined by public data (recipient, asset, amount, nullifier), so nobody can substitute
+ * another output; it is spent like any other note, with the owner's spend-key signature.
+ */
+export function zkExitNote(recipientId: Fr, assetId: Fr, amount: bigint, nullifier: Fr): Note {
+  return makeNote(recipientId, assetId, amount, hLeaf(encodeStringToFr(ZK_EXIT_NOTE_DOMAIN), nullifier));
 }

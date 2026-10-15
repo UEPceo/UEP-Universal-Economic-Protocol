@@ -1,0 +1,23 @@
+{
+  "test": "zk depth 64 real proof through submit()",
+  "depth": 64,
+  "node": "v24.21.0",
+  "ms": {
+    "devVk": 8167,
+    "proveIncludingSetup": 16109,
+    "submitIncludingVerify": 472
+  },
+  "vkSha256": "cbf3b9b84f9c570ed1238163e6c772e49b00050dc31e5c99aaf540fd47b8122d",
+  "proofSha256": "3f0ac965df18af0df30652b6cd7b8b00a0996681ba46f61c14d4c191b8cecfee",
+  "publicInputsSha256": "28a1387d6be8df196759e05f87247e3758d30ef36a8689327754177ac8405e96",
+  "txId": "25cb089071a7d3bd00faf08e9b7d2baa09367bc11ce80cd594a9399df9e23ee1",
+  "result": "OK",
+  "replay": "REPLAY",
+  "date": "2026-10-15T19:18+02:00",
+  "command": "UEP_ZK_D64=1 node --experimental-strip-types --test --test-name-pattern='depth 64' src/lab/zk-account-exit.test.ts",
+  "wallSeconds": 26,
+  "machine": "8 cores, local box",
+  "keys": "DEV-TEST-KEYS (fixed public seed; no private key persisted)",
+  "logSha256": "9809a1aac018a531ccedc8fbff6f65bf38faa378e051828ccad3405d389529ee",
+  "commitBase": "ccd25e5"
+}

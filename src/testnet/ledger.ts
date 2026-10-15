@@ -15,7 +15,7 @@ import type { SettlementReceipt } from "../settlement/types.ts";
 import { DEPRECATIONS, deprecate, looksLikeLegacyMs } from "../core/deprecation.ts";
 import { migrateSnapshotPayload, snapshotFormatSupport } from "./snapshot-migrations.ts";
 import { Domain, hAccount, hFoldV2, hLeaf } from "../core/hash.ts";
-import { zkAccountLinkError, type ZkAccountLink } from "../core/zk-account.ts";
+import { zkAccountLinkError, zkExitNote, type ZkAccountLink } from "../core/zk-account.ts";
 import { creatorFee, maxPayableFromNote, MIN_PROTOCOL_FEE, requiredSenderDebit } from "../core/fee.ts";
 import { deriveNullifier, signedSpendNullifier } from "../core/nullifier.ts";
 import { deriveNoteBlinding, deserializeNote, makeNote, noteCommitment, noteNonce, openNote, serializeNote, walletDomainSeparator, type Note } from "../core/note.ts";
@@ -354,7 +354,8 @@ export function isZkAccountTx(tx: UepTransaction): boolean {
 
 /** 0.5.83: fixed shape of a zk account spend (no notes, no signature, nonce 0, one nullifier). */
 export function zkAccountTxShapeError(tx: UepTransaction): string | undefined {
-  if (tx.outputCommitments.length !== 0 || (tx.inputNotes?.length ?? 0) !== 0 || (tx.outputNotes?.length ?? 0) !== 0) return "A zk account spend carries no notes.";
+  if ((tx.inputNotes?.length ?? 0) !== 0) return "A zk account spend has no input notes.";
+  if (tx.outputCommitments.length > 1 || (tx.outputNotes?.length ?? 0) !== tx.outputCommitments.length) return "A zk account spend has at most one output note (the exit note).";
   if (tx.inputNonces || tx.inputNullifiers || tx.inputMembership?.length) return "A zk account spend has one nullifier and no membership proofs.";
   if (tx.senderAuth) return "A zk account spend is authorized by its proof, not by a signature.";
   if (!tx.nonce.isZero()) return "A zk account spend uses nonce 0.";
@@ -1693,14 +1694,16 @@ export class UepLedger {
     const nullifier = pi[10]!;
     const fee = creatorFee(input.amount, this.feeFloorOf(input.assetId));
     const nonce = Fr.zero();
+    const exit = this.isZkAccount(input.recipientId) ? undefined : zkExitNote(input.recipientId, input.assetId, input.amount, nullifier);
+    const outputCommitments = exit ? [exit.commitment] : [];
     const transactionCommitment = computeTxCommitment({
       networkId: this.networkId, domainId: this.domainId, senderId, recipientId: input.recipientId, assetId: input.assetId,
-      amount: input.amount, fee, nonce, nullifier, inputCommitments: [], outputCommitments: [],
+      amount: input.amount, fee, nonce, nullifier, inputCommitments: [], outputCommitments,
     });
     return {
       version: 1, protocol: "UEP-25-prototype", networkId: this.networkId, domainId: this.domainId,
       txId: txIdFromCommitment(transactionCommitment, nullifier), senderId, recipientId: input.recipientId, assetId: input.assetId,
-      amount: input.amount, fee, nonce, nullifier, inputCommitments: [], outputCommitments: [], inputNotes: [], outputNotes: [],
+      amount: input.amount, fee, nonce, nullifier, inputCommitments: [], outputCommitments, inputNotes: [], outputNotes: exit ? [serializeNote(exit)] : [],
       transactionCommitment,
       spendProof: { kind: "zk-spend", backend: "groth16-bn254", payload: JSON.stringify({ publicInputsHex: input.publicInputsHex, proof: input.proof, senderNextBlinding: input.senderNextBlinding.toHex() }) },
       phase: "LOCAL_VALID", inConflict: false, createdAt: input.now ?? this.blockHeight,
@@ -2026,9 +2029,8 @@ export class UepLedger {
   private checkZkAccountSpend(tx: UepTransaction, opts: { overlay?: Map<AccountKey, bigint> }, minFee: bigint, assetIdStr: string): { error: SubmitError } | CheckedSpend {
     const shape = zkAccountTxShapeError(tx);
     if (shape) return { error: { code: "AMOUNT_MISMATCH", message: shape } };
-    if (!this.isZkAccount(tx.recipientId) || tx.recipientId.eq(tx.senderId)) {
-      return { error: { code: "INVALID_PARTICIPANTS", message: "A zk account spend pays a linked zk account other than the sender." } };
-    }
+    const exit = this.zkExitOutputs(tx);
+    if ("error" in exit) return exit;
     if (opts.overlay && opts.overlay.size > 0) return { error: { code: "PROOF", message: "A root-bound zk-spend must be the first transaction of a batch." } };
     const payload = parseZkSpendPayload(tx.spendProof);
     if (!payload || zkPayloadVersion(payload) !== 6) return { error: { code: "PROOF", message: "A zk account spend needs a circuit v6 payload." } };
@@ -2041,7 +2043,28 @@ export class UepLedger {
     const bal = (account: Fr) => opts.overlay?.get(ak(account, tx.assetId)) ?? this.balanceOf(account, tx.assetId);
     const tr = transition({ sender: bal(tx.senderId), recipient: bal(tx.recipientId), treasury: bal(TREASURY_ID) }, tx.amount, minFee);
     if ("err" in tr) return { error: { code: "INSUFFICIENT", message: tr.err } };
-    return { inputs: [], outputs: [], next: tr.ok.new, assetIdStr };
+    return { inputs: [], outputs: exit.outputs, next: tr.ok.new, assetIdStr };
+  }
+
+  /**
+   * 0.5.83: outputs of a zk account spend. To a linked zk account: none (balance only). To an
+   * Ed25519 account (exit): exactly the deterministic exit note, so its notes keep matching its balance.
+   */
+  private zkExitOutputs(tx: UepTransaction): { outputs: Note[] } | { error: SubmitError } {
+    if (tx.recipientId.eq(tx.senderId) || tx.recipientId.eq(TREASURY_ID)) return { error: { code: "INVALID_PARTICIPANTS", message: "A zk account spend pays another account." } };
+    if (this.isZkAccount(tx.recipientId)) {
+      if (tx.outputCommitments.length !== 0) return { error: { code: "OUTPUT_BINDING", message: "A payment to a zk account carries no output note." } };
+      return { outputs: [] };
+    }
+    if (!this.acceptsRecipient(tx.recipientId)) return { error: { code: "INVALID_PARTICIPANTS", message: "Recipient must be a linked zk account, a v3 key-derived account or a proven v2 account." } };
+    const note = zkExitNote(tx.recipientId, tx.assetId, tx.amount, tx.nullifier);
+    let sent: Note | undefined;
+    try { sent = tx.outputNotes?.length === 1 ? deserializeNote(tx.outputNotes[0]!) : undefined; } catch { sent = undefined; }
+    if (tx.outputCommitments.length !== 1 || !tx.outputCommitments[0]!.eq(note.commitment) || !sent || !sent.commitment.eq(note.commitment) || !openNote(sent)) {
+      return { error: { code: "OUTPUT_BINDING", message: "An exit payment carries exactly the exit note of (recipient, asset, amount, nullifier)." } };
+    }
+    if (this.noteTree.indexOf(note.commitment) !== undefined) return { error: { code: "OUTPUT_BINDING", message: "Output note already exists on this ledger." } };
+    return { outputs: [sent] };
   }
 
   private applySpend(tx: UepTransaction, checked: CheckedSpend): UepTransaction {
@@ -2560,12 +2583,18 @@ export class UepLedger {
       if (isZkAccountTx(tx)) {
         // 0.5.83: zk account spend: no notes; the proof (re-verified above) is the authorization.
         if (zkAccountTxShapeError(tx)) fail("TX_NOTES");
-        if (!l.isZkAccount(tx.recipientId) || tx.recipientId.eq(tx.senderId)) fail("TX_PARTICIPANTS");
+        if (tx.recipientId.eq(tx.senderId) || tx.recipientId.eq(TREASURY_ID)) fail("TX_PARTICIPANTS");
+        const zkRecipient = l.isZkAccount(tx.recipientId);
+        if (zkRecipient ? tx.outputCommitments.length !== 0 : (!isKeyDerivedOrV2Form(tx.recipientId) || tx.outputCommitments.length !== 1 || !tx.outputCommitments[0]!.eq(zkExitNote(tx.recipientId, tx.assetId, tx.amount, tx.nullifier).commitment))) fail("TX_OUTPUT_BINDING");
+        for (const c of tx.outputCommitments) {
+          if (!noteByCommitment.has(c.toHex())) fail("TX_OUTPUT_MISSING");
+          available.add(c.toHex());
+        }
         const p = parseZkSpendPayload(tx.spendProof);
         if (!p || zkPayloadVersion(p) !== 6) fail("TX_ZK_PROOF");
         if (!txCommitmentOf(tx).eq(tx.transactionCommitment) || !txIdFromCommitment(tx.transactionCommitment, tx.nullifier).eq(tx.txId)) fail("TX_COMMITMENT");
         addDelta(ak(tx.senderId, tx.assetId), -(tx.amount + tx.fee));
-        addDelta(ak(tx.recipientId, tx.assetId), tx.amount);
+        if (zkRecipient) addDelta(ak(tx.recipientId, tx.assetId), tx.amount); // an exit note is counted with the notes
         feesByAsset.set(tx.assetId.toHex(), (feesByAsset.get(tx.assetId.toHex()) ?? 0n) + tx.fee);
         continue;
       }
