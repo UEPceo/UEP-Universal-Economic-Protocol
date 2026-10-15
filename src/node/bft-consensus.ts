@@ -69,12 +69,22 @@ export type BftState = {
 const HEX_256 = /^[0-9a-f]{64}$/;
 const validInt = (n: number) => Number.isSafeInteger(n) && n >= 0;
 
+/**
+ * 0.5.81: vote format activation. Below `voteV3ActivationHeight` the kernel creates and verifies
+ * 0.5.80 (v2) votes, certificates and round changes byte-for-byte, so 0.5.80 and 0.5.81 validators
+ * interoperate there. From that height on only v3 (epoch, validator set and proposal core bound) is
+ * accepted. Every validator must run 0.5.81 before the activation height. Default 0: v3 everywhere.
+ */
+export type BftKernelOptions = { voteV3ActivationHeight?: number };
+
 export class BftConsensusKernel {
   readonly validators: readonly BftValidator[];
   readonly faultTolerance: number;
   readonly quorum: number;
   readonly domain: BftDomain;
   readonly epoch: number;
+  /** Heights below this use the 0.5.80 (v2) vote format. */
+  readonly voteV3ActivationHeight: number;
   /** SHA-256 of the sorted (id, publicKeyHex) validator set and fault tolerance. */
   readonly validatorSetHash: string;
   private readonly validatorById: Map<string, BftValidator>;
@@ -89,7 +99,11 @@ export class BftConsensusKernel {
     validators: BftValidator[],
     faultTolerance: number,
     persistState?: (state: BftState) => void,
+    options: BftKernelOptions = {},
   ) {
+    const act = options.voteV3ActivationHeight ?? 0;
+    if (!Number.isSafeInteger(act) || act < 0) throw new Error("BFT_ACTIVATION_HEIGHT_INVALID");
+    this.voteV3ActivationHeight = act;
     if (!domain.networkId || !domain.domainId) throw new Error("BFT_DOMAIN_REQUIRED");
     if (!Number.isSafeInteger(faultTolerance) || faultTolerance < 0) throw new Error("BFT_FAULT_TOLERANCE");
     if (validators.length < 3 * faultTolerance + 1) throw new Error("BFT_VALIDATOR_SET_TOO_SMALL");
@@ -107,6 +121,9 @@ export class BftConsensusKernel {
   }
 
   /** Hash of the proposal core every vote signs: domain, epoch, validator set, position, proposer, parent root and block. */
+  /** True when `height` uses the 0.5.80 (v2) vote format. */
+  isLegacyVoteHeight(height: number): boolean { return height < this.voteV3ActivationHeight; }
+
   proposalHash(p: Pick<BftProposal, "height" | "round" | "proposerId" | "parentRoot" | "blockId">): string {
     return sha256Hex(stableStringify({ protocol: "uep-bft-proposal-core-v1", networkId: this.domain.networkId, domainId: this.domain.domainId,
       epoch: this.epoch, validatorSetHash: this.validatorSetHash, height: p.height, round: p.round, proposerId: p.proposerId,
@@ -155,7 +172,8 @@ export class BftConsensusKernel {
     if (phase === "precommit") {
       const proof = proposal.prevoteCertificate;
       if (!proof || proof.phase !== "prevote" || proof.height !== proposal.height ||
-          proof.round !== proposal.round || proof.blockId !== proposal.blockId || proof.proposalHash !== this.proposalHash(proposal) ||
+          proof.round !== proposal.round || proof.blockId !== proposal.blockId ||
+          (!this.isLegacyVoteHeight(proposal.height) && proof.proposalHash !== this.proposalHash(proposal)) ||
           !this.verifyCertificate(proof)) {
         throw new Error("BFT_PRECOMMIT_REQUIRES_PREVOTE_QUORUM");
       }
@@ -175,7 +193,8 @@ export class BftConsensusKernel {
     const position = `${proposal.height}:${proposal.round}:${phase}:${voterId}`;
     // The remembered value is the proposal core hash: a second proposal with the same block but
     // another parent root or proposer at the same position is equivocation too.
-    const value = this.proposalHash(proposal);
+    const legacy = this.isLegacyVoteHeight(proposal.height);
+    const value = legacy ? proposal.blockId : this.proposalHash(proposal);
     const prior = this.localVotes.get(position);
     if (prior && prior !== value) throw new Error("BFT_EQUIVOCATION");
     if (!prior) {
@@ -185,17 +204,26 @@ export class BftConsensusKernel {
       this.persistState?.({ ...this.exportState(), votes: [...nextVotes] });
       this.localVotes.set(position, value);
     }
+    const justificationCertificate = phase === "precommit" ? proposal.prevoteCertificate ?? null : proposal.validRoundCertificate ?? null;
+    if (legacy) {
+      // 0.5.80 (v2) vote, identical bytes: { networkId, domainId, height, round, phase, voterId, blockId, justificationCertificate }.
+      const v2 = { networkId: this.domain.networkId, domainId: this.domain.domainId, height: proposal.height, round: proposal.round, phase, voterId, blockId: proposal.blockId, justificationCertificate };
+      return { ...v2, signature: signEd25519(`uep-bft-vote-v2:${stableStringify(v2)}`, privateKey) } as unknown as BftVote;
+    }
     const voteBase = { networkId: this.domain.networkId, domainId: this.domain.domainId, height: proposal.height, round: proposal.round, phase, voterId, blockId: proposal.blockId,
-      epoch: this.epoch, validatorSetHash: this.validatorSetHash, proposalHash: value,
-      justificationCertificate: phase === "precommit" ? proposal.prevoteCertificate ?? null : proposal.validRoundCertificate ?? null };
+      epoch: this.epoch, validatorSetHash: this.validatorSetHash, proposalHash: value, justificationCertificate };
     return { ...voteBase, signature: signEd25519(this.voteMessage(voteBase), privateKey) };
   }
 
   verifyVote(vote: BftVote): boolean {
     if (!vote || vote.networkId !== this.domain.networkId || vote.domainId !== this.domain.domainId ||
       !validInt(vote.height) || vote.height < 1 || !validInt(vote.round) ||
-      (vote.phase !== "prevote" && vote.phase !== "precommit") || !HEX_256.test(vote.blockId) ||
-      vote.epoch !== this.epoch || vote.validatorSetHash !== this.validatorSetHash || !HEX_256.test(vote.proposalHash ?? "")) return false;
+      (vote.phase !== "prevote" && vote.phase !== "precommit") || !HEX_256.test(vote.blockId)) return false;
+    const legacy = this.isLegacyVoteHeight(vote.height);
+    if (legacy) {
+      // v2 votes carry none of the v3 fields; a v3 vote at a legacy height (or the reverse) never verifies.
+      if ("epoch" in vote || "validatorSetHash" in vote || "proposalHash" in vote) return false;
+    } else if (vote.epoch !== this.epoch || vote.validatorSetHash !== this.validatorSetHash || !HEX_256.test(vote.proposalHash ?? "")) return false;
     const validator = this.validatorById.get(vote.voterId);
     if (!validator) return false;
     const proof = vote.justificationCertificate;
@@ -205,6 +233,7 @@ export class BftConsensusKernel {
     } else if (proof !== null && (!proof || proof.phase !== "prevote" || proof.height !== vote.height ||
         proof.round >= vote.round || proof.blockId !== vote.blockId || !this.verifyCertificate(proof))) return false;
     const { signature: _signature, ...unsigned } = vote;
+    if (legacy) return verifyEd25519(`uep-bft-vote-v2:${stableStringify(unsigned)}`, vote.signature, validator.publicKeyHex);
     return verifyEd25519(this.voteMessage(unsigned), vote.signature, validator.publicKeyHex);
   }
 
@@ -230,12 +259,13 @@ export class BftConsensusKernel {
       unique.add(v.voterId); return true;
     });
     if (accepted.length < this.quorum) throw new Error("BFT_QUORUM_NOT_MET");
+    if (target === undefined) return { height, round, phase, blockId, votes: accepted };
     return { height, round, phase, blockId, proposalHash: target, votes: accepted };
   }
 
   verifyCertificate(certificate: BftCertificate): boolean {
     try {
-      if (!HEX_256.test(certificate.proposalHash ?? "")) return false;
+      if (this.isLegacyVoteHeight(certificate.height) ? certificate.proposalHash !== undefined : !HEX_256.test(certificate.proposalHash ?? "")) return false;
       const verified = this.voteCertificate(certificate.height, certificate.round, certificate.phase, certificate.blockId, certificate.votes, certificate.proposalHash);
       return verified.votes.length >= this.quorum;
     } catch { return false; }
@@ -270,7 +300,7 @@ export class BftConsensusKernel {
     if (publicKeyHexOf(privateKey) !== validator.publicKeyHex) throw new Error("BFT_SIGNING_KEY_MISMATCH");
     const lock = this.locks.get(String(height));
     if (lock && targetRound <= lock.round) throw new Error("BFT_ROUND_CHANGE_NOT_AHEAD_OF_LOCK");
-    const base = { networkId: this.domain.networkId, domainId: this.domain.domainId, epoch: this.epoch, height, targetRound, validatorId,
+    const base = { networkId: this.domain.networkId, domainId: this.domain.domainId, ...(this.isLegacyVoteHeight(height) ? {} : { epoch: this.epoch }), height, targetRound, validatorId,
       lockedRound: lock?.round ?? null, lockedBlockId: lock?.blockId ?? null,
       validRoundCertificate: lock?.certificate ?? null };
     const position = `${height}:${targetRound}:${validatorId}`;
@@ -301,8 +331,9 @@ export class BftConsensusKernel {
             !cert || cert.phase !== "prevote" || cert.height !== message.height || cert.round !== message.lockedRound ||
             cert.blockId !== message.lockedBlockId || !this.verifyCertificate(cert)) return false;
       }
-      if ((message.epoch ?? 0) !== this.epoch) return false;
-      return verifyEd25519(this.roundChangeMessage({ networkId: message.networkId, domainId: message.domainId, epoch: this.epoch,
+      const legacyRc = this.isLegacyVoteHeight(message.height);
+      if (legacyRc ? message.epoch !== undefined : (message.epoch ?? 0) !== this.epoch) return false;
+      return verifyEd25519(this.roundChangeMessage({ networkId: message.networkId, domainId: message.domainId, ...(legacyRc ? {} : { epoch: this.epoch }),
         height: message.height, targetRound: message.targetRound, validatorId: message.validatorId,
         lockedRound: message.lockedRound, lockedBlockId: message.lockedBlockId,
         validRoundCertificate: message.validRoundCertificate }), message.signature, validator.publicKeyHex);
@@ -431,6 +462,6 @@ export class BftConsensusKernel {
   }
 
   private voteMessage(v: Omit<BftVote, "signature">): string {
-    return `uep-bft-vote-v2:${stableStringify(v)}`;
+    return `uep-bft-vote-v3:${stableStringify(v)}`;
   }
 }

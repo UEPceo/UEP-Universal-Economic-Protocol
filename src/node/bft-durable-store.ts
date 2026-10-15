@@ -10,7 +10,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { dirname, basename, join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { stableStringify, sha256Hex } from "../core/ed25519.ts";
-import { BftConsensusKernel, type BftDomain, type BftState, type BftValidator } from "./bft-consensus.ts";
+import { BftConsensusKernel, type BftDomain, type BftState, type BftValidator, type BftKernelOptions } from "./bft-consensus.ts";
 
 const FORMAT_VERSION = 1;
 const MAX_STORE_BYTES = 32 * 1024 * 1024;
@@ -108,9 +108,10 @@ export function createDurableBftConsensusKernel(
   validators: BftValidator[],
   faultTolerance: number,
   statePath: string,
+  options: BftKernelOptions = {},
 ): BftConsensusKernel {
   const store = new BftDurableStateStore(statePath, domain, validators);
-  const kernel = new BftConsensusKernel(domain, validators, faultTolerance, state => store.save(state));
+  const kernel = new BftConsensusKernel(domain, validators, faultTolerance, state => store.save(state), options);
   const restored = store.load();
   if (restored) kernel.loadState(restored);
   return kernel;
