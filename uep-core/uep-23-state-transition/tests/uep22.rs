@@ -22,7 +22,7 @@ fn r1cs_poseidon_matches_native_digest() {
     let b = Fr::from(2u64);
 
     let native = hasher();
-    let expected = native.hash(&[a, b]).unwrap();
+    let expected = native.hash(&[a, b]).expect("test fixture");
 
     let cs = ConstraintSystem::<Fr>::new_ref();
     Poseidon2To1Circuit {
@@ -32,9 +32,9 @@ fn r1cs_poseidon_matches_native_digest() {
         hasher: hasher(),
     }
     .generate_constraints(cs.clone())
-    .unwrap();
+    .expect("test fixture");
 
-    assert!(cs.is_satisfied().unwrap());
+    assert!(cs.is_satisfied().expect("test fixture"));
     assert!(cs.num_constraints() > 0);
 }
 
@@ -44,7 +44,7 @@ fn wrong_digest_fails_r1cs() {
     let b = Fr::from(2u64);
 
     let native = hasher();
-    let correct = native.hash(&[a, b]).unwrap();
+    let correct = native.hash(&[a, b]).expect("test fixture");
     let wrong = correct + Fr::from(1u64);
 
     let cs = ConstraintSystem::<Fr>::new_ref();
@@ -55,9 +55,9 @@ fn wrong_digest_fails_r1cs() {
         hasher: hasher(),
     }
     .generate_constraints(cs.clone())
-    .unwrap();
+    .expect("test fixture");
 
-    assert!(!cs.is_satisfied().unwrap());
+    assert!(!cs.is_satisfied().expect("test fixture"));
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn treasury_fee_is_01_percent_and_wrong_fee_fails() {
     let fee = Fr::from(100u64);
 
     let native = hasher();
-    let commitment = native.hash(&[treasury, fee]).unwrap();
+    let commitment = native.hash(&[treasury, fee]).expect("test fixture");
 
     let cs = ConstraintSystem::<Fr>::new_ref();
     TreasuryFeeCircuit {
@@ -78,9 +78,9 @@ fn treasury_fee_is_01_percent_and_wrong_fee_fails() {
         hasher: hasher(),
     }
     .generate_constraints(cs.clone())
-    .unwrap();
+    .expect("test fixture");
 
-    assert!(cs.is_satisfied().unwrap());
+    assert!(cs.is_satisfied().expect("test fixture"));
 
     let bad_cs = ConstraintSystem::<Fr>::new_ref();
     TreasuryFeeCircuit {
@@ -91,9 +91,9 @@ fn treasury_fee_is_01_percent_and_wrong_fee_fails() {
         hasher: hasher(),
     }
     .generate_constraints(bad_cs.clone())
-    .unwrap();
+    .expect("test fixture");
 
-    assert!(!bad_cs.is_satisfied().unwrap());
+    assert!(!bad_cs.is_satisfied().expect("test fixture"));
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn groth16_rejects_tampered_amount() {
     let fee = Fr::from(100u64);
 
     let native = hasher();
-    let commitment = native.hash(&[treasury, fee]).unwrap();
+    let commitment = native.hash(&[treasury, fee]).expect("test fixture");
 
     let setup = TreasuryFeeCircuit {
         treasury_id: treasury,
@@ -115,7 +115,7 @@ fn groth16_rejects_tampered_amount() {
     };
 
     let (pk, vk) =
-        Groth16::<Bn254>::circuit_specific_setup(setup, &mut rng).unwrap();
+        Groth16::<Bn254>::circuit_specific_setup(setup, &mut rng).expect("test fixture");
 
     let prove = TreasuryFeeCircuit {
         treasury_id: treasury,
@@ -125,14 +125,14 @@ fn groth16_rejects_tampered_amount() {
         hasher: hasher(),
     };
 
-    let proof = Groth16::<Bn254>::prove(&pk, prove, &mut rng).unwrap();
+    let proof = Groth16::<Bn254>::prove(&pk, prove, &mut rng).expect("test fixture");
 
     // In this circuit only expected_commitment is public; treasury/amount are
     // witnesses. The proof therefore proves the fee relation and commitment.
     let public_inputs = [commitment];
-    assert!(Groth16::<Bn254>::verify(&vk, &public_inputs, &proof).unwrap());
+    assert!(Groth16::<Bn254>::verify(&vk, &public_inputs, &proof).expect("test fixture"));
 
     // Tampering the public commitment invalidates the proof.
     let tampered = [commitment + Fr::from(1u64)];
-    assert!(!Groth16::<Bn254>::verify(&vk, &tampered, &proof).unwrap());
+    assert!(!Groth16::<Bn254>::verify(&vk, &tampered, &proof).expect("test fixture"));
 }

@@ -172,7 +172,7 @@ mod arithmetic_tests {
             amount: Fr::from(amount),
             fee: Fr::from(fee),
             sender_old: Fr::from(sender_old),
-            sender_new: Fr::from(sender_old - amount - fee),
+            sender_new: Fr::from(sender_old.checked_sub(amount).and_then(|v| v.checked_sub(fee)).expect("fixture: amount + fee must not exceed sender balance")),
             recipient_old: Fr::from(recipient_old),
             recipient_new: Fr::from(recipient_old + amount),
             treasury_old: Fr::from(treasury_old),
@@ -294,6 +294,22 @@ mod arithmetic_tests {
         // amount != 0 has no witness for amount = 0: synthesis fails or the system is unsatisfied.
         let r = c.generate_constraints(cs.clone());
         assert!(r.is_err() || !cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn aegis_fee_underflow_amount1_fee2_rejected() {
+        // 0.5.82 (Aegis): sender_old = 2, amount = 1, fee = 2. The wrapped field
+        // value sender_old - 3 is ~p, far outside u64, so enforce_u64 rejects it.
+        let mut c = honest(1000, 10_000, 0, 0);
+        c.amount = Fr::from(1u64);
+        c.fee = Fr::from(2u64);
+        c.sender_old = Fr::from(2u64);
+        c.sender_new = Fr::from(2u64) - Fr::from(3u64);
+        c.recipient_new = c.recipient_old + Fr::from(1u64);
+        c.treasury_new = c.treasury_old + Fr::from(2u64);
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        let r = c.generate_constraints(cs.clone());
+        assert!(r.is_err() || !cs.is_satisfied().expect("satisfiability check"));
     }
 
     #[test]

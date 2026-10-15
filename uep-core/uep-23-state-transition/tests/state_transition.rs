@@ -11,7 +11,7 @@ fn root(leaf: Fr, sib: &[Fr], dir: &[bool]) -> Fr {
     let p = h();
     let mut cur = leaf;
     for (s, d) in sib.iter().zip(dir) {
-        cur = if *d { p.hash(&[*s, cur]).unwrap() } else { p.hash(&[cur, *s]).unwrap() };
+        cur = if *d { p.hash(&[*s, cur]).expect("test fixture") } else { p.hash(&[cur, *s]).expect("test fixture") };
     }
     cur
 }
@@ -20,16 +20,16 @@ fn circuit(amount: u64, fee: u64, remainder: u64) -> StateTransitionCircuit {
     let p = h();
     let account = Fr::from(77u64);
     let old_balance = 1_000_000u64;
-    let new_balance = old_balance - amount - fee;
+    let new_balance = old_balance.checked_sub(amount).and_then(|v| v.checked_sub(fee)).expect("fixture: amount + fee must not exceed sender balance");
     let siblings: Vec<Fr> = (0..TREE_DEPTH as u64).map(|i| Fr::from(i * 3 + 1)).collect();
     let directions: Vec<bool> = (0..TREE_DEPTH).map(|i| i % 3 == 0).collect();
-    let old_root = root(p.hash(&[account, Fr::from(old_balance)]).unwrap(), &siblings, &directions);
-    let new_root = root(p.hash(&[account, Fr::from(new_balance)]).unwrap(), &siblings, &directions);
+    let old_root = root(p.hash(&[account, Fr::from(old_balance)]).expect("test fixture"), &siblings, &directions);
+    let new_root = root(p.hash(&[account, Fr::from(new_balance)]).expect("test fixture"), &siblings, &directions);
     let (secret, nonce) = (Fr::from(11u64), Fr::from(12u64));
     StateTransitionCircuit {
         old_root, new_root,
-        nullifier: p.hash(&[secret, nonce]).unwrap(),
-        treasury_commitment: p.hash(&[Fr::from(UEP_TREASURY_DOMAIN), Fr::from(fee)]).unwrap(),
+        nullifier: p.hash(&[secret, nonce]).expect("test fixture"),
+        treasury_commitment: p.hash(&[Fr::from(UEP_TREASURY_DOMAIN), Fr::from(fee)]).expect("test fixture"),
         account_id: account, old_balance, new_balance, amount, fee, remainder,
         secret, nonce, siblings, directions, hasher: h(),
     }
@@ -37,8 +37,8 @@ fn circuit(amount: u64, fee: u64, remainder: u64) -> StateTransitionCircuit {
 
 fn satisfied(c: StateTransitionCircuit) -> bool {
     let cs = ConstraintSystem::<Fr>::new_ref();
-    c.generate_constraints(cs.clone()).unwrap();
-    cs.is_satisfied().unwrap()
+    c.generate_constraints(cs.clone()).expect("test fixture");
+    cs.is_satisfied().expect("test fixture")
 }
 
 #[test]
