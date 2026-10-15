@@ -222,3 +222,23 @@ Values below 10^11 are heights and values at or above it are Unix ms (`LEGACY_MS
 - `UEP_HTTP_API_VERSION = "1.4.0"`. 1.4.0 (v0.5.3) adds `POST /v1/ledger/transactions` when a `ledgerQueue` is attached (bounded FIFO submit queue; 503 with `Retry-After` and error code `LEDGER_BUSY` when the queue is full or a submission timed out in the queue) and maps `LEDGER_BUSY` on `POST /v1/spends` to 503 with `Retry-After`; existing routes are unchanged. 1.3.0 adds `GET /v1/marketplace/height` (`{ height, unit, referenceBlockTimeMs }`), the value clients sign as `x-uep-issued-at`. It also accepts the legacy Unix-ms header form.
 - Fields are only added within a major version. A removed field, or a changed meaning without a shim, is a major version.
 - Every HTTP response carries the version in the `x-uep-api` header.
+
+
+## Restore trust rules (0.5.81)
+
+A ledger snapshot is restored only if all of these hold (`UepLedger.restore`, `src/testnet/ledger.ts`):
+
+1. **Schema**: `formatVersion` is the current one or a migratable older one; newer or unknown formats are refused.
+2. **Integrity**: the snapshot hash covers the whole payload; state root, nullifier tree, balances, notes, mints and
+   transactions are re-derived and must match.
+3. **Authorization**: at least `threshold` distinct snapshot-authority signatures from the configured keys; mint and
+   issuer signatures are re-checked; a snapshot key cannot issue.
+4. **History continuity**: the chain link (`prevSnapshotHash`) and, when a checkpoint is given, the transaction and
+   mint history prefix must match.
+5. **No rollback**: the restored height may not be below `minHeight`, a checkpoint height, or the ledger it
+   `replaces`, unless the operator passes `allowHeightRegression: true`.
+
+Node paths: `PeerNet.catchUp` (peer snapshots) restores with `minHeight` = current height and then requires that the
+peer's history extends this node's (same transactions in the same order, no fewer mints, every BFT-applied
+transaction present); otherwise it keeps its ledger. Evidence: `src/node/snapshot-rules.test.ts` and the snapshot
+suites under `src/testnet/`.

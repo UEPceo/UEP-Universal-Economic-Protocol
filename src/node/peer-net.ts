@@ -504,7 +504,11 @@ export class PeerNet {
       const raw = await fetch(ahead.peer.url + "/snapshot", { signal: AbortSignal.timeout(15000) }).then((res) => res.text());
       const snap = JSON.parse(raw, (_k, v) => v && typeof v === "object" && typeof v.$b === "string" ? BigInt(v.$b) : v);
       const { UepLedger } = await import("../testnet/ledger.ts");
-      this.ledger = UepLedger.restore(snap, trust, keys);
+      // Item 4 (0.5.81): a peer snapshot may only extend what this node already has. The height floor
+      // forbids rollback; the transaction history and every BFT-applied transaction must be a prefix.
+      const next = UepLedger.restore(snap, trust, keys, { minHeight: this.ledger.height });
+      if (!extendsHistory(this.ledger, next, this.committer)) return false;
+      this.ledger = next;
       return true;
     } catch {
       return false;
@@ -596,4 +600,16 @@ async function get(url: string): Promise<Record<string, unknown> | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/** True iff `next` keeps every transaction of `current` in the same order and contains every BFT-applied transaction. */
+export function extendsHistory(current: UepLedger, next: UepLedger, committer?: CertifiedCommitter): boolean {
+  if (next.height < current.height || next.txs.length < current.txs.length) return false;
+  for (let i = 0; i < current.txs.length; i++) if (next.txs[i]!.txId.toHex() !== current.txs[i]!.txId.toHex()) return false;
+  if (next.mints.length < current.mints.length) return false;
+  if (committer) {
+    const have = new Set(next.txs.map(tx => tx.txId.toHex()));
+    for (const e of committer.log.all()) if (e.type === "APPLIED" && !have.has(e.blockId)) return false;
+  }
+  return true;
 }
