@@ -1,6 +1,6 @@
 # UEP modules
 
-> Module map of the repository at v0.5.3 (on `main`; Latest GitHub Release: v0.5.3).
+> Module map of the repository at v0.5.82 (on `main`; Latest GitHub Release: v0.5.82).
 > Status labels follow the README legend: **Implemented (testnet)** = local,
 > single-node, in-process testnet only; **Experimental (lab)**; **Planned**; **Research**.
 > Nothing in this repository is a live network or a production system. There is no
@@ -128,7 +128,7 @@ Not a separate code module; two distinct accounting concepts:
 - Neither is a token treasury, and neither gives anyone a claim.
 
 ## 6. Marketplace (`src/marketplace`)
-- **Purpose:** service listings, capacity, orders, HOLD / reservation lifecycle, delivery hashing, reputation, signed order actions, buyer disputes with arbiters and timeout outcome; signed snapshot / restore of the full Marketplace state (format 4, v0.5.3: balances, holds, orders, bonds, treasury, paymaster, idempotency records; `marketplace-state.ts`); height-based retention of closed orders and expiring idempotency records (v0.5.3); optional oracle reference prices on listings (v0.5.3).
+- **Purpose:** service listings, capacity, orders, HOLD / reservation lifecycle, delivery hashing, reputation, signed order actions, buyer disputes with arbiters and timeout outcome; signed snapshot / restore of the full Marketplace state (format 4, v0.5.3: balances, holds, orders, bonds, treasury, paymaster, idempotency records; `marketplace-state.ts`); height-based retention of closed orders and expiring idempotency records (v0.5.3); optional oracle reference prices on listings (v0.5.3). Since v0.5.82: evidence statements signed with the `UEP-EVIDENCE-STATEMENT-v2` tag and the local `networkId`, observed-height window (`maxAgeHeights`), signed no-evidence outcome (`onNoEvidence`, `evidenceDeadlineHeight`) and a canonical multi-source claim structure (tolerances pending; not wired to settlement). External-source fetchers live off-node in `scripts/adapters/` (`check:adapters`).
 - **Status:** Implemented (testnet). Not an end-to-end transaction through the consensus / ZK stack.
 - **Introduced:** v0.3.0; signed actions and disputes v0.4.4; settlement through the engine v0.5.2; snapshot, anchors and oracle gate v0.5.3.
 - **Tests:** `npm run test:marketplace`, `npm run simulate:20k`.
@@ -159,7 +159,7 @@ k-of-n arbiter quorum with bonds (per-asset minimum since v0.5.3); timeout outco
 Subsidy claims bound to the settlement index written by swap / relay; at most 50 % of an order's Marketplace fee, once per order, from DISTRIBUTABLE_PROFIT within an administrator-signed budget.
 
 ## 10. Oracle policy layer (`src/oracle`)
-- **Purpose:** signed, height-bounded observations (domain-separated with the `networkId` since v0.5.3) aggregated with per-key weight caps. `OraclePolicyGate` (v0.5.3) checks Marketplace listing prices, IoT tariffs and hashlock-swap rates against a reference band and fails closed. Never holds balances; not on the spend or consensus path. FX reference rates are display-only.
+- **Purpose:** signed, height-bounded observations (domain-separated with the `networkId` since v0.5.3) aggregated with per-key weight caps. `OraclePolicyGate` (v0.5.3) checks Marketplace listing prices, IoT tariffs and hashlock-swap rates against a reference band and fails closed. Never holds balances; not on the spend or consensus path. FX reference rates are display-only. Since v0.5.82, ECB/BIS/Eurostat/World Bank indicators are display-only in the UI with attribution; discarded sources are listed in `docs/ORACLE.md`.
 - **Status:** Implemented (testnet). Sources are configured keys; no on-network oracle consensus.
 - **Introduced:** v0.5.2; hardening and gate v0.5.3.
 - **Tests:** `npm run test:oracle`. See [`ORACLE.md`](./ORACLE.md).
