@@ -114,6 +114,70 @@ export class PeerNet {
     this.committer = new CertifiedCommitter(log, kernel, () => this.ledger, { faultInjector: (p) => this.commitFaultInjector?.(p) });
   }
 
+  /** Use another round-change timeout (ticks are producer heights). */
+  configureRoundTimer(config: RoundTimerConfig): void { this.roundTimer = new BftRoundTimer(config); }
+
+  /** The BFT height this node is waiting to decide. */
+  bftOpenHeight(): number { return this.requireCommitter().expectedHeight(); }
+
+  /** Current round of the open height according to the timer. */
+  bftRound(): number { return this.roundTimer.current().height === this.bftOpenHeight() ? this.roundTimer.current().round : 0; }
+
+  /**
+   * 0.5.81 item 3: feed one producer tick. If the open height timed out in its round, sign a round
+   * change to the next round, keep it and send it to every peer. Returns the round change sent, if any.
+   */
+  async bftTick(tick: number): Promise<BftRoundChange | undefined> {
+    const kernel = this.requireBft();
+    this.lastTick = tick;
+    const height = this.bftOpenHeight();
+    const target = this.roundTimer.onTick(tick, height);
+    if (target === undefined) return undefined;
+    return this.sendRoundChange(kernel, height, target);
+  }
+
+  private async sendRoundChange(kernel: BftConsensusKernel, height: number, target: number): Promise<BftRoundChange> {
+    const rc = kernel.createRoundChange(height, target, this.id, this.privateKey);
+    this.keepRoundChange(rc);
+    await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/round-change", this.signed("/bft/round-change", { roundChange: rc }))));
+    return rc;
+  }
+
+  private keepRoundChange(rc: BftRoundChange): void {
+    const key = `${rc.height}:${rc.targetRound}`;
+    let m = this.roundChanges.get(key);
+    if (!m) { m = new Map(); this.roundChanges.set(key, m); }
+    if (!m.has(rc.validatorId)) m.set(rc.validatorId, rc);
+    // Forget positions of decided heights.
+    const open = this.committer ? this.committer.expectedHeight() : 0;
+    for (const k of this.roundChanges.keys()) if (Number(k.split(":")[0]) < open) this.roundChanges.delete(k);
+  }
+
+  /** Round-change certificate for (height, round) if a quorum of round changes was seen. */
+  bftRoundChangeCertificate(height: number, round: number): BftRoundChangeCertificate | undefined {
+    const m = this.roundChanges.get(`${height}:${round}`);
+    if (!m) return undefined;
+    try { return this.requireBft().roundChangeCertificate(height, round, [...m.values()]); } catch { return undefined; }
+  }
+
+  /**
+   * Leader of (open height, round >= 1) proposes with the round-change certificate. The block is
+   * the one the certificate forces (highest lock), else `tx`.
+   */
+  async bftProposeAfterRoundChange(tx: UepTransaction): Promise<BftCertificate> {
+    const kernel = this.requireBft();
+    const height = this.bftOpenHeight();
+    const round = this.bftRound();
+    const rc = this.bftRoundChangeCertificate(height, round);
+    if (round < 1 || !rc) throw new Error("BFT_ROUND_CHANGE_CERTIFICATE_MISSING");
+    const required = kernel.requiredProposalFromRoundChanges(rc);
+    if (required && required.blockId !== tx.txId.toHex()) throw new Error("BFT_ROUND_CHANGE_REQUIRES_LOCKED_BLOCK");
+    const proposal: BftProposal = { networkId: this.ledger.networkId, domainId: this.ledger.domainId, ...(kernel.epoch ? { epoch: kernel.epoch } : {}),
+      height, round, proposerId: this.id, parentRoot: this.ledger.stateRoot().toHex(), blockId: tx.txId.toHex(), roundChangeCertificate: rc,
+      ...(required ? { validRound: required.validRound, validRoundCertificate: required.validRoundCertificate } : {}) };
+    return this.bftPropose(proposal, tx);
+  }
+
   /** Commit status of a BFT height: CERTIFIED_NOT_APPLIED is never counted as applied. */
   bftCommitStatus(height: number): CommitStatus {
     const st = this.requireCommitter().status(height);
@@ -339,7 +403,7 @@ export class PeerNet {
           return send(res, 200, { id: this.id, height: this.ledger.height, stateRoot: this.ledger.stateRoot().toHex(), txCount: this.ledger.txs.length, recent: txs });
         }
         const raw = await readJson(req);
-        const peerPaths = new Set(["/tx", "/vote", "/commit", "/bft/proposal", "/bft/prevote-certificate", "/bft/commit-certificate"]);
+        const peerPaths = new Set(["/tx", "/vote", "/commit", "/bft/proposal", "/bft/prevote-certificate", "/bft/commit-certificate", "/bft/round-change"]);
         let body = raw;
         let authenticatedFrom: string | undefined;
         if (req.method === "POST" && peerPaths.has(url.pathname)) {
@@ -368,6 +432,18 @@ export class PeerNet {
         if (req.method === "POST" && url.pathname.startsWith("/bft/")) {
           const kernel = this.requireBft();
           if (!authenticatedFrom) return send(res, 401, { error: "PEER_AUTH" });
+          if (url.pathname === "/bft/round-change") {
+            const rc = body.roundChange as BftRoundChange;
+            if (!rc || rc.validatorId !== authenticatedFrom || !kernel.verifyRoundChange(rc)) return send(res, 400, { error: "BFT_ROUND_CHANGE_INVALID" });
+            if (rc.height !== this.bftOpenHeight()) return send(res, 200, { accepted: false, reason: "NOT_OPEN_HEIGHT" });
+            this.keepRoundChange(rc);
+            // f + 1 round changes for a higher round: at least one honest validator timed out, so join it.
+            const seen = this.roundChanges.get(`${rc.height}:${rc.targetRound}`)?.size ?? 0;
+            if (seen >= kernel.faultTolerance + 1 && rc.targetRound > this.bftRound() && this.roundTimer.join(rc.height, rc.targetRound, this.lastTick)) {
+              try { await this.sendRoundChange(kernel, rc.height, rc.targetRound); } catch { /* locked beyond this round: keep waiting */ }
+            }
+            return send(res, 200, { accepted: true });
+          }
           if (url.pathname === "/bft/proposal") {
             const proposal = body.proposal as BftProposal;
             const proposalSignature = String(body.proposalSignature ?? "");
