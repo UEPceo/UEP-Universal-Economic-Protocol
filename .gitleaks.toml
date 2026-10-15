@@ -1,0 +1,11 @@
+# Secret-scanner allowlist (0.5.82, Aegis-Orbit report on v0.5.81).
+# These paths hold public test data, not secrets:
+#  - src/core/hpke.test.ts: RFC 9180 Appendix A.1 test vectors (published in the RFC).
+#  - uep-http-authz tests: the literal fixture "test-only-objects-token".
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public RFC test vectors and test-only fixtures"
+paths = ['''src/core/hpke\.test\.ts''', '''src/.*uep-http-authz\.test\.ts''']
+regexes = ['''test-only-objects-token''']
