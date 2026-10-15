@@ -57,9 +57,12 @@ export const DEFAULT_BUYER_CAP_BPS = 2_500;
 export const DEFAULT_PROVIDER_BOND_BPS = 1_000;
 
 /**
- * Shape of an evidence statement (phase 2.3; not verified here). Adapters
- * that fetch from an external source run outside the state machine; only the
- * statement's hash and signatures would enter the state.
+ * An evidence statement: k-of-n attester signatures over a source publication
+ * hash. Verified by `verifyEvidenceStatement` (strict Ed25519, distinct
+ * attesters of one set, bound to the order and, since 0.5.82, to the local
+ * ledger network). Adapters that fetch from an external source run outside the
+ * state machine (scripts/adapters/); only the hash, height and source id are
+ * kept in the Marketplace state.
  */
 export type EvidenceStatement = {
   /** Public source identifier, e.g. a dataset URL or product id. */
@@ -73,7 +76,19 @@ export type EvidenceStatement = {
   attesterSetId: string;
   /** Signatures of distinct attesters of the set; valid with at least `threshold`. */
   signatures: Array<{ attesterId: string; signature: string }>;
+  /**
+   * 0.5.82: signed message format. 2 (default) = `UEP-EVIDENCE-STATEMENT-v2`,
+   * bound to the verifying node's own ledger network id. 1 = legacy unbound
+   * message, accepted only when the Marketplace is configured to accept
+   * archived v1 statements.
+   */
+  version?: 1 | 2;
+  /** 0.5.82 (fix 5, structure only): hash of the canonical claim the attesters checked (see `canonicalEvidenceClaim`). */
+  claimHash?: string;
 };
+
+/** 0.5.82: domain tag of the v2 statement message. */
+export const EVIDENCE_STATEMENT_DOMAIN_V2 = "UEP-EVIDENCE-STATEMENT-v2";
 
 /** An attester set registered with the Marketplace (k of n) and its open-value caps per asset. */
 export type AttesterSetPolicy = {
@@ -101,6 +116,18 @@ export type ListingEvidencePolicy = {
   attesterSetId: string;
   /** Maximum value one order (contract) may lock: grossAmount + gasFee, in the listing asset. */
   maxValuePerContract: bigint;
+  /** 0.5.82: a statement is refused when `now - observedHeight > maxAgeHeights` at submission. */
+  maxAgeHeights?: number;
+  /**
+   * 0.5.82: what happens to a DELIVERED order that has no accepted statement
+   * `evidenceDeadlineHeight` heights after its reservation (counted from the
+   * order's `createdAt` height). REFUND returns the escrow to the buyer;
+   * RELEASE pays the provider (refund instead when a category settlement guard
+   * applies and fails). Neither path reads an external source.
+   */
+  onNoEvidence?: "REFUND" | "RELEASE";
+  /** 0.5.82: heights after reservation (createdAt) at which `onNoEvidence` may be applied. Required with `onNoEvidence`. */
+  evidenceDeadlineHeight?: number;
 };
 
 export type EvidenceCapsConfig = {
@@ -213,7 +240,19 @@ export class EvidenceCaps {
     const cap = this.setCap(policy.attesterSetId, asset);
     if (policy.maxValuePerContract > cap) throw new Error("EVIDENCE_POLICY_INVALID: maxValuePerContract exceeds the attester set cap");
     if (policy.maxValuePerContract > this.providerCap(policy.attesterSetId, asset)) throw new Error("EVIDENCE_POLICY_INVALID: maxValuePerContract exceeds the per-provider subcap of the attester set");
-    return { attesterSetId: policy.attesterSetId, maxValuePerContract: policy.maxValuePerContract };
+    const out: ListingEvidencePolicy = { attesterSetId: policy.attesterSetId, maxValuePerContract: policy.maxValuePerContract };
+    // 0.5.82: optional age bound and no-evidence outcome, frozen with the listing terms.
+    if (policy.maxAgeHeights !== undefined) {
+      if (!Number.isSafeInteger(policy.maxAgeHeights) || policy.maxAgeHeights < 0) throw new Error("EVIDENCE_POLICY_INVALID: maxAgeHeights is a non-negative integer");
+      out.maxAgeHeights = policy.maxAgeHeights;
+    }
+    if (policy.onNoEvidence !== undefined || policy.evidenceDeadlineHeight !== undefined) {
+      if (policy.onNoEvidence !== "REFUND" && policy.onNoEvidence !== "RELEASE") throw new Error("EVIDENCE_POLICY_INVALID: onNoEvidence is REFUND or RELEASE");
+      if (!Number.isSafeInteger(policy.evidenceDeadlineHeight) || (policy.evidenceDeadlineHeight as number) < 1) throw new Error("EVIDENCE_POLICY_INVALID: evidenceDeadlineHeight is a positive integer (heights after reservation)");
+      out.onNoEvidence = policy.onNoEvidence;
+      out.evidenceDeadlineHeight = policy.evidenceDeadlineHeight;
+    }
+    return out;
   }
 
   /** Funded open value bound to one set in one asset. */
@@ -294,24 +333,45 @@ export function evidenceCapsView(caps: EvidenceCaps): EvidenceCapsView {
 }
 
 
-/** Bytes the attesters sign. The published data is not included. */
-export function evidenceStatementMessage(statement: Omit<EvidenceStatement, "signatures">): Uint8Array {
-  return Buffer.from(canonicalJson({
+/**
+ * Bytes the attesters sign. The published data is not included.
+ * v2 (0.5.82): domain tag + the verifying node's ledger network id. The network
+ * id is always the local one, never read from the statement, so a statement
+ * signed for another network does not verify here. v1 (legacy) is the unbound
+ * 0.5.81 message.
+ */
+export function evidenceStatementMessage(statement: Omit<EvidenceStatement, "signatures">, ledgerNetworkId?: string): Uint8Array {
+  const body = {
     sourceId: statement.sourceId,
     dataHash: statement.dataHash,
     observedHeight: statement.observedHeight,
     orderId: statement.orderId,
     attesterSetId: statement.attesterSetId,
-  }));
+  };
+  if ((statement.version ?? 2) === 1) return Buffer.from(canonicalJson(body));
+  if (typeof ledgerNetworkId !== "string" || ledgerNetworkId === "") throw new Error("EVIDENCE_NETWORK_REQUIRED");
+  return Buffer.from(canonicalJson({ domain: EVIDENCE_STATEMENT_DOMAIN_V2, ledgerNetworkId, ...body, claimHash: statement.claimHash ?? null }));
 }
 
+export type VerifyEvidenceOptions = {
+  /** The verifying node's own ledger network id (v2 messages). */
+  ledgerNetworkId?: string;
+  /** Accept legacy v1 (network-unbound) statements. Only for archived evidence; default false. */
+  acceptV1Archive?: boolean;
+};
+
 /** k of n over the statement. Does not fetch the source and does not keep the data. */
-export function verifyEvidenceStatement(statement: EvidenceStatement, set: AttesterSetPolicy): void {
+export function verifyEvidenceStatement(statement: EvidenceStatement, set: AttesterSetPolicy, opts: VerifyEvidenceOptions = {}): void {
   if (statement.attesterSetId !== set.attesterSetId) throw new Error("EVIDENCE_SET_MISMATCH");
   if (statement.sourceId !== set.sourceId) throw new Error("EVIDENCE_SOURCE_MISMATCH");
   if (!/^[0-9a-f]{64}$/.test(statement.dataHash)) throw new Error("EVIDENCE_HASH_INVALID");
   if (!Number.isSafeInteger(statement.observedHeight) || statement.observedHeight < 0) throw new Error("EVIDENCE_HEIGHT_INVALID");
-  const message = evidenceStatementMessage(statement);
+  const version = statement.version ?? 2;
+  if (version !== 1 && version !== 2) throw new Error("EVIDENCE_VERSION_INVALID");
+  if (version === 1 && opts.acceptV1Archive !== true) throw new Error("EVIDENCE_V1_NOT_ACCEPTED");
+  if (statement.claimHash !== undefined && !/^[0-9a-f]{64}$/.test(statement.claimHash)) throw new Error("EVIDENCE_CLAIM_INVALID");
+  const message = evidenceStatementMessage(statement, opts.ledgerNetworkId);
+  if (!Array.isArray(statement.signatures)) throw new Error("EVIDENCE_THRESHOLD");
   const seen = new Set<string>();
   let ok = 0;
   for (const sig of statement.signatures) {
@@ -322,4 +382,64 @@ export function verifyEvidenceStatement(statement: EvidenceStatement, set: Attes
     ok += 1;
   }
   if (ok < set.threshold) throw new Error("EVIDENCE_THRESHOLD");
+}
+
+/*
+ * 0.5.82 fix 5 (STRUCTURE ONLY): canonical normalized claims and distinct
+ * source sets. Attesters sign the hash of one canonical claim (e.g. "a seismic
+ * event of magnitude >= Mmin inside this lat/lon box within this height
+ * window"), and an outcome may require k statements from distinct source sets.
+ * The windowed TOLERANCES (how far two sources may disagree on magnitude,
+ * position or time) are RESIDUAL: they are unset until the 30-day study, and
+ * `checkClaimAgreement` refuses to decide while they are unset. Nothing here is
+ * wired into settlement yet.
+ */
+export type EvidenceClaim = {
+  kind: "SEISMIC";
+  /** Minimum magnitude in tenths (integer, e.g. 45 = M4.5). */
+  minMagnitudeTenths: number;
+  /** Bounding box in micro-degrees (integers). */
+  latMinMicro: number; latMaxMicro: number; lonMinMicro: number; lonMaxMicro: number;
+  /** Ledger height window [fromHeight, toHeight]. */
+  fromHeight: number; toHeight: number;
+};
+
+/** Tolerances between sources. RESIDUAL: unset until the 30-day study. */
+export type ClaimTolerances = { magnitudeTenths: number; positionMicro: number; heights: number } | undefined;
+export const CLAIM_TOLERANCES: ClaimTolerances = undefined;
+
+/** Canonical bytes of a claim (integers only, fixed key order, range checks). */
+export function canonicalEvidenceClaim(c: EvidenceClaim): string {
+  const ints = [c.minMagnitudeTenths, c.latMinMicro, c.latMaxMicro, c.lonMinMicro, c.lonMaxMicro, c.fromHeight, c.toHeight];
+  if (c.kind !== "SEISMIC" || ints.some((v) => !Number.isSafeInteger(v))) throw new Error("EVIDENCE_CLAIM_INVALID");
+  if (c.latMinMicro > c.latMaxMicro || c.lonMinMicro > c.lonMaxMicro || c.latMinMicro < -90_000_000 || c.latMaxMicro > 90_000_000 || c.lonMinMicro < -180_000_000 || c.lonMaxMicro > 180_000_000) throw new Error("EVIDENCE_CLAIM_INVALID: box");
+  if (c.fromHeight < 0 || c.toHeight < c.fromHeight || c.minMagnitudeTenths < 0) throw new Error("EVIDENCE_CLAIM_INVALID: window");
+  return canonicalJson({ domain: "UEP-EVIDENCE-CLAIM-v1", kind: c.kind, minMagnitudeTenths: c.minMagnitudeTenths, latMinMicro: c.latMinMicro, latMaxMicro: c.latMaxMicro, lonMinMicro: c.lonMinMicro, lonMaxMicro: c.lonMaxMicro, fromHeight: c.fromHeight, toHeight: c.toHeight });
+}
+
+/**
+ * k statements from k distinct source sets (distinct `sourceId` and disjoint
+ * attester keys), all for the same claim hash. Does not compare values: that
+ * needs the tolerances (residual).
+ */
+export function checkDistinctSourceSets(statements: readonly EvidenceStatement[], sets: readonly AttesterSetPolicy[], k: number, claimHash: string): void {
+  if (!Number.isSafeInteger(k) || k < 1) throw new Error("EVIDENCE_SOURCES_INVALID");
+  const byId = new Map(sets.map((s) => [s.attesterSetId, s]));
+  const sources = new Set<string>();
+  const keys = new Set<string>();
+  for (const st of statements) {
+    if (st.claimHash !== claimHash) throw new Error("EVIDENCE_CLAIM_MISMATCH");
+    const set = byId.get(st.attesterSetId);
+    if (!set) throw new Error("EVIDENCE_SET_MISMATCH");
+    if (sources.has(set.sourceId)) throw new Error("EVIDENCE_SOURCE_NOT_DISTINCT");
+    for (const key of set.attesterKeys) { if (keys.has(key)) throw new Error("EVIDENCE_SOURCE_NOT_DISTINCT: shared attester"); }
+    sources.add(set.sourceId);
+    for (const key of set.attesterKeys) keys.add(key);
+  }
+  if (sources.size < k) throw new Error("EVIDENCE_SOURCES_INSUFFICIENT");
+}
+
+/** Value agreement between sources. Refuses while the tolerances are unset (residual, 30-day study). */
+export function checkClaimAgreement(tolerances: ClaimTolerances = CLAIM_TOLERANCES): void {
+  if (tolerances === undefined) throw new Error("EVIDENCE_TOLERANCES_UNSET: residual pending the 30-day study");
 }

@@ -12,6 +12,7 @@ import { deriveSpendKey } from "../core/spend-key.ts";
 import { isPrimeOrderEd25519Point, normalizeEd25519PublicKeyHex } from "../core/ed25519-point.ts";
 import { act, cancelAsBuyer, deliver, enrollIdentity, fund, getOrder, publishAs, refundAs, reserveAs, settle } from "./testkit.ts";
 import { evidenceStatementMessage } from "./evidence.ts";
+import { TESTNET } from "../network/profiles.ts";
 import { signEd25519 } from "../core/ed25519.ts";
 import { contentHash } from "../service/content-hash.ts";
 
@@ -34,7 +35,7 @@ function attest(m: DigitalServicesMarketplace, orderId: string, actor: string) {
   const order = getOrder(m, orderId, actor);
   const hash = order.deliveryHash ?? contentHash(Buffer.from("evidence"));
   const body = { sourceId: SET.sourceId, dataHash: hash, observedHeight: 0, orderId, attesterSetId: SET.attesterSetId };
-  const message = evidenceStatementMessage(body);
+  const message = evidenceStatementMessage(body, TESTNET.networkId);
   const keys = [1, 2].map((i) => deriveSpendKey(new Fr(BigInt(i)), new Fr(9n)));
   m.submitEvidence(orderId, { ...body, signatures: keys.map((k) => ({ attesterId: k.publicKeyHex.slice(-64), signature: signEd25519(message, k.privateKey) })) });
 }

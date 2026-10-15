@@ -234,7 +234,7 @@ export type ServiceOrder = {
    * `disputeTimeoutOutcome: "RELEASE"` but the category settlement guard (e.g.
    * IoT verified telemetry for the full quantity) did not pass, so the buyer was refunded.
    */
-  disputeOutcome?: DisputeOutcome | "WITHDRAWN" | "PROVIDER_REFUND" | "TIMEOUT_REFUND" | "TIMEOUT_RELEASE" | "TIMEOUT_REFUND_UNVERIFIED";
+  disputeOutcome?: DisputeOutcome | "WITHDRAWN" | "PROVIDER_REFUND" | "TIMEOUT_REFUND" | "TIMEOUT_RELEASE" | "TIMEOUT_REFUND_UNVERIFIED" | "NO_EVIDENCE_REFUND" | "NO_EVIDENCE_RELEASE" | "NO_EVIDENCE_REFUND_UNVERIFIED";
   /** v0.4.6 (UEP-D05): units treated as consumed when the order closed (never returned to capacity). */
   capacityConsumed?: bigint;
   /** v0.4.6 (UEP-D05): units returned to the listing's available capacity when the order closed (set exactly once). */
@@ -379,6 +379,8 @@ export type MarketplaceConfig = {
    * key that address commits to. Default: the public testnet.
    */
   ledgerNetworkId?: string;
+  /** 0.5.82: accept legacy v1 (network-unbound) evidence statements. Only for archived evidence; default false. */
+  acceptEvidenceV1Archive?: boolean;
   /** Proportional deposit in basis points when no fixed deposit is set (default 100 = 1%). */
   reservationDepositBps?: number;
   /** Concurrent open (not settled / cancelled / expired) reservations per identity. Default 8. */
@@ -663,6 +665,8 @@ export class DigitalServicesMarketplace {
   readonly oracleGate: OraclePolicyGate | undefined;
   /** v0.4.5: network of the ledger addresses accepted as identity ids. */
   readonly ledgerNetworkId: string;
+  /** 0.5.82: see MarketplaceConfig.acceptEvidenceV1Archive (private: no public evidence handle). */
+  readonly #acceptV1Archive: boolean;
   /** v0.4.5: true only when the test-only zero-deposit flag was set. */
   readonly testOnlyAllowZeroReservationDeposit: boolean;
   /** v0.4.7: ledger network whose asset registry constrains Marketplace assets (unset = any well-formed id). */
@@ -756,6 +760,7 @@ export class DigitalServicesMarketplace {
     this.#snapshotSigningKeys = config.snapshotSigningKeys && config.snapshotSigningKeys.length > 0 ? [...config.snapshotSigningKeys] : [generateEd25519KeyPair().privateKey];
     this.#anchorSigningKey = config.anchorSigningKey ?? generateEd25519KeyPair().privateKey;
     this.ledgerNetworkId = config.ledgerNetworkId ?? TESTNET.networkId;
+    this.#acceptV1Archive = config.acceptEvidenceV1Archive === true;
     // v0.5.3: oracle quotes must be bound to the same network as the ledger this Marketplace settles on.
     if (this.oracleGate && this.oracleGate.networkId !== this.ledgerNetworkId) throw new Error(`ORACLE_NETWORK_MISMATCH: oracle network ${this.oracleGate.networkId}, ledger network ${this.ledgerNetworkId}`);
     this.testOnlyAllowZeroReservationDeposit = testOnlyOption("testOnlyAllowZeroReservationDeposit", config.testOnlyAllowZeroReservationDeposit);
@@ -931,7 +936,12 @@ export class DigitalServicesMarketplace {
     if (!policy) throw new Error("EVIDENCE_NOT_REQUIRED");
     if (statement.attesterSetId !== policy.attesterSetId) throw new Error("EVIDENCE_SET_MISMATCH");
     if (statement.observedHeight > this.now()) throw new Error("EVIDENCE_FUTURE");
-    verifyEvidenceStatement(statement, this.#evidence.attesterSet(policy.attesterSetId));
+    // 0.5.82 (X-6): no observation before the reservation, none older than the listing's signed maxAgeHeights.
+    if (!Number.isSafeInteger(statement.observedHeight) || statement.observedHeight < order.createdAt) throw new Error("EVIDENCE_BEFORE_RESERVATION");
+    if (policy.maxAgeHeights !== undefined && this.now() - statement.observedHeight > policy.maxAgeHeights) throw new Error("EVIDENCE_EXPIRED");
+    if (order.status !== "HELD" && order.status !== "DELIVERED" && order.status !== "DISPUTED") throw new Error("EVIDENCE_ORDER_NOT_OPEN");
+    // 0.5.82 (X-4): v2 statements are bound to this ledger's own network id (never taken from the statement).
+    verifyEvidenceStatement(statement, this.#evidence.attesterSet(policy.attesterSetId), { ledgerNetworkId: this.ledgerNetworkId, acceptV1Archive: this.#acceptV1Archive });
     const prev = statements(this).get(orderId);
     if (prev && prev.dataHash !== statement.dataHash) throw new Error("EVIDENCE_CONFLICT");
     statements(this).set(orderId, { dataHash: statement.dataHash, observedHeight: statement.observedHeight, sourceId: statement.sourceId });
@@ -1694,6 +1704,35 @@ export class DigitalServicesMarketplace {
     const withinGrace = this.now() - order.createdAt <= order.windows.cancellationGrace;
     this.closeOrder(order, "CANCELLED", forfeit && !withinGrace);
     return { ...order };
+  }
+
+  /**
+   * 0.5.82: apply the listing's signed `onNoEvidence` outcome to a DELIVERED
+   * evidence-bound order that has no accepted statement once
+   * `createdAt + evidenceDeadlineHeight` is reached ("expire" signature; party
+   * or admin). Depends only on heights and local state, never on a source, so
+   * every node reaches the same result when all sources are down.
+   */
+  resolveNoEvidence(orderId: string, auth: ActorAuth | undefined, opts?: OrderCallOptions): SettlementRecord {
+    const actor = this.authenticateActor(auth, "expire", orderId);
+    const order = this.order(orderId);
+    if (!this.isAdmin(actor) && actor !== order.buyerId && actor !== order.providerId) throw new Error("ORDER_ACTION_FORBIDDEN");
+    const policy = this.listing(order.listingId).evidencePolicy;
+    if (!policy || policy.onNoEvidence === undefined || policy.evidenceDeadlineHeight === undefined) throw new Error("NO_EVIDENCE_POLICY");
+    if (order.status !== "DELIVERED") throw new Error("ORDER_NOT_DELIVERED");
+    if (statements(this).has(orderId)) throw new Error("EVIDENCE_PRESENT");
+    if (this.now() < order.createdAt + policy.evidenceDeadlineHeight) throw new Error("EVIDENCE_DEADLINE_NOT_REACHED");
+    this.checkVersion(order, opts);
+    if (policy.onNoEvidence === "REFUND") return this.payout(order, 0n, "REFUND_BUYER", "NO_EVIDENCE_REFUND");
+    if (this.isGuardedCategory(order)) {
+      const category = this.listing(order.listingId).category;
+      const guard = this.categoryServices.get(category)?.settlementGuard;
+      let passes = false;
+      if (guard) { try { guard({ ...order }); passes = true; } catch { passes = false; } }
+      if (!passes) return this.payout(order, 0n, "REFUND_BUYER", "NO_EVIDENCE_REFUND_UNVERIFIED", "TIMEOUT_REFUNDED");
+      return this.payout(order, order.grossAmount, "RELEASE", "NO_EVIDENCE_RELEASE", "PASSED");
+    }
+    return this.payout(order, order.grossAmount, "RELEASE", "NO_EVIDENCE_RELEASE");
   }
 
   /** Close an order whose reservation TTL has passed ("expire" signature; party or admin). */
