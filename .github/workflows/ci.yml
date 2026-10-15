@@ -69,6 +69,9 @@ jobs:
         run: npm run check:donation
       - name: Version is numeric semver
         run: npm run check:version
+      # 0.5.82: source adapters stay off-node; src/ may not import scripts/adapters.
+      - name: No src import of scripts/adapters
+        run: npm run check:adapters
 
       # 0.5.81 item 10: critical security tests (H1 commit atomicity, vote binding, snapshot
       # rules, registry binding, transport envelope, marketplace state machine, numeric rules).
