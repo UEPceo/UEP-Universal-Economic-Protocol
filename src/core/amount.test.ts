@@ -52,3 +52,16 @@ test("item 8: notes transported or restored with a non-u64 amount are refused", 
   for (const amount of ["-1", "1.5", "18446744073709551616", "1e3"]) assert.throws(() => deserializeNote({ ...base, amount } as never), /AMOUNT_/);
   assert.equal(deserializeNote({ ...base, amount: "7" } as never).amount, 7n);
 });
+
+test(`item 8/10: parseAmount fuzz — random strings either are refused or round-trip canonically (seed ${SEED})`, () => {
+  const r = prng(SEED ^ 0x9e3779b9);
+  const alphabet = "0123456789-+.eExX _,abcdef\u0661\u00a0";
+  for (let i = 0; i < 20_000; i++) {
+    let s = ""; const len = r() % 24;
+    for (let j = 0; j < len; j++) s += alphabet[r() % alphabet.length];
+    let v: bigint | undefined;
+    try { v = parseAmount(s); } catch (e) { assert.match(String(e), /AMOUNT_(INVALID|OUT_OF_RANGE)/); continue; }
+    assert.equal(v.toString(), s, `non-canonical accepted: ${JSON.stringify(s)}`);
+    assert.ok(v >= 0n && v <= U64_MAX);
+  }
+});

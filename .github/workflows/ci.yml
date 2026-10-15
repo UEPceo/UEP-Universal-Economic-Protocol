@@ -70,11 +70,49 @@ jobs:
       - name: Version is numeric semver
         run: npm run check:version
 
+      # 0.5.81 item 10: critical security tests (H1 commit atomicity, vote binding, snapshot
+      # rules, registry binding, transport envelope, marketplace state machine, numeric rules).
+      # Also part of test:core; run first so a failure is named. Blocking.
+      - name: Critical security tests (npm run test:security)
+        run: npm run test:security
+
       - name: Core suites (npm run test:core)
         run: npm run test:core
 
       - name: Index benches
         run: node --experimental-strip-types scripts/bench-indexes.ts
+
+  # Blocking (0.5.81 item 10): seeded property / fuzz / multi-process fault runs over a fixed
+  # seed list. Seeds, environment, commit and per-run results are uploaded as an artifact.
+  property:
+    name: Seeded property and fault runs (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Seeded runs (npm run test:property:full)
+        run: npm run test:property:full
+
+      - name: Upload run record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seeded-runs
+          path: artifacts/test-runs/
+          if-no-files-found: warn
 
   # Blocking (v0.5.3): every lab file EXCEPT those listed in
   # scripts/lab-known-issues.json, including the 12 labs fixed in v0.5.3
