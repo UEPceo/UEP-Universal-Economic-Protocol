@@ -405,7 +405,7 @@ pub fn honest_spend_fixture_structural<const D: usize>(
     let t_blind = Fr::from(5u64);
 
     let sender_old_amount = Fr::from(sender_old_bal);
-    let sender_new_amount = Fr::from(sender_old_bal - amount - fee);
+    let sender_new_amount = Fr::from(sender_old_bal.checked_sub(amount).and_then(|v| v.checked_sub(fee)).expect("fixture: amount + fee must not exceed sender balance"));
     let amount_fr = Fr::from(amount);
     let fee_fr = Fr::from(fee);
     let recipient_old_amount = Fr::from(0u64);

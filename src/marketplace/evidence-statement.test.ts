@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DigitalServicesMarketplace } from "./marketplace.ts";
 import { evidenceStatementMessage } from "./evidence.ts";
+import { TESTNET } from "../network/profiles.ts";
 import { Fr } from "../core/field.ts";
 import { deriveSpendKey } from "../core/spend-key.ts";
 import { signEd25519 } from "../core/ed25519.ts";
@@ -23,7 +24,7 @@ const SET = {
 
 function statement(orderId: string, dataHash: string, height: number) {
   const body = { sourceId: SET.sourceId, dataHash, observedHeight: height, orderId, attesterSetId: SET.attesterSetId };
-  const message = evidenceStatementMessage(body);
+  const message = evidenceStatementMessage(body, TESTNET.networkId);
   return {
     ...body,
     signatures: keys.slice(0, 2).map((k) => ({ attesterId: k.publicKeyHex.slice(-64), signature: signEd25519(message, k.privateKey) })),

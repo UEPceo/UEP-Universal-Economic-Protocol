@@ -95,6 +95,8 @@ export function calculateMarketplaceFee(grossAmount: bigint, feeBps = MARKETPLAC
 export function quoteSettlement(grossAmount: bigint, asset: string, feeBps = MARKETPLACE_FEE_BPS, minFee: bigint = MIN_MARKETPLACE_FEE): FeeQuote {
   if (!asset) throw new Error("ASSET_REQUIRED");
   const fee = calculateMarketplaceFee(grossAmount, feeBps, minFee);
+  // 0.5.82 (Aegis): explicit fee <= gross (calculateMarketplaceFee already clamps; this keeps the invariant local).
+  if (fee < 0n || fee > grossAmount) throw new Error("FEE_EXCEEDS_GROSS");
   return { asset, grossAmount, marketplaceFee: fee, providerNet: grossAmount - fee, feeBps };
 }
 

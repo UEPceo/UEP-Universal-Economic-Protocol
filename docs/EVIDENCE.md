@@ -30,7 +30,15 @@ Since evidence can be wrong while valid, the value it can move is limited at two
 
 An attester set is `{ attesterSetId, sourceId, attesterKeys, threshold: k, size: n, valueCaps }` with 1 ≤ k ≤ n, `sourceId` the public identifier of the observed source, and `attesterKeys` the n distinct Ed25519 public keys (64 hex) of its attesters. A set without a cap for an asset cannot back listings in that asset (`EVIDENCE_ATTESTER_SET_CAP_UNDEFINED`).
 
-`threshold`, `size` and `attesterKeys` are validated now but not used by any check until phase 2.3, when statements are verified against them.
+`threshold`, `size` and `attesterKeys` are used by `verifyEvidenceStatement` (`Marketplace.submitEvidence`): k distinct attesters of the set, strict Ed25519.
+
+**Statements (0.5.82).** Attesters sign the v2 message: domain tag `UEP-EVIDENCE-STATEMENT-v2`, the verifying node's own `ledgerNetworkId` (never read from the statement), source id, data hash, observed height, order id, set id and an optional claim hash. A statement signed for another network does not verify. Legacy v1 (unbound) statements are refused unless the Marketplace is configured with `acceptEvidenceV1Archive: true` (archived evidence only). `submitEvidence` refuses an observation before the order's reservation height (`EVIDENCE_BEFORE_RESERVATION`), in the future (`EVIDENCE_FUTURE`) or older than the listing's signed `maxAgeHeights` (`EVIDENCE_EXPIRED`).
+
+**No evidence (0.5.82).** A listing may sign `onNoEvidence: "REFUND" | "RELEASE"` with `evidenceDeadlineHeight` (heights after reservation). After that height, a DELIVERED order without an accepted statement can be closed with `resolveNoEvidence()` ("expire" signature, party or admin): REFUND returns the escrow; RELEASE pays the provider (refund instead if a category settlement guard fails). The path reads only heights and local state, so all sources down gives the same result on every node. Refund, cancel and timeout paths never depend on evidence.
+
+**Canonical claims and distinct sources (0.5.82, structure only).** `canonicalEvidenceClaim()` (integer-only seismic claim: minimum magnitude, lat/lon box, height window) and `checkDistinctSourceSets()` (k statements, same claim hash, distinct source ids and disjoint attester keys). The tolerances between sources are **residual**: unset until a 30-day study, and `checkClaimAgreement()` refuses to decide while they are unset. Not wired into settlement.
+
+**Snapshots.** Stored statement records are unchanged (`dataHash`, `observedHeight`, `sourceId`); Marketplace snapshot format 4 and ledger format 10 are unchanged and no root changes. New listing policy fields appear only when set.
 
 **Attester keys.** Each key is normalized before it is stored: 64 lowercase hex characters (a 44-byte SPKI DER encoding in hex is accepted and reduced to the raw key). It must decode to a canonical Ed25519 point of prime order; all-zero, identity, small-order and off-curve keys are refused (`EVIDENCE_ATTESTER_SET_INVALID`). The keys of one set must be distinct after normalization.
 

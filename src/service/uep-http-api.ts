@@ -13,6 +13,7 @@ import { ledgerBusyHttpStatus, type LedgerSubmitQueue } from "./ledger-submit-qu
 import { deserializeTx, serializeTx } from "../core/transaction.ts";
 import { MAX_OBJECT_BYTES } from "./storage-provider.ts";
 import { displayLei, renderLeiDisplayPage, type GleifDisplayOptions } from "./gleif-display.ts";
+import { displayAllIndicative, renderIndicativePage, type IndicativeDisplayOptions } from "./indicative-display.ts";
 
 export const UEP_HTTP_API_VERSION = "1.4.0";
 
@@ -79,6 +80,8 @@ export type HttpApiOptions = {
    * a page if the registry is unreachable.
    */
   leiDisplay?: GleifDisplayOptions;
+  /** 0.5.82: display-only ECB/BIS/Eurostat/World Bank figures (never state). */
+  indicativeDisplay?: IndicativeDisplayOptions;
 };
 
 /**
@@ -301,6 +304,17 @@ export function createUepHttpApi(opts: HttpApiOptions): Server {
         }
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-uep-api": UEP_HTTP_API_VERSION, "x-uep-display": "lei" });
         res.end(renderLeiDisplayPage(view, entered));
+        return;
+      }
+      if (req.method === "GET" && (path === "/v1/display/indicators" || path === "/v1/display/indicators.json")) {
+        // 0.5.82: display only. Nothing here reaches a quote, a policy or the ledger.
+        const views = await displayAllIndicative(opts.indicativeDisplay);
+        if ((req.headers.accept ?? "").includes("application/json") || path.endsWith(".json")) {
+          send(res, 200, { ok: true, displayOnly: true, entersState: false, data: views });
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-uep-api": UEP_HTTP_API_VERSION, "x-uep-display": "indicators" });
+        res.end(renderIndicativePage(views));
         return;
       }
       if (req.method === "GET" && path === "/v1/economic/tip") {

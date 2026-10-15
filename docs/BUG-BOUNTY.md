@@ -4,7 +4,7 @@ This document describes how to report security issues and how independent assess
 
 ## Status
 
-- Current version: `0.5.81` (Phase 5).
+- Current version: `0.5.82` (Phase 5).
 - This is a **testnet reference**. No real-world value. No production consensus.
 - Fees: protocol 0.1 %, Marketplace 3 %. Ledger snapshot format 10.
 - Latest tagged GitHub Release may lag `main`.

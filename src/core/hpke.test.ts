@@ -1,3 +1,4 @@
+// Secret-scan note: the keys below are the public RFC 9180 Appendix A.1 test vectors, not secrets (see .gitleaks.toml).
 /**
  * v0.5.3: HPKE (RFC 9180) base mode, DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 /
  * ChaCha20-Poly1305, checked against RFC 9180 Appendix A.2.1; relay payload

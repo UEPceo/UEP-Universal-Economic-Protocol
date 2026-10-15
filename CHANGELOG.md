@@ -1,3 +1,16 @@
+## 0.5.82 — 2026-10-15
+
+Triage of the external "Aegis-Orbit" static report on v0.5.81 (`AUDIT-MV990F9F-LUPO`; summary [`docs/audit/AUDIT-EXTERNA-2026-10-15-AEGIS.md`](docs/audit/AUDIT-EXTERNA-2026-10-15-AEGIS.md), matrix [`docs/audit/0.5.82-RESOLUTION.md`](docs/audit/0.5.82-RESOLUTION.md)). Protocol fee 0.1 %, Marketplace fee 3 %, no native token, Poseidon BN254 unchanged.
+
+- Identifiers, nonces, trace ids and temp dirs outside tests use `node:crypto` (`randomBytes`, `mkdtempSync`) instead of `Math.random`.
+- Agent simulation ranking uses an integer-scaled `qualityScore()` (bigint) instead of a float.
+- Explicit no-underflow checks: ledger prepare (`FEE_UNDERFLOW`), `checkSpendShape` (positive amount, non-negative fee), `quoteSettlement` (`FEE_EXCEEDS_GROSS`). Rust witness fixtures use `checked_sub`; new circuit test shows amount = 1, fee = 2 over a balance of 2 is unsatisfiable (`enforce_u64`).
+- Regression tests `src/testnet/aegis-0582.test.ts` (nullifier reuse, amount = 1 / fee = 2, fee ≤ gross, integer score).
+- `.gitleaks.toml` allowlist for the RFC 9180 HPKE test vectors and the `test-only-objects-token` fixture.
+- Open: network-ID binding of marketplace reservation/action and IoT telemetry signatures (signed-format change, not made here).
+- External sources (Research): evidence statements v2 bound to the local network (`UEP-EVIDENCE-STATEMENT-v2`, v1 only for archives); observation height bounds and signed `maxAgeHeights`; signed `onNoEvidence` / `evidenceDeadlineHeight` with `resolveNoEvidence()`; canonical claim and distinct-source-set structure (tolerances residual); off-node `scripts/adapters/` with `check:adapters`; display-only ECB/BIS/Eurostat/World Bank figures (`GET /v1/display/indicators`). No snapshot format change.
+- Tests: TESTCOUNTS
+
 ## 0.5.81 — 2026-10-15
 
 Security and recovery work on the user's v0.5.80 findings (resolution matrix: [`docs/audit/0.5.81-RESOLUTION.md`](docs/audit/0.5.81-RESOLUTION.md)). Protocol fee 0.1 %, Marketplace fee 3 %, no native token, Poseidon BN254 unchanged.

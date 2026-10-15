@@ -3,6 +3,7 @@
  * Simulated wallet + service marketplace — not consensus.
  */
 
+import { randomBytes } from "node:crypto";
 import {
   type AgentCapability,
   type AgentKeypair,
@@ -192,9 +193,10 @@ export class AgentEconomySim {
       return emptyFail(agentId, auth.reason);
     }
     offers.sort((a, b) => {
-      const sa = a.quality / (Number(a.price) + 1);
-      const sb = b.quality / (Number(b.price) + 1);
-      return sb - sa;
+      // 0.5.82 (Aegis): integer-scaled score = quality (micro-units) * 1e6 / (price + 1); no float money.
+      const sa = qualityScore(a.quality, a.price);
+      const sb = qualityScore(b.quality, b.price);
+      return sb > sa ? 1 : sb < sa ? -1 : 0;
     });
     const chosen = offers[0]!;
 
@@ -408,7 +410,7 @@ export function runAgentExperiment(agentCount: number): {
       allowedServices: services,
       allowedAssets: ["UEP-UNIT"],
     });
-    const nonce = `nonce-${i}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const nonce = `nonce-${i}-${Date.now()}-${randomBytes(8).toString("hex")}`;
     sim.agentRun(agentId, nonce, {
       maxPrice: BigInt(5 + (i % 25)),
       minQuality: 0.6,
@@ -430,4 +432,11 @@ export function runAgentExperiment(agentCount: number): {
   }
 
   return { stats: sim.stats, contracts: sim.contracts, agents };
+}
+
+/** 0.5.82: ranking score as an integer: floor(quality * 1e6) * 1e6 / (price + 1). Quality is clamped to [0, 1]. */
+export function qualityScore(quality: number, price: bigint): bigint {
+  const q = Number.isFinite(quality) ? Math.min(1, Math.max(0, quality)) : 0;
+  if (price < 0n) throw new Error("PRICE_NEGATIVE");
+  return (BigInt(Math.floor(q * 1_000_000)) * 1_000_000n) / (price + 1n);
 }
