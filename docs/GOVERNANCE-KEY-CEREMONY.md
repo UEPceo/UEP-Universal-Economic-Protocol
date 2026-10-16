@@ -1,6 +1,22 @@
 # Governance key ceremony: procedure and tooling (0.5.84, item 4)
 
-Status: **prepared, not performed.** No governance key exists. The ceremony needs the maintainer and the participants; nothing in this repository generates or stores a private key.
+Status (testnet `uep-testnet-1`): **performed.** Ceremony performed 2026-10-16. Key set 2-of-3, director custody on 3 separate devices, each private key encrypted with a separate passphrase. No private key is stored in this repository; the tooling in `scripts/` still handles public material only.
+
+## Testnet governance set (2026-10-16)
+
+| Field | Value |
+|---|---|
+| Pinned set | `config/governance/uep-testnet-1.json` (loaded and re-verified by `src/network/pinned-governance.ts`) |
+| Transcript (public) | `docs/governance/uep-testnet-1-2026-10-16-transcript.json` |
+| Keys (Ed25519, raw hex) | `ccdd958bea502d521244619170ed54de1e91072d25f188d6f40a2e1e9425b891` (director-device-1), `2f160e57097798dba50b0ca04a4d5549a547a24bd65d6cfd856227aa31fceb13` (director-device-2), `580e950863e0c0e4da2179239a3a1fbd981d02b12efa0af9224e1ace82e04cd8` (director-device-3) |
+| Threshold | 2 of 3 |
+| Effective height | 3,153,600 (the approved testnet registry height) |
+| Rotation policy | every 12 months (6,307,200 heights at the 5 s reference block time); rotation manifest signed by 2-of-3 of the current set |
+| Loss / compromise | one key lost or compromised: the remaining 2-of-3 quorum signs a manifest that revokes it and rotates in a new key. Two keys lost: the set can no longer sign; a new ceremony and a network configuration change are required |
+| Transcript hash | `7b9df8c0eb7b57b915fd3a9965acac5bae6ec5f2a567345d0ad83c5c25692b6c` |
+| Manifest hash | `b027fc18a8ed55e3d7ca61afcf1651223612e750fc282a643a784464bb76df31` |
+
+Tests: `src/network/pinned-governance.test.ts` (set verifies; tampered keys, threshold, height or proofs rejected; 2-of-3 required, with throwaway TEST-ONLY keys). Mainnet has no governance set yet.
 
 ## Purpose
 

@@ -1,0 +1,28 @@
+{
+  "format": "uep-governance-set",
+  "version": 1,
+  "networkId": "uep-testnet-1",
+  "networkKind": "testnet",
+  "ceremonyId": "uep-testnet-1-gov-2026-10-16",
+  "ceremonyDate": "2026-10-16",
+  "governance": {
+    "keys": [
+      "ccdd958bea502d521244619170ed54de1e91072d25f188d6f40a2e1e9425b891",
+      "2f160e57097798dba50b0ca04a4d5549a547a24bd65d6cfd856227aa31fceb13",
+      "580e950863e0c0e4da2179239a3a1fbd981d02b12efa0af9224e1ace82e04cd8"
+    ],
+    "threshold": 2
+  },
+  "effectiveHeight": 3153600,
+  "rotationPolicy": {
+    "intervalMonths": 12,
+    "intervalHeights": 6307200,
+    "signaturesRequired": 2,
+    "note": "rotate every 12 months (6,307,200 heights at the 5 s reference block time); the rotation manifest is signed by 2-of-3 of the current set"
+  },
+  "lossProcedure": "loss or compromise of one key: the remaining 2-of-3 quorum signs a manifest that revokes it and rotates in a new key; loss of two keys: the set cannot sign and a new ceremony plus network configuration change is required",
+  "custody": "director custody on 3 separate devices; each private key encrypted with a separate passphrase",
+  "transcriptHash": "7b9df8c0eb7b57b915fd3a9965acac5bae6ec5f2a567345d0ad83c5c25692b6c",
+  "transcript": "docs/governance/uep-testnet-1-2026-10-16-transcript.json",
+  "manifestHash": "b027fc18a8ed55e3d7ca61afcf1651223612e750fc282a643a784464bb76df31"
+}
