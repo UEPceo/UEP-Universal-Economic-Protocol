@@ -173,7 +173,7 @@ export async function startCluster(o: ClusterOptions) {
     }
   };
   const ctl = async (i: number, path: string, body?: unknown) => {
-    if (path === "/ctl/propose") await settleSigning();
+    if (path === "/ctl/propose" || path === "/ctl/equivocate") await settleSigning();
     const res = await fetch(`http://127.0.0.1:${ctlPorts[i]}${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body, encode) });
     return { status: res.status, body: await res.json() as any };
   };
