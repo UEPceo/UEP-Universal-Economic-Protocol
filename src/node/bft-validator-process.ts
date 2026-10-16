@@ -260,7 +260,14 @@ createServer(async (req, res) => {
         const proposal: BftProposal = { ...domain, height, round: Number(body.round ?? 0), proposerId: cfg.id, parentRoot, blockId: tx.txId.toHex() };
         const payload = { proposal, proposalSignature: kernel.signProposal(proposal, key), tx: txToWire(tx) };
         const signature = signEd25519(`uep-peer:${cfg.id}:/bft/proposal:${JSON.stringify(payload)}`, key);
-        const r = await fetch(peer.url + "/bft/proposal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: cfg.id, payload, signature }, encode) }).then(x => x.json()).catch(() => null);
+        // The links may drop requests (fault proxy). A real equivocator retries until each half has its
+        // proposal; a single unretried send could leave a half without it (then no equivocation exists).
+        // Retry only transport failures (no reply); any HTTP reply, including PEER_REPLAY, means delivered.
+        let r: unknown = null;
+        for (let attempt = 0; attempt < 10 && r === null; attempt++) {
+          r = await fetch(peer.url + "/bft/proposal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: cfg.id, payload, signature }, encode) }).then(x => x.json()).catch(() => null);
+          if (r === null) await new Promise(resolve => setTimeout(resolve, 50));
+        }
         out.push({ peer: peer.id, block: proposal.blockId, vote: !!(r as { vote?: unknown } | null)?.vote });
       }
       return reply(res, 200, { height, out });
