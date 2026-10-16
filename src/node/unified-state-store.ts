@@ -45,7 +45,9 @@ export type StoreRecord =
   | { kind: "economic"; head: EconomicHead }
   /** Signed ledger snapshot (UepLedger.snapshot()), JSON with {$b} bigints; optional, nodes holding snapshot keys only. */
   | { kind: "ledger-snapshot"; json: string; head: EconomicHead }
-  | { kind: "migrated"; from: string[] };
+  | { kind: "migrated"; from: string[] }
+  /** 0.5.84 item 2: last certified checkpoint built or accepted (certified-checkpoint.ts). */
+  | { kind: "checkpoint"; checkpoint: unknown };
 
 export type StoreContext = { networkId: string; domainId: string; validatorSetHash: string };
 
@@ -55,6 +57,7 @@ export type StoreView = {
   economic: EconomicHead | null;
   ledgerSnapshot: { json: string; head: EconomicHead } | null;
   migratedFrom: string[];
+  checkpoint?: unknown;
 };
 
 type Frame = { v: 1; seq: number; prevHash: string; records: StoreRecord[] };
@@ -86,6 +89,7 @@ export function applyRecord(view: StoreView, r: StoreRecord): void {
     case "economic": view.economic = r.head; break;
     case "ledger-snapshot": view.ledgerSnapshot = { json: r.json, head: r.head }; view.economic = r.head; break;
     case "migrated": view.migratedFrom.push(...r.from); break;
+    case "checkpoint": view.checkpoint = r.checkpoint; break;
     default: throw new Error("UNIFIED_STORE_CORRUPT: unknown record kind");
   }
 }
@@ -226,6 +230,7 @@ export class UnifiedStateStore {
   get bftState(): BftState | null { return this.view.bft; }
   get economicHead(): EconomicHead | null { return this.view.economic; }
   get headHash(): string { return this.head; }
+  get checkpoint(): unknown { return this.view.checkpoint ?? null; }
   get frameSeq(): number { return this.seq; }
 
   /**

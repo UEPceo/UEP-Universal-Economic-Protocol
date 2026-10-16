@@ -185,6 +185,20 @@ createServer(async (req, res) => {
       mempool.set(tx.txId.toHex(), tx);
       return reply(res, 200, { pending: mempool.size });
     }
+    if (url.pathname === "/ctl/checkpoint") {
+      // 0.5.84 item 2: build a certified checkpoint for this validator's head (needs 2f + 1 signatures).
+      const cp = await net.bftCertifyCheckpoint();
+      return reply(res, 200, { checkpoint: cp });
+    }
+    if (url.pathname === "/ctl/checkpoint-fetch") {
+      const cp = await net.bftFetchCheckpoint();
+      if (cp) net.acceptCheckpoint(cp);
+      return reply(res, 200, { checkpoint: net.latestCheckpoint });
+    }
+    if (url.pathname === "/ctl/checkpoint-accept") {
+      net.acceptCheckpoint(body.checkpoint as never);
+      return reply(res, 200, { checkpoint: net.latestCheckpoint });
+    }
     if (url.pathname === "/ctl/evidence") return reply(res, 200, { evidence: net.bftEquivocationEvidence(), round: net.bftRound(), openHeight: net.bftOpenHeight() });
     if (url.pathname === "/ctl/tick") { await autoStep(); return reply(res, 200, { tick, round: net.bftRound() }); }
     if (url.pathname === "/ctl/equivocate") {
