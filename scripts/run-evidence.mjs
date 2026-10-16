@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 0.5.84 item 4: run npm suites one after another and write an evidence record tied to the exact
+ * 0.5.83 Block E, extended in 0.5.84 item 4: run npm suites one after another and write an evidence record tied to the exact
  * commit SHA (git rev-parse HEAD), with the working-tree state, Node version, per-suite exit code,
  * duration, test counts parsed from the TAP summary and the SHA-256 of each full log.
  *
@@ -12,7 +12,7 @@
  */
 import { spawnSync, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
 
@@ -49,6 +49,8 @@ for (const s of suites) {
   console.log(`[evidence] ${s}: exit=${r.status} ${entry.pass}/${entry.tests} pass, ${entry.fail} fail, ${Math.round(entry.durationMs / 1000)} s`);
   if (r.status !== 0) failed = true;
 }
+// Seeded property/fault runs of this commit (scripts/run-seeded.mjs writes artifacts/test-runs/*.json).
+if (existsSync("artifacts/test-runs")) record.seededRuns = readdirSync("artifacts/test-runs").filter((f) => f.endsWith(".json")).map((f) => JSON.parse(readFileSync(join("artifacts/test-runs", f), "utf8"))).filter((x) => x.commit === commit);
 record.finishedAt = new Date().toISOString();
 record.ok = !failed;
 const name = join(out, `evidence-${commit.slice(0, 12)}-node${process.versions.node.split(".")[0]}.json`);
