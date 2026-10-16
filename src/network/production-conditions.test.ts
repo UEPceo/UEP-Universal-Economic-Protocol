@@ -1,13 +1,13 @@
 /** 0.5.84 item 4: production conditions (v1 signature sunset, asset registry mandatory by network type and height). */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import RAW_CONFIG from "../../config/production-conditions.json" with { type: "json" };
 import { generateEd25519KeyPair } from "../core/ed25519.ts";
 import { LegacyV1Policy } from "../marketplace/signature-v2.ts";
 import { assertRegistryPolicy } from "../node/asset-registry-store.ts";
 import { legacyV1ConfigFor, parseProductionConditions, registryPolicyFor, v1MigrationStatus } from "./production-conditions.ts";
 
-const RAW = JSON.parse(readFileSync(new URL("../../config/production-conditions.json", import.meta.url), "utf8"));
+const RAW = JSON.parse(JSON.stringify(RAW_CONFIG));
 const C = parseProductionConditions(RAW);
 const quiet = (cfg: ReturnType<typeof legacyV1ConfigFor>) => cfg === false ? false : { ...cfg, warn: () => {} };
 

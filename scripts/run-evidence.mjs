@@ -46,6 +46,8 @@ for (const s of suites) {
   const count = (k) => [...log.matchAll(new RegExp(`^ℹ ${k} (\\d+)`, "gm"))].reduce((a, m) => a + Number(m[1]), 0);
   const entry = { suite: s, exitCode: r.status, signal: r.signal, durationMs: Date.now() - t0, tests: count("tests"), pass: count("pass"), fail: count("fail"), skipped: count("skipped"), logSha256: createHash("sha256").update(log).digest("hex"), log: file };
   record.suites.push(entry);
+  const seeded = /seeded runs: (\d+), failed: (\d+)/.exec(log);
+  if (seeded) entry.seededRuns = { runs: Number(seeded[1]), failed: Number(seeded[2]) };
   console.log(`[evidence] ${s}: exit=${r.status} ${entry.pass}/${entry.tests} pass, ${entry.fail} fail, ${Math.round(entry.durationMs / 1000)} s`);
   if (r.status !== 0) failed = true;
 }
