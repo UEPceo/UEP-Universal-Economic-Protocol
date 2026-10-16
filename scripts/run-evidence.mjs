@@ -6,7 +6,7 @@
  *
  *   node scripts/run-evidence.mjs --out <dir> [--env K=V] <npm-script> [<npm-script> ...]
  *
- * Writes <dir>/evidence-<shortsha>-node<major>.json and <dir>/logs/<script>.log. Exits non-zero
+ * Writes <dir>/evidence-<shortsha>-node<major>.json and <dir>/logs/<script>-node<major>.txt (no colons: artifact-safe). Exits non-zero
  * if any suite fails. A record from a dirty tree is marked "dirty": true and must not be cited
  * as evidence for that commit.
  */
@@ -41,7 +41,7 @@ for (const s of suites) {
   const t0 = Date.now();
   const r = spawnSync("npm", ["run", "-s", s], { env, encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
   const log = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-  const file = join(out, "logs", `${s.replace(/[^a-z0-9:_-]/gi, "_")}.log`);
+  const file = join(out, "logs", `${s.replace(/[^a-z0-9_-]/gi, "_")}-node${process.versions.node.split(".")[0]}.txt`);
   writeFileSync(file, log);
   const count = (k) => [...log.matchAll(new RegExp(`^ℹ ${k} (\\d+)`, "gm"))].reduce((a, m) => a + Number(m[1]), 0);
   const entry = { suite: s, exitCode: r.status, signal: r.signal, durationMs: Date.now() - t0, tests: count("tests"), pass: count("pass"), fail: count("fail"), skipped: count("skipped"), logSha256: createHash("sha256").update(log).digest("hex"), log: file };
