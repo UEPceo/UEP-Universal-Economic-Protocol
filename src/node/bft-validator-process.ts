@@ -20,6 +20,9 @@ import type { CommitLog as CommitLogT } from "./certified-commit.ts";
 import type { BftProposal, BftValidator } from "./bft-consensus.ts";
 import { txFromWire, txToWire } from "./certified-commit.ts";
 import { PeerNet, type Peer } from "./peer-net.ts";
+import { attestationRegistryPath, continuityFromEnv, PENDING_PEER_CHECK, type ContinuityOptions } from "./bft-store-continuity.ts";
+import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 
 type Config = {
   id: string; voterPem: string; stateDir: string; peerPort: number; controlPort: number;
@@ -49,18 +52,59 @@ const backend = process.env.UEP_STATE_BACKEND === "legacy" ? "legacy" : "unified
 let unifiedLog: CommitLogT | undefined;
 let unifiedStore: import("./unified-state-store.ts").UnifiedStateStore | undefined;
 let kernel: import("./bft-consensus.ts").BftConsensusKernel;
+// 0.5.84 store continuity: refuse to start without the store unless UEP_BFT_STORE_INIT=genesis (first start
+// of a new identity) or UEP_BFT_REJOIN=retire (re-key/rejoin: this identity becomes watch-only for good).
+// UEP_TEST_BYZANTINE_STATELESS=1 is a TEST-HARNESS-ONLY switch that models a Byzantine validator which
+// ignores its own store (it signs from whatever state it has); an honest binary never sets it.
+const byzantineStateless = process.env.UEP_TEST_BYZANTINE_STATELESS === "1";
+const continuity: ContinuityOptions = byzantineStateless
+  ? { init: "genesis", anchorPath: join(tmpdir(), `uep-byz-anchor-${randomBytes(6).toString("hex")}.json`), validatorId: cfg.id }
+  : { ...continuityFromEnv(), validatorId: cfg.id };
+let continuityState: import("./unified-node-state.ts").ContinuityState | undefined;
 if (backend === "unified") {
   const crash = process.env.UEP_CRASH_AT?.match(/^(frame-torn|checkpoint-written|wal-reset)@(\d+)$/);
   const u = openUnifiedValidatorState(cfg.stateDir, domain, cfg.validators, cfg.faultTolerance, {}, crash ? {
     faultInjector: (p) => { if (p === crash[1] && net.bftOpenHeight() === Number(crash[2])) { if (p === "frame-torn") throw new Error("CRASH_TORN"); process.kill(process.pid, "SIGKILL"); } },
     afterTornWrite: () => process.kill(process.pid, "SIGKILL"),
-  } : {});
-  kernel = u.kernel; unifiedLog = u.log; unifiedStore = u.store;
+  } : {}, continuity);
+  kernel = u.kernel; unifiedLog = u.log; unifiedStore = u.store; continuityState = u.continuity;
   if (u.migration.migrated) console.log(`[unified-store] ${cfg.id} migrated ${u.migration.commits} journal entries, bftState=${u.migration.bftState}`);
 } else {
-  kernel = createDurableBftConsensusKernel(domain, cfg.validators, cfg.faultTolerance, join(cfg.stateDir, "bft-kernel.json"));
+  kernel = createDurableBftConsensusKernel(domain, cfg.validators, cfg.faultTolerance, join(cfg.stateDir, "bft-kernel.json"), {}, continuity);
 }
 net.configureBftConsensus(kernel, { log: unifiedLog, requireDurable: true });
+// 0.5.84 store continuity (C): attest the store position to peers after each durable frame, and do not
+// sign until 2f peers have answered the "what is my latest attested state?" check.
+let peerCheck: { responses: number; stale: boolean; maxSeen: number; done: boolean } = { responses: 0, stale: false, maxSeen: 0, done: false };
+if (continuityState) {
+  net.configureStateAttestation(attestationRegistryPath(cfg.stateDir));
+  const cs = continuityState;
+  cs.onDurable.add(p => net.attestState(p));
+  if (cs.verdict === "ok" && !byzantineStateless) {
+    kernel.suspendSigning(PENDING_PEER_CHECK);
+    const need = 2 * cfg.faultTolerance;
+    const check = async (): Promise<void> => {
+      const local = cs.position();
+      const r = await net.bftCheckStateAgainstPeers(local).catch(() => ({ responses: 0, stale: false, maxSeen: 0 }));
+      peerCheck = { ...r, done: false };
+      if (r.stale) {
+        peerCheck.done = true;
+        kernel.suspendSigning("BFT_STORE_STALE");
+        console.error(`[store-continuity] ${cfg.id} BFT_STORE_STALE: peers attest stateSeq ${r.maxSeen} > local ${local.seq}; signing stays suspended, rejoin with a new identity (UEP_BFT_REJOIN=retire)`);
+        return;
+      }
+      if (r.responses >= need) {
+        peerCheck.done = true;
+        kernel.resumeSigning();
+        net.attestState(local);
+        console.log(`[store-continuity] ${cfg.id} peer check passed (${r.responses} answers, local seq ${local.seq})`);
+        return;
+      }
+      setTimeout(() => { void check(); }, 300).unref();
+    };
+    setTimeout(() => { void check(); }, 50).unref();
+  }
+}
 // 0.5.83 Block C: crash injection (test harness only). UEP_CRASH_AT="<write point>@<height>" kills this
 // process with SIGKILL (kill -9) at that write point of that BFT height: no cleanup, no flush.
 const crashAt = process.env.UEP_CRASH_AT?.match(/^([a-z-]+)@(\d+)$/);
@@ -135,6 +179,9 @@ const state = () => ({
   committed: kernel.exportState().committed,
   status: Object.fromEntries(kernel.exportState().committed.map(([h]) => [h, net.bftCommitStatus(Number(h))])),
   expectedHeight: (net as unknown as { committer: { expectedHeight(): number } }).committer.expectedHeight(),
+  signing: kernel.signingSuspended ?? "ok",
+  storeSeq: continuityState?.position().seq ?? null,
+  peerCheck,
 });
 
 createServer(async (req, res) => {

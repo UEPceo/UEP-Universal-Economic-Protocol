@@ -47,7 +47,9 @@ export type StoreRecord =
   | { kind: "ledger-snapshot"; json: string; head: EconomicHead }
   | { kind: "migrated"; from: string[] }
   /** 0.5.84 item 2: last certified checkpoint built or accepted (certified-checkpoint.ts). */
-  | { kind: "checkpoint"; checkpoint: unknown };
+  | { kind: "checkpoint"; checkpoint: unknown }
+  /** 0.5.84 store continuity: explicit first start (genesis) or retirement of this identity. No view change. */
+  | { kind: "init"; mode: "genesis" | "retire"; validatorId: string };
 
 export type StoreContext = { networkId: string; domainId: string; validatorSetHash: string };
 
@@ -64,7 +66,7 @@ type Frame = { v: 1; seq: number; prevHash: string; records: StoreRecord[] };
 type Checkpoint = { v: 1; context: StoreContext; seq: number; headHash: string; view: StoreView; checksum: string };
 
 /** Write points of the store (crash tests). */
-export type StoreWritePoint = "frame-torn" | "after-frame" | "checkpoint-written" | "wal-reset";
+export type StoreWritePoint = "frame-torn" | "after-frame" | "checkpoint-fsynced" | "checkpoint-written" | "wal-reset";
 
 const sha = (...parts: (string | Buffer)[]) => { const h = createHash("sha256"); for (const p of parts) h.update(p); return h.digest(); };
 const frameDigest = (prevHash: string, payload: Buffer) => sha("uep-unified-wal-v1:", prevHash, ":", payload);
@@ -74,10 +76,11 @@ function fsyncDir(dir: string): void {
   try { const fd = openSync(dir, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } } catch { /* not supported on every platform */ }
 }
 
-function atomicWrite(path: string, data: string): void {
+function atomicWrite(path: string, data: string, beforeRename?: () => void): void {
   const tmp = `${path}.tmp`;
   const fd = openSync(tmp, "w", 0o600);
   try { writeSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
+  beforeRename?.();
   renameSync(tmp, path);
   fsyncDir(join(path, ".."));
 }
@@ -90,6 +93,7 @@ export function applyRecord(view: StoreView, r: StoreRecord): void {
     case "ledger-snapshot": view.ledgerSnapshot = { json: r.json, head: r.head }; view.economic = r.head; break;
     case "migrated": view.migratedFrom.push(...r.from); break;
     case "checkpoint": view.checkpoint = r.checkpoint; break;
+    case "init": break;
     default: throw new Error("UNIFIED_STORE_CORRUPT: unknown record kind");
   }
 }
@@ -100,6 +104,8 @@ export type OpenOptions = {
   /** Crash-test hook; throwing at "frame-torn" writes half a frame, then afterTornWrite runs, then the error propagates. */
   faultInjector?: (point: StoreWritePoint) => void;
   afterTornWrite?: () => void;
+  /** Called after each durable frame with its (seq, hash): store-continuity anchor and peer attestation. */
+  onAppended?: (seq: number, hash: string) => void;
 };
 
 export class UnifiedStateStore {
@@ -116,6 +122,7 @@ export class UnifiedStateStore {
   private readonly inject: (p: StoreWritePoint) => void;
   private readonly afterTorn?: () => void;
   private readonly autoCompact: number;
+  private readonly onAppended?: (seq: number, hash: string) => void;
 
   private constructor(dir: string, context: StoreContext, opts: OpenOptions) {
     this.dir = dir;
@@ -125,6 +132,7 @@ export class UnifiedStateStore {
     this.inject = opts.faultInjector ?? (() => {});
     this.afterTorn = opts.afterTornWrite;
     this.autoCompact = opts.autoCompactFrames ?? 512;
+    this.onAppended = opts.onAppended;
   }
 
   static exists(dir: string): boolean {
@@ -264,6 +272,7 @@ export class UnifiedStateStore {
     this.head = digest.toString("hex");
     this.framesSinceCheckpoint++;
     this.inject("after-frame");
+    this.onAppended?.(this.seq, this.head);
     if (this.autoCompact > 0 && this.framesSinceCheckpoint >= this.autoCompact) this.compact();
   }
 
@@ -274,7 +283,7 @@ export class UnifiedStateStore {
   compact(): void {
     const body = { v: 1 as const, context: this.context, seq: this.seq, headHash: this.head, view: this.view };
     const checksum = sha("uep-unified-checkpoint-v1:", JSON.stringify(body)).toString("hex");
-    atomicWrite(this.checkpointPath, JSON.stringify({ ...body, checksum }));
+    atomicWrite(this.checkpointPath, JSON.stringify({ ...body, checksum }), () => this.inject("checkpoint-fsynced"));
     this.inject("checkpoint-written");
     atomicWrite(this.walPath, this.walHeader());
     this.inject("wal-reset");

@@ -55,7 +55,9 @@ function linkProxy(targetPort: () => number, link: () => Link, r: () => number, 
   });
 }
 
-export type St = { stateRoot: string; committed: [string, string][]; status: Record<string, string>; expectedHeight: number; txCount: number };
+export type St = { stateRoot: string; committed: [string, string][]; status: Record<string, string>; expectedHeight: number; txCount: number;
+  /** 0.5.84 store continuity: "ok" or the reason signing is suspended; store seq; peer attestation check. */
+  signing: string; storeSeq: number | null; peerCheck: { responses: number; stale: boolean; maxSeen: number; done: boolean } };
 
 export type ClusterOptions = { n?: number; seed: number; spends?: number; autoTickMs?: number; roundTimer?: { baseTicks: number; maxDoublings: number }; extraConfig?: Record<string, unknown>; env?: Record<string, string> };
 
@@ -130,8 +132,13 @@ export async function startCluster(o: ClusterOptions) {
     }), { mode: 0o600 });
     return file;
   });
+  // 0.5.84 store continuity: a validator refuses to start without its store, so the very first start
+  // of each validator is an explicit genesis start; later starts (restarts) are not.
+  const everStarted = new Set<number>();
   const start = (i: number, env: Record<string, string> = {}) => new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/node/bft-validator-process.ts", configs[i]!], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...(o.env ?? {}), ...env } });
+    const initEnv: Record<string, string> = everStarted.has(i) ? {} : { UEP_BFT_STORE_INIT: "genesis" };
+    everStarted.add(i);
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/node/bft-validator-process.ts", configs[i]!], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...(o.env ?? {}), ...initEnv, ...env } });
     children.set(i, child);
     let out = "";
     const timer = setTimeout(() => reject(new Error(`v${i} did not start: ${logs.get(i)}`)), 60_000);

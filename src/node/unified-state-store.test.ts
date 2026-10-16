@@ -208,7 +208,7 @@ for (const point of COMMIT_POINTS) {
     const w = await world(2);
     const dir = tmp();
     let armed = true;
-    const u = openUnifiedValidatorState(dir, w.domain, w.validators, 1);
+    const u = openUnifiedValidatorState(dir, w.domain, w.validators, 1, {}, {}, { init: "genesis" });
     const ledger = w.fresh();
     const c = new CertifiedCommitter(u.log, u.kernel, () => ledger, { requireDurable: true, faultInjector: (p) => { if (armed && p === point) throw new Error("CRASH_INJECTED"); } });
     assert.throws(() => c.applyCertifiedCommit(input(w.steps[0]!)), /CRASH_INJECTED/);

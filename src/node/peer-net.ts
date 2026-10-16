@@ -3,6 +3,7 @@
  * A spend is applied only after two of three votes. A silent peer is skipped.
  */
 import { createServer, type Server } from "node:http";
+import { AttestationRegistry, compareWithAttestations, signStateAttestation, verifyStateAttestation, type StateAttestation, type StorePosition } from "./bft-store-continuity.ts";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { signEd25519, verifyEd25519, type PrivateKeyLike } from "../core/ed25519.ts";
@@ -58,6 +59,10 @@ export class PeerNet {
   private readonly bftJournalPath?: string;
   private readonly commitLogPath?: string;
   private committer?: CertifiedCommitter;
+  /** 0.5.84 store continuity (C): highest verified state attestation per validator (peer side). */
+  private attestations?: AttestationRegistry;
+  private attestPending: StorePosition | null = null;
+  private attestScheduled = false;
   /** 0.5.84 item 2: last certified checkpoint this node built or accepted. */
   latestCheckpoint: CertifiedCheckpoint | null = null;
   /** 0.5.84 item 2: when true, a peer snapshot is installed only with a matching certified checkpoint. */
@@ -427,6 +432,50 @@ export class PeerNet {
     this.committer?.log.store?.append([{ kind: "checkpoint", checkpoint: this.latestCheckpoint }]);
   }
 
+  /** 0.5.84 store continuity (C): keep peers' attestations (persisted in `registryPath`, or memory only when null). */
+  configureStateAttestation(registryPath: string | null): void {
+    this.attestations = new AttestationRegistry(registryPath);
+  }
+
+  private attestationContext() { const k = this.requireBft(); return { networkId: k.domain.networkId, domainId: k.domain.domainId }; }
+
+  /**
+   * Sign (this validator -> stateSeq, stateHash) and send it to every peer, best effort. Called after a
+   * durable store write; several calls in one turn are coalesced into one send of the latest position.
+   */
+  attestState(position: StorePosition): void {
+    if (!this.attestPending || position.seq > this.attestPending.seq) this.attestPending = position;
+    if (this.attestScheduled) return;
+    this.attestScheduled = true;
+    setImmediate(() => {
+      this.attestScheduled = false;
+      const p = this.attestPending; this.attestPending = null;
+      if (!p || !this.bftKernel) return;
+      const attestation = signStateAttestation({ v: 1, ...this.attestationContext(), validatorId: this.id, stateSeq: p.seq, stateHash: p.hash }, this.privateKey);
+      void Promise.all(this.peers.map(peer => post(peer.url + "/bft/state-attest", this.signed("/bft/state-attest", { attestation })))).catch(() => {});
+    });
+  }
+
+  /**
+   * Ask every peer for the newest attestation it holds about THIS validator and compare with the
+   * local store position. `responses` counts peers that answered (with or without an attestation).
+   */
+  async bftCheckStateAgainstPeers(local: StorePosition): Promise<{ responses: number; stale: boolean; maxSeen: number }> {
+    const me = this.requireBft().validators.find(v => v.id === this.id);
+    if (!me) throw new Error("BFT_UNKNOWN_VALIDATOR");
+    const ctx = this.attestationContext();
+    const found: StateAttestation[] = [];
+    let responses = 0;
+    await Promise.all(this.peers.map(async peer => {
+      const r = await get(`${peer.url}/bft/state-attest?validator=${encodeURIComponent(this.id)}`);
+      if (!r || !("attestation" in r)) return;
+      responses++;
+      const a = r.attestation;
+      if (a && verifyStateAttestation(a, me.publicKeyHex, ctx) && a.validatorId === this.id) found.push(a);
+    }));
+    return { responses, ...compareWithAttestations(local, found) };
+  }
+
   /** Fetch the newest certified checkpoint any peer has and verify it (no state change beyond keeping it). */
   async bftFetchCheckpoint(): Promise<CertifiedCheckpoint | null> {
     let best: CertifiedCheckpoint | null = null;
@@ -537,6 +586,10 @@ export class PeerNet {
         if (req.method === "GET" && url.pathname === "/snapshot") {
           return send(res, 200, this.ledger.snapshot());
         }
+        if (req.method === "GET" && url.pathname === "/bft/state-attest") {
+          const v = url.searchParams.get("validator") ?? "";
+          return send(res, 200, { attestation: this.attestations?.get(v) ?? null });
+        }
         if (req.method === "GET" && url.pathname === "/bft/checkpoint") {
           return send(res, this.latestCheckpoint ? 200 : 404, this.latestCheckpoint ?? { error: "NO_CHECKPOINT" });
         }
@@ -555,7 +608,7 @@ export class PeerNet {
           return send(res, 200, { id: this.id, height: this.ledger.height, stateRoot: this.ledger.stateRoot().toHex(), txCount: this.ledger.txs.length, recent: txs });
         }
         const raw = await readJson(req);
-        const peerPaths = new Set(["/tx", "/vote", "/commit", "/bft/proposal", "/bft/prevote-certificate", "/bft/commit-certificate", "/bft/round-change", "/bft/proposal-seen", "/bft/equivocation", "/bft/checkpoint-sign"]);
+        const peerPaths = new Set(["/tx", "/vote", "/commit", "/bft/proposal", "/bft/prevote-certificate", "/bft/commit-certificate", "/bft/round-change", "/bft/proposal-seen", "/bft/equivocation", "/bft/checkpoint-sign", "/bft/state-attest"]);
         let body = raw;
         let authenticatedFrom: string | undefined;
         if (req.method === "POST" && peerPaths.has(url.pathname)) {
@@ -584,6 +637,12 @@ export class PeerNet {
         if (req.method === "POST" && url.pathname.startsWith("/bft/")) {
           const kernel = this.requireBft();
           if (!authenticatedFrom) return send(res, 401, { error: "PEER_AUTH" });
+          if (url.pathname === "/bft/state-attest") {
+            const a = body.attestation as StateAttestation;
+            const signer = kernel.validators.find(v => v.id === authenticatedFrom);
+            if (!this.attestations || !signer || !a || a.validatorId !== authenticatedFrom || !verifyStateAttestation(a, signer.publicKeyHex, this.attestationContext())) return send(res, 400, { error: "BFT_STATE_ATTESTATION_INVALID" });
+            return send(res, 200, { kept: this.attestations.offer(a) });
+          }
           if (url.pathname === "/bft/checkpoint-sign") {
             const body0 = body.body as CheckpointBody;
             try { return send(res, 200, { signature: this.signCheckpointIfApplied(body0) }); }

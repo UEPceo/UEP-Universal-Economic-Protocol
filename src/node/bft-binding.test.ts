@@ -71,7 +71,7 @@ test("item 2: after a restart from the durable store, a contradictory proposal a
   const dir = mkdtempSync(join(tmpdir(), "uep-bft-bind-"));
   try {
     const path = join(dir, "bft.json");
-    const k1 = createDurableBftConsensusKernel(a.domain, a.validators, 1, path);
+    const k1 = createDurableBftConsensusKernel(a.domain, a.validators, 1, path, {}, { init: "genesis" });
     const p1 = prop(k1);
     k1.createVote(p1, "prevote", "v0", a.keys[0]!.privateKey, sign(k1, a.keys, p1));
     const k2 = createDurableBftConsensusKernel(a.domain, a.validators, 1, path);

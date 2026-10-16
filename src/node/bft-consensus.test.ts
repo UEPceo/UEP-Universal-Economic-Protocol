@@ -205,7 +205,7 @@ test("durable write-ahead store survives restart and preserves anti-equivocation
   const directory = mkdtempSync(join(tmpdir(), "uep-bft-store-"));
   const statePath = join(directory, "validator-state.json");
   try {
-    const first = createDurableBftConsensusKernel(domain, validators, 1, statePath);
+    const first = createDurableBftConsensusKernel(domain, validators, 1, statePath, {}, { init: "genesis" });
     vote(first, keys, proposal(first), "prevote", "v0");
     const restarted = createDurableBftConsensusKernel(domain, validators, 1, statePath);
     assert.throws(() => vote(restarted, keys, proposal(restarted, hex("b")), "prevote", "v0"), /BFT_EQUIVOCATION/);
@@ -221,7 +221,7 @@ test("durable store persists a certified lock before precommit and restores it",
   const directory = mkdtempSync(join(tmpdir(), "uep-bft-lock-"));
   const statePath = join(directory, "validator-state.json");
   try {
-    const kernel = createDurableBftConsensusKernel(domain, validators, 1, statePath);
+    const kernel = createDurableBftConsensusKernel(domain, validators, 1, statePath, {}, { init: "genesis" });
     const p = proposal(kernel);
     const prevotes = keys.slice(0, 3).map((_, i) => vote(kernel, keys, p, "prevote", `v${i}`));
     const cert = kernel.voteCertificate(1, 0, "prevote", p.blockId, prevotes);
@@ -252,7 +252,7 @@ test("durable store rejects corrupted data and validator-set mismatch", async ()
   const directory = mkdtempSync(join(tmpdir(), "uep-bft-corrupt-"));
   const statePath = join(directory, "validator-state.json");
   try {
-    createDurableBftConsensusKernel(domain, validators, 1, statePath);
+    createDurableBftConsensusKernel(domain, validators, 1, statePath, {}, { init: "genesis" });
     writeFileSync(statePath, "{not-json");
     assert.throws(() => new BftDurableStateStore(statePath, domain, validators).load(), /BFT_STORE_CORRUPT_JSON/);
     writeFileSync(statePath, "{}");
@@ -272,7 +272,7 @@ test("durable round-change intent prevents signing conflicting lock claims after
   const directory = mkdtempSync(join(tmpdir(), "uep-bft-round-change-"));
   const statePath = join(directory, "validator-state.json");
   try {
-    const kernel = createDurableBftConsensusKernel(domain, validators, 1, statePath);
+    const kernel = createDurableBftConsensusKernel(domain, validators, 1, statePath, {}, { init: "genesis" });
     kernel.createRoundChange(1, 2, "v0", keys[0]!.privateKey); // no lock included
     const p = proposal(kernel, hex("a"), 1, 0);
     const prevotes = keys.slice(0, 3).map((_, i) => vote(kernel, keys, p, "prevote", `v${i}`));
