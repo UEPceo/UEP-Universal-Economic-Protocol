@@ -43,6 +43,11 @@ export type NetworkRegistryPolicy = {
   networkId: string;
   /** When true a node refuses to operate without a valid registry for this network. */
   requireAssetRegistry: boolean;
+  /**
+   * 0.5.84: height from which the requirement applies (default 0: always, when requireAssetRegistry).
+   * Lets a network announce the switch in advance (config/production-conditions.json).
+   */
+  requiredFromHeight?: number;
   /** Pinned governance key set (public keys only). */
   governance?: KeySetInput | KeySet;
 };
@@ -151,9 +156,11 @@ export class AssetRegistryStore {
  * Reference-node gate: with `requireAssetRegistry` the node refuses to operate unless a valid,
  * governance-verified registry for its network is present (in the store, or already in the ledger).
  */
-export function assertRegistryPolicy(policy: NetworkRegistryPolicy, registry: AssetRegistry | undefined, ledgerNetworkId: string): void {
+export function assertRegistryPolicy(policy: NetworkRegistryPolicy, registry: AssetRegistry | undefined, ledgerNetworkId: string, height?: number): void {
   if (policy.networkId !== ledgerNetworkId) throw new Error("NODE_REFUSES_TO_OPERATE: registry policy is for another network");
   if (!policy.requireAssetRegistry) return;
+  // 0.5.84: before requiredFromHeight the registry is optional; without a height the requirement applies (conservative).
+  if (height !== undefined && policy.requiredFromHeight !== undefined && height < policy.requiredFromHeight) return;
   if (!registry) throw new Error("NODE_REFUSES_TO_OPERATE: ASSET_REGISTRY_REQUIRED by the network policy and none is installed");
   if (registry.networkId !== ledgerNetworkId) throw new Error("NODE_REFUSES_TO_OPERATE: the asset registry belongs to another network");
   const gov = normalizeKeySet(policy.governance!, "asset registry governance");

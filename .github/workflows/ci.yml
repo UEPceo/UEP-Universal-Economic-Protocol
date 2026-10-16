@@ -55,6 +55,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # 0.5.84: TypeScript type check (tsc --noEmit, tsconfig.json), blocking. It runs inside the
+      # required "Node 22.x" / "Node 24.x" jobs so branch protection covers it. The suites run
+      # TypeScript through Node's type stripping, which does not check types. The type checker is
+      # installed for CI only (not a package dependency).
+      - name: Type check (tsc --noEmit, blocking)
+        run: |
+          npm install --no-save --no-package-lock typescript@5.9.3 @types/node@22
+          npx tsc --noEmit -p .
+
       # ADR 0002: no external calls or wall-clock reads in transition code.
       # Also the first step of test:all; kept separate so a failure is named.
       - name: Deterministic transitions lint
@@ -82,25 +91,47 @@ jobs:
       - name: Core suites (npm run test:core)
         run: npm run test:core
 
+      # 0.5.84: multi-process adversarial suites (crash points, equivocating leader, partitions,
+      # restarts, unified store, certified checkpoints). Blocking on both Node versions.
+      - name: Multi-process adversarial suites (npm run test:bft-adversarial)
+        run: npm run test:bft-adversarial
+
       - name: Index benches
         run: node --experimental-strip-types scripts/bench-indexes.ts
+
+      # 0.5.84: evidence record tied to the exact commit SHA (re-runs the security suite, ~1 min).
+      - name: Evidence record (commit SHA, Node version, per-suite results)
+        if: always()
+        run: node scripts/run-evidence.mjs --out artifacts/evidence test:security
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-test-node${{ matrix.node-version }}-${{ github.sha }}
+          path: artifacts/evidence/
+          if-no-files-found: warn
 
   # Blocking (0.5.81 item 10): seeded property / fuzz / multi-process fault runs over a fixed
   # seed list. Seeds, environment, commit and per-run results are uploaded as an artifact.
   property:
-    name: Seeded property and fault runs (blocking)
+    name: Seeded property and fault runs, Node ${{ matrix.node-version }} (blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22.x, 24.x]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Set up Node.js 24.x
+      - name: Set up Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v7
         with:
-          node-version: 24.x
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies
@@ -113,7 +144,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: seeded-runs
+          name: seeded-runs-node${{ matrix.node-version }}-${{ github.sha }}
           path: artifacts/test-runs/
           if-no-files-found: warn
 
@@ -122,19 +153,23 @@ jobs:
   # (TCP mesh tie-break, full-mesh wait, uep35.7.1 economic commitment).
   # A failure here fails CI.
   labs:
-    name: Labs (blocking, known issues excluded)
+    name: Labs + depth-64 ZK, Node ${{ matrix.node-version }} (blocking, known issues excluded)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22.x, 24.x]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Set up Node.js 24.x
+      - name: Set up Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v7
         with:
-          node-version: 24.x
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Set up Rust 1.85.1 (uep-core lab crates)
@@ -158,8 +193,23 @@ jobs:
       - name: Build uep-zk
         run: npm run build:uep-zk
 
+      - name: ZK verifying-key pins
+        run: npm run check:zk-pins
+
       - name: Lab suites (npm run test:lab)
         run: npm run test:lab
+
+      # 0.5.84: depth-64 real-proof end-to-end test through submit() (UEP_ZK_D64=1), blocking.
+      - name: Depth-64 ZK end-to-end (UEP_ZK_D64=1)
+        run: node scripts/run-evidence.mjs --out artifacts/evidence-zk test:zk-d64
+
+      - name: Upload ZK evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-zk-d64-node${{ matrix.node-version }}-${{ github.sha }}
+          path: artifacts/evidence-zk/
+          if-no-files-found: warn
 
   # Non-blocking: lab files listed in scripts/lab-known-issues.json (known lab
   # issues and timing-sensitive multi-process tests). Failures here do not fail CI.
@@ -204,32 +254,3 @@ jobs:
 
       - name: Known-issue lab files (npm run test:lab:known)
         run: npm run test:lab:known
-
-  # Non-blocking: TypeScript type check (tsc --noEmit with tsconfig.json). The
-  # suites run TypeScript through Node's type stripping, which does not check
-  # types; this job reports the remaining type errors without failing CI.
-  # The tools are installed for this job only (not package dependencies).
-  typecheck:
-    name: Type check (tsc --noEmit, non-blocking)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js 22.x
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22.x
-          cache: npm
-
-      - name: Install dependencies and the type checker
-        run: |
-          npm ci
-          npm install --no-save --no-package-lock typescript@5.9.3 @types/node@22
-
-      - name: tsc --noEmit
-        run: npx tsc --noEmit -p .
