@@ -17,7 +17,7 @@ Primary reference: **Tendermint**, E. Buchman, J. Kwon, Z. Milosevic, *The lates
 | Run | Config | Result | States (distinct) | Output |
 |---|---|---|---|---|
 | Rounds 0..1, durable | `UepBftLocking_R1.cfg` | No error | see `out/tlc-persist-r1.txt` | `out/tlc-persist-r1.txt` |
-| Rounds 0..2, durable | `UepBftLocking.cfg` | see RESOLUTION | see output | `out/tlc-persist-r2.txt` |
+| Rounds 0..2, durable | `UepBftLocking.cfg` | No error (complete, depth 38, 12 min, 6 workers) | 41,916,094 (234,057,179 generated) | `out/tlc-persist-r2.txt` |
 | Rounds 0..1, no durability | `UepBftLocking_NoPersist.cfg` | **Agreement violated** (expected; counterexample trace) | — | `out/tlc-nopersist.txt` |
 
 Invariants: `TypeOK`, `Agreement` (no two values decided at one height), `DecidedIsLocked`, `NoHonestEquivocation`; temporal property `LockOnlyRises`.
