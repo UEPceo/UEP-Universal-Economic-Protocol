@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { generateKeyPairSync } from "node:crypto";
 import { loadPinnedGovernance, verifyPinnedGovernance, governanceManifestHash } from "./pinned-governance.ts";
-import { registryPolicyFor, parseProductionConditions } from "./production-conditions.ts";
+import { registryPolicyFor, parseProductionConditions } from "../network/production-conditions.ts";
 import { meetsThreshold, normalizeKeySet } from "../core/asset-registry.ts";
 import { signEd25519 } from "../core/ed25519.ts";
 
