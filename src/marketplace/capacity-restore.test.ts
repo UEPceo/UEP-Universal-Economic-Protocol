@@ -17,7 +17,7 @@ test("restore refuses a snapshot whose listing capacity does not add up", () => 
   const forged = buildMarketplaceSnapshot({
     marketplaceId: snap.marketplaceId,
     treasuryId: snap.treasuryId,
-    networkId: snap.networkId,
+    networkId: snap.networkId as string,
     height: snap.height,
     orderSequence: snap.orderSequence,
     receipts: snap.settlement.receipts,

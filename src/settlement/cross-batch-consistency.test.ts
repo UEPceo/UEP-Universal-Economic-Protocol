@@ -34,7 +34,7 @@ test("receipts anchored over several rounds form one consistent append-only log"
       settle(m, o.orderId, buyer);
     }
   };
-  const anchors = [];
+  const anchors: any[] = [];
   for (const k of [3, 1, 5, 2]) {
     round(k);
     l.advanceHeight(l.height + 1);

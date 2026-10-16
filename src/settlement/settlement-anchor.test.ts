@@ -42,7 +42,7 @@ test("settled orders anchor into ledger state; inclusion proofs verify against t
   const m = market(3);
   const l = ledger();
   l.advanceHeight(4);
-  const anchor = m.anchorSettlements(l);
+  const anchor = m.anchorSettlements(l)!;
   assert.equal(anchor.count, 3);
   assert.equal(anchor.height, 4);
   assert.equal(anchor.totals.EUR!.fees, "9");

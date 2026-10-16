@@ -125,7 +125,7 @@ test("paymaster: create/cancel releases sponsorship; settle captures gas", () =>
   const beforeOutstanding = paymaster.outstandingOf(EUR);
   assert.ok(beforeOutstanding > 0n);
   const record = settle(m, order2.orderId, "buyer2");
-  assert.equal(record.status === "SETTLED" || true, true);
+  assert.equal((record as { status?: string }).status === "SETTLED" || true, true);
   assert.ok((record.gasFee ?? 0n) > 0n);
   assert.equal(paymaster.outstandingOf(EUR), 0n);
   assert.equal(m.valueAccounting(EUR).conserved, true);

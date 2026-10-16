@@ -36,12 +36,12 @@ test("paymaster gas captured on the marketplace is spent from custody on the led
   const bridge = new ValueBridge(ledger, marketplace, custody, feeAccount, admin);
   bridge.deposit("buyer-1", buyer, "uep-test/teur", 1_000n, 5n);
   const listing = publishAs(marketplace, { providerId: "provider-1", title: "slot", description: "s", category: "API", asset: "uep-test/teur", unitPrice: 20n, capacity: 5n });
-  const quote = marketplace.checkoutQuote(listing.listingId, 1n, 5n).gasQuote;
+  const quote = marketplace.checkoutQuote(listing.listingId, 1n, 5n).gasQuote!;
   assert.equal(quote.quotedAt, ledger.height);
   const order = reserveAs(marketplace, { listingId: listing.listingId, buyerId: "buyer-1", quantity: 1n, gasQuote: quote });
   fund(marketplace, order.orderId, order.fundingDue);
   deliverWithExpectedHash(marketplace, order.orderId, "provider-1", Buffer.from("ok"), contentHash(Buffer.from("ok")));
-  const settled = settle(marketplace, order.orderId, "buyer-1");
+  const settled = settle(marketplace, order.orderId, "buyer-1") as ReturnType<typeof settle> & { gasFee: bigint };
   assert.ok(settled.gasFee > 0n);
   const before = ledger.balanceOfAsset(feeAccount.accountId, "uep-test/teur");
   const swept = bridge.sweepGas("uep-test/teur", settled.gasFee, 9n);

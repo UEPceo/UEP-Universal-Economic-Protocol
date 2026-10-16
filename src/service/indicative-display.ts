@@ -120,7 +120,7 @@ export async function displayIndicative(id: IndicativeSourceId | RemovedIndicati
   if (!Object.hasOwn(INDICATIVE_SOURCES, id)) return removedIndicative(id as string, opts);
   const src = INDICATIVE_SOURCES[id as IndicativeSourceId];
   const queriedAt = (opts.now ?? (() => new Date()))().toISOString();
-  const base: IndicativeDisplay = { source: id, label: src.label, queriedAt, available: false, value: null, period: null, sourceUrl: src.url, attribution: src.attribution, note: INDICATIVE_DISPLAY_NOTE };
+  const base: IndicativeDisplay = { source: id as IndicativeSourceId, label: src.label, queriedAt, available: false, value: null, period: null, sourceUrl: src.url, attribution: src.attribution, note: INDICATIVE_DISPLAY_NOTE };
   try {
     const origin = new URL(src.url).origin;
     const res = await (opts.fetch ?? fetch)(src.url, { method: "GET", headers: { accept: "application/json" }, signal: AbortSignal.timeout(opts.timeoutMs ?? 2500) });

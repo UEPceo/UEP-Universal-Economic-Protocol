@@ -10,7 +10,7 @@ describe("UEP-NET-001", () => {
     assert.equal(LAB_PROFILE.ceremony, false);
     assert.equal(LAB_PROFILE.circuitId, "UEP-27-SPEND-POSEIDON-D64-v6-rotblind");
     assert.equal(LAB_PROFILE.depth, 64);
-    const blocked = activateProfile({ ...LAB_PROFILE, kind: "TESTNET", testnetAllowed: true });
+    const blocked = activateProfile({ ...LAB_PROFILE, kind: "TESTNET", testnetAllowed: true } as unknown as typeof LAB_PROFILE);
     assert.equal(blocked.ok, false);
     if (!blocked.ok) assert.equal(blocked.reason, "TESTNET_BLOCKED_NO_CEREMONY");
     assert.equal(assertSameNetwork(LAB_PROFILE, "uep-lab-1", "lab-earth-0").ok, true);

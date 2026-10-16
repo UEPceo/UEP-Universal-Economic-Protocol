@@ -81,7 +81,7 @@ export function parallelSafeScheduleApply(
     sequentialHeight,
     scheduledHeight,
     rootsMatch: sequentialRoot === scheduledRoot,
-    fullStateEqual: seq.observableEquals(scheduled),
+    fullStateEqual: (seq as { observableEquals(o: unknown): boolean }).observableEquals(scheduled),
     waveCount: waves.length,
     txCount: txs.length,
   };
@@ -91,7 +91,7 @@ export function fullStateRootsEqual(
   a: SchedulableState,
   b: SchedulableState,
 ): boolean {
-  return a.observableEquals(b);
+  return (a as { observableEquals(o: unknown): boolean }).observableEquals(b);
 }
 
 export function executeOrderedBatches(
@@ -141,6 +141,6 @@ export function sameTxsDifferentValidSchedules(
     rootB,
     heightA: a.sequence,
     heightB: b.sequence,
-    equal: a.observableEquals(b),
+    equal: (a as { observableEquals(o: unknown): boolean }).observableEquals(b),
   };
 }

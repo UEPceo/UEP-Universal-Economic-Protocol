@@ -27,7 +27,6 @@ function dummyTx(partial: Partial<UepTransaction> & { nullifier: Fr; txId?: Fr }
     amount: 1000n,
     fee: 1n,
     nonce: new Fr(4),
-    nullifier: partial.nullifier,
     inputCommitments: [],
     outputCommitments: [],
     transactionCommitment: new Fr(5),
@@ -193,8 +192,8 @@ describe("canonical tx commitment", () => {
       inputCommitments: [new Fr(6)],
       outputCommitments: [new Fr(7)],
     };
-    const c1 = computeTxCommitment(args);
-    const c2 = computeTxCommitment({ ...args, amount: 1001n });
+    const c1 = computeTxCommitment(args as Parameters<typeof computeTxCommitment>[0]);
+    const c2 = computeTxCommitment({ ...args, amount: 1001n } as Parameters<typeof computeTxCommitment>[0]);
     assert.equal(c1.eq(c2), false);
     assert.equal(txIdFromCommitment(c1, args.nullifier).eq(txIdFromCommitment(c2, args.nullifier)), false);
   });

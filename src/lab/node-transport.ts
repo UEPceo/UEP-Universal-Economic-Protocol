@@ -180,6 +180,8 @@ export class NetworkLabNode {
     newStateRoot: string;
     transitionId: string;
     nullifier: string;
+    /** Accepted for caller compatibility; not used by this transport. */
+    previousNullifierRoot?: string;
     newNullifierRoot?: string;
   }): { ok: true; envelope: NodeEnvelope } | { ok: false; error: string } {
     if (!this.isSequencer) return { ok: false, error: "NOT_SEQUENCER" };

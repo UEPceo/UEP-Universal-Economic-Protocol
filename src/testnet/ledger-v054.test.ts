@@ -121,7 +121,7 @@ test("snapshot persists policy windows and the network tag", async () => {
   assert.equal(restored.policy.windowVolume(alice.accountId.toHex(), "uep-test/teur", l.height) > 0n, true);
   const bad = structuredClone(prepared.tx);
   bad.protocol = "other";
-  assert.equal(l.submit(bad).error?.code, "WRONG_NETWORK");
+  assert.equal((l.submit(bad) as { error?: { code?: string } }).error?.code, "WRONG_NETWORK");
 });
 
 test("pending index and owner index", async () => {

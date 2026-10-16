@@ -26,7 +26,7 @@ test("settling the same order twice returns the same record and does not move ba
   const buyer = m.availableBalance("uep-test/teur", "b0");
   const provider = m.availableBalance("uep-test/teur", "p1");
   const second = settle(m, orderId, "b0");
-  assert.equal(second.settlementId, first.settlementId);
+  assert.equal((second as { settlementId?: string }).settlementId, (first as { settlementId?: string }).settlementId);
   assert.equal(m.availableBalance("uep-test/teur", "b0"), buyer);
   assert.equal(m.availableBalance("uep-test/teur", "p1"), provider);
 });

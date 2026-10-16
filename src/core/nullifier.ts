@@ -60,6 +60,11 @@ export class NullifierSet {
     return true;
   }
 
+  /** Number of distinct nullifiers inserted. */
+  get size(): number {
+    return this.seen.size;
+  }
+
   root(): Fr {
     return this.tree.root();
   }

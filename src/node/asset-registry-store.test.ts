@@ -24,7 +24,7 @@ import { ASSET_REGISTRY_STORE_FILE, AssetRegistryStore, assertRegistryPolicy, re
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 // TEST-ONLY governance / namespace keys.
 const GOV = generateEd25519KeyPair(), OTHER_GOV = generateEd25519KeyPair(), NS = generateEd25519KeyPair();
-const tmpl = (a: AssetRecord): AssetDefinitionTemplate => {
+const tmpl = (a: AssetRecord): AssetDefinitionTemplate & { issuer: { keys: string[] } } => {
   const { issuer: _i, network: _n, minProtocolFee, ...rest } = a;
   return { ...rest, ...(minProtocolFee !== undefined ? { minProtocolFee: minProtocolFee.toString() } : {}), issuer: { keys: [generateEd25519KeyPair().publicKeyHex] } } as never;
 };

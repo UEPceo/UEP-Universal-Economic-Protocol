@@ -39,6 +39,7 @@ export type AssembledNode = {
   api: UepServiceApi;
   relay: CategoryRelayAdapter;
   oracle: PolicyOracleAdapter;
+  attachedCategories: string[];
   categories: { swap: SwapCategory; relay: RelayCategory; dispute: DisputeCategory; drip: DripController };
   arbiter: ReturnType<typeof createMarketplaceIdentity>;
   circuitTag: string;

@@ -25,7 +25,7 @@ export type BatchTx = {
     signature: string;
   };
   /** ECON-04 protocol kind (default transfer). */
-  kind?: "transfer" | "hold_open" | "hold_release" | "hold_consume";
+  kind?: "transfer" | "hold_open" | "hold_release" | "hold_consume" | "hold_expire" | "hold_resolve";
   holdId?: string;
   obligationId?: string;
   providerId?: string;

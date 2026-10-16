@@ -6,7 +6,7 @@ const steps = [
   ["npm", ["run", "example:service"]],
   ["npm", ["run", "test:marketplace"]],
 ];
-for (const [cmd, args] of steps) {
+for (const [cmd, args] of steps as Array<[string, string[]]>) {
   const run = spawnSync(cmd, args, { stdio: "inherit" });
   if (run.status !== 0) throw new Error(`AUDIT_SURFACE_FAIL ${args.join(" ")}`);
 }

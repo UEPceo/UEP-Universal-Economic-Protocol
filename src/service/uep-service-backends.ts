@@ -56,6 +56,23 @@ export class SpendInbox {
   }
 }
 
+/**
+ * Structural provider shapes accepted by UepServiceApi (0.5.84 type fix): the lab classes
+ * and the reference-node adapters (src/service/module-adapters.ts) both satisfy them.
+ */
+export type LabComputeLike = Omit<LabCompute, "providerId" | "submit"> & {
+  readonly providerId: string;
+  submit(programId: string, input: Buffer): Promise<{ jobId: string; outputHash: string; confidence: string }>;
+};
+export type LabRelayLike = Omit<LabRelay, "providerId" | "pull"> & {
+  readonly providerId: string;
+  pull(): Promise<Array<{ id: string; body: string; final: false } & Record<string, unknown>>>;
+};
+export type LabOracleLike = Omit<LabOracle, "providerId" | "quote"> & {
+  readonly providerId: string;
+  quote(feed: string): Promise<{ feed: string; value: string; confidence: string; settles: false }>;
+};
+
 export class LabCompute {
   readonly providerId = "lab-compute";
   readonly capability = "compute" as const;

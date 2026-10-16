@@ -235,8 +235,8 @@ describe("UEP-34.2/34.3 quorum certificates", () => {
     assert.ok(!("error" in msg));
     if ("error" in msg) return;
     const cert = assembleQuorumCert(msg, [
-      { nodeId: next.id.nodeId, signature: "00".repeat(64) },
-      { nodeId: leader.id.nodeId, signature: "11".repeat(64) },
+      { nodeId: next.id.nodeId, signature: "00".repeat(64) } as never,
+      { nodeId: leader.id.nodeId, signature: "11".repeat(64) } as never,
     ]);
     const r = verifyQuorumCert(cert, lab.cfg, (id) =>
       lab.registry.publicKeyHex(id),

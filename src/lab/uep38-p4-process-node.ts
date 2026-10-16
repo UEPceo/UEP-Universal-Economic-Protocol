@@ -46,8 +46,8 @@ import {
 } from "./uep37-view-change-qc.ts";
 
 /** v0.5.3: `view` is the view the leader proposes in (absent = view 0, earlier proposals). */
-type P4ProposalExtra = ProposalPayload & { amount: string; zkSpend: string; view?: number };
-type P4Vote = { nodeId: string; digest: string; signature: string };
+type P4ProposalExtra = ProposalPayload & { amount: string; zkSpend: string; view?: number; spendId?: string; senderAuth?: unknown };
+type P4Vote = { nodeId: string; digest: string; signature: string; spendCertSig?: string };
 function p4VoteBody(digest: string, height: number, epoch = 1, view = 0): string {
   return `UEP-38.21-P4-VOTE|${LAB_PROFILE.networkId}|${epoch}|${view}|${height}|${digest}`;
 }

@@ -73,6 +73,9 @@ export type TreasuryWithdrawal = {
   authorizationRef: string;
 };
 
+/** What the treasury authorizer sees: the withdrawal without id/timestamp, keyed by withdrawalId (the shape passed at runtime). */
+export type TreasuryAuthorizationInput = Omit<TreasuryWithdrawal, "timestamp" | "id"> & { withdrawalId: string };
+
 /** Minimum Marketplace fee for any positive settled amount when the fee rate is non-zero (UEP-A16). */
 export const MIN_MARKETPLACE_FEE = 1n;
 
@@ -126,7 +129,7 @@ export class MarketplaceTreasury {
   readonly withdrawals: TreasuryWithdrawal[] = [];
   private readonly settledOrders = new Set<string>();
   private readonly withdrawnRefs = new Set<string>();
-  private readonly authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
+  private readonly authorizationVerifier?: (input: TreasuryAuthorizationInput) => boolean;
   /** v0.4.7: per-asset Marketplace fee floor (asset -> minimum, each >= MIN_MARKETPLACE_FEE). */
   private readonly minFeeByAsset = new Map<string, bigint>();
   /** v0.5.1: default entry stamp (a height; the Marketplace passes its own). */
@@ -143,7 +146,7 @@ export class MarketplaceTreasury {
     treasuryId?: string;
     feeBps?: number;
     allocationBps?: Record<TreasuryBucket, number>;
-    authorizationVerifier?: (input: Omit<TreasuryWithdrawal, "timestamp">) => boolean;
+    authorizationVerifier?: (input: TreasuryAuthorizationInput) => boolean;
     /** v0.4.7: per-asset fee floors in the asset's smallest unit (default MIN_MARKETPLACE_FEE for every asset). */
     minFeeByAsset?: Record<string, bigint>;
     /** v0.5.1 (ADR 0002): height stamped on entries when no timestamp is passed (default: height 0). */

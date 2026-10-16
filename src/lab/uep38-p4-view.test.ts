@@ -36,7 +36,7 @@ describe("UEP-38.17 P4 view-change", () => {
     const env = v.lab.buildProposal(1000n, 1);
     const ballots = v.lab.replicas.map((rep) => v.lab.vote(env, rep)).filter((x) => x);
     assert.ok(ballots.length >= 3);
-    assert.equal(v.lab.commit(env, ballots).ok, true);
+    assert.equal(v.lab.commit(env, ballots as Parameters<typeof v.lab.commit>[1]).ok, true);
     v.onCommittedHeight(1);
     assert.equal(v.height, 2);
     assert.equal(v.view, 0);
