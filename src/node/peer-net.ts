@@ -3,6 +3,7 @@
  * A spend is applied only after two of three votes. A silent peer is skipped.
  */
 import { createServer, type Server } from "node:http";
+import { AttestationRegistry, compareWithAttestations, signStateAttestation, verifyStateAttestation, type StateAttestation, type StorePosition } from "./bft-store-continuity.ts";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { signEd25519, verifyEd25519, type PrivateKeyLike } from "../core/ed25519.ts";
@@ -17,6 +18,7 @@ import { HeightFloor } from "./height-floor.ts";
 import { EquivocationEvidenceStore, makeEquivocationEvidence, verifyEquivocationEvidence, type EquivocationEvidence } from "./bft-equivocation.ts";
 import { BftRoundTimer, type RoundTimerConfig } from "./bft-round-timer.ts";
 import { PEER_ENVELOPE_LIMITS, PeerKeyRegistry, PeerReplayGuard, signPeerEnvelope, type KeyStatement, type PeerEnvelopeV2 } from "./peer-envelope.ts";
+import { acceptSnapshotAgainstCheckpoint, checkpointBodyFor, quorumSize, signCheckpoint, validSigners, verifyCertifiedCheckpoint, type CertifiedCheckpoint, type CheckpointBody, type CheckpointContext } from "./certified-checkpoint.ts";
 import { CertifiedCommitter, CommitLog, migrateJournalV1, txFromWire, type CommitResult, type CommitStatus, type CommitterOptions } from "./certified-commit.ts";
 
 /**
@@ -57,6 +59,14 @@ export class PeerNet {
   private readonly bftJournalPath?: string;
   private readonly commitLogPath?: string;
   private committer?: CertifiedCommitter;
+  /** 0.5.84 store continuity (C): highest verified state attestation per validator (peer side). */
+  private attestations?: AttestationRegistry;
+  private attestPending: StorePosition | null = null;
+  private attestScheduled = false;
+  /** 0.5.84 item 2: last certified checkpoint this node built or accepted. */
+  latestCheckpoint: CertifiedCheckpoint | null = null;
+  /** 0.5.84 item 2: when true, a peer snapshot is installed only with a matching certified checkpoint. */
+  requireCertifiedCheckpoint = false;
   /** Crash-test hook passed to the certified committer. */
   commitFaultInjector?: CommitterOptions["faultInjector"];
   /** 0.5.83 Block C crash-test hook (after a torn log line reached the disk). */
@@ -119,7 +129,7 @@ export class PeerNet {
   /** Attach the experimental BFT kernel to this authenticated validator transport.
    * The BFT validator identity must be the same pinned key as this PeerNet identity.
    */
-  configureBftConsensus(kernel: BftConsensusKernel): void {
+  configureBftConsensus(kernel: BftConsensusKernel, opts: { log?: CommitLog; requireDurable?: boolean } = {}): void {
     const validator = kernel.validators.find(item => item.id === this.id);
     if (!validator || validator.publicKeyHex !== this.publicKeyHex) throw new Error("BFT_TRANSPORT_VALIDATOR_KEY_MISMATCH");
     if (kernel.domain.networkId !== this.ledger.networkId || kernel.domain.domainId !== this.ledger.domainId) {
@@ -128,12 +138,15 @@ export class PeerNet {
     this.bftKernel = kernel;
     this.evidence = new EquivocationEvidenceStore(this.evidencePath, kernel);
     // H1: one durable, hash-chained commit log per node; the 0.5.80 JSON journal is migrated once.
-    const log = new CommitLog(this.commitLogPath ?? null);
+    // 0.5.84: a validator may pass the unified-store commit log (openUnifiedValidatorState).
+    const log = opts.log ?? new CommitLog(this.commitLogPath ?? null);
     if (this.bftJournalPath && existsSync(this.bftJournalPath)) {
       migrateJournalV1(this.bftJournalPath, log);
       renameSync(this.bftJournalPath, this.bftJournalPath + ".migrated");
     }
-    this.committer = new CertifiedCommitter(log, kernel, () => this.ledger, { faultInjector: (p) => this.commitFaultInjector?.(p), afterTornWrite: () => this.commitAfterTornWrite?.() });
+    this.committer = new CertifiedCommitter(log, kernel, () => this.ledger, { faultInjector: (p) => this.commitFaultInjector?.(p), afterTornWrite: () => this.commitAfterTornWrite?.(), requireDurable: opts.requireDurable });
+    const storedCp = log.store?.checkpoint as CertifiedCheckpoint | null | undefined;
+    if (storedCp) { try { verifyCertifiedCheckpoint(storedCp, this.checkpointContext()); this.latestCheckpoint = storedCp; } catch { /* context changed: ignore */ } }
   }
 
   /** Use another round-change timeout (ticks are producer heights). */
@@ -369,6 +382,112 @@ export class PeerNet {
     return out.reapplied;
   }
 
+  /** 0.5.84 item 2: checkpoint context from the configured BFT kernel. */
+  checkpointContext(): CheckpointContext {
+    const k = this.requireBft();
+    return { networkId: k.domain.networkId, domainId: k.domain.domainId, validators: k.validators, faultTolerance: k.faultTolerance };
+  }
+
+  /** Body for this node's head: the last APPLIED height of the durable journal, which must be the ledger head. */
+  checkpointBodyForHead(): CheckpointBody {
+    const c = this.requireCommitter();
+    const applied = c.log.all().filter(e => e.type === "APPLIED").at(-1);
+    if (!applied) throw new Error("CHECKPOINT_NOTHING_APPLIED");
+    if (applied.postRoot !== this.ledger.stateRoot().toHex() || this.ledger.txs.at(-1)?.txId.toHex() !== applied.blockId) throw new Error("CHECKPOINT_HEAD_NOT_JOURNALED");
+    return checkpointBodyFor(this.checkpointContext(), applied.height, applied.blockId, this.ledger);
+  }
+
+  /** Sign only what this node has itself applied and journaled, at its current head. */
+  private signCheckpointIfApplied(body: CheckpointBody): CheckpointSignatureLike {
+    const mine = this.checkpointBodyForHead();
+    if (JSON.stringify(Object.entries(mine).sort()) !== JSON.stringify(Object.entries(body ?? {}).sort())) throw new Error("CHECKPOINT_BODY_MISMATCH");
+    return signCheckpoint(mine, this.id, this.privateKey);
+  }
+
+  /** Collect signatures from peers for this node's head; resolves only with a quorum (2f + 1). */
+  async bftCertifyCheckpoint(): Promise<CertifiedCheckpoint> {
+    const ctx = this.checkpointContext();
+    const body = this.checkpointBodyForHead();
+    const signatures = [signCheckpoint(body, this.id, this.privateKey)];
+    const replies = await Promise.all(this.peers.map(peer => postRetry(peer.url + "/bft/checkpoint-sign", () => this.signed("/bft/checkpoint-sign", { body }))));
+    for (const r of replies) if (r?.signature) signatures.push(r.signature as CheckpointSignatureLike);
+    const cp: CertifiedCheckpoint = { body, signatures };
+    const signers = validSigners(cp, ctx);
+    if (signers.length < quorumSize(ctx)) throw new Error("CHECKPOINT_QUORUM_MISSING");
+    const certified = { body, signatures: cp.signatures.filter(s => signers.includes(s.validatorId)) };
+    this.acceptCheckpoint(certified);
+    return certified;
+  }
+
+  /** Keep a verified checkpoint that matches (or is behind) the local journal; reject stale or conflicting ones. */
+  acceptCheckpoint(cp: CertifiedCheckpoint): void {
+    verifyCertifiedCheckpoint(cp, this.checkpointContext());
+    if (this.latestCheckpoint && cp.body.height <= this.latestCheckpoint.body.height) {
+      if (cp.body.height === this.latestCheckpoint.body.height && cp.body.stateRoot === this.latestCheckpoint.body.stateRoot) return;
+      throw new Error("CHECKPOINT_STALE");
+    }
+    const applied = this.committer?.log.all().find(e => e.type === "APPLIED" && e.height === cp.body.height);
+    if (applied && (applied.blockId !== cp.body.blockId || (applied.postRoot !== null && applied.postRoot !== cp.body.stateRoot))) throw new Error("CHECKPOINT_CONFLICT");
+    this.latestCheckpoint = structuredClone(cp);
+    this.committer?.log.store?.append([{ kind: "checkpoint", checkpoint: this.latestCheckpoint }]);
+  }
+
+  /** 0.5.84 store continuity (C): keep peers' attestations (persisted in `registryPath`, or memory only when null). */
+  configureStateAttestation(registryPath: string | null): void {
+    this.attestations = new AttestationRegistry(registryPath);
+  }
+
+  private attestationContext() { const k = this.requireBft(); return { networkId: k.domain.networkId, domainId: k.domain.domainId }; }
+
+  /**
+   * Sign (this validator -> stateSeq, stateHash) and send it to every peer, best effort. Called after a
+   * durable store write; several calls in one turn are coalesced into one send of the latest position.
+   */
+  attestState(position: StorePosition): void {
+    if (!this.attestPending || position.seq > this.attestPending.seq) this.attestPending = position;
+    if (this.attestScheduled) return;
+    this.attestScheduled = true;
+    setImmediate(() => {
+      this.attestScheduled = false;
+      const p = this.attestPending; this.attestPending = null;
+      if (!p || !this.bftKernel) return;
+      const attestation = signStateAttestation({ v: 1, ...this.attestationContext(), validatorId: this.id, stateSeq: p.seq, stateHash: p.hash }, this.privateKey);
+      void Promise.all(this.peers.map(peer => post(peer.url + "/bft/state-attest", this.signed("/bft/state-attest", { attestation })))).catch(() => {});
+    });
+  }
+
+  /**
+   * Ask every peer for the newest attestation it holds about THIS validator and compare with the
+   * local store position. `responses` counts peers that answered (with or without an attestation).
+   */
+  async bftCheckStateAgainstPeers(local: StorePosition): Promise<{ responses: number; stale: boolean; maxSeen: number }> {
+    const me = this.requireBft().validators.find(v => v.id === this.id);
+    if (!me) throw new Error("BFT_UNKNOWN_VALIDATOR");
+    const ctx = this.attestationContext();
+    const found: StateAttestation[] = [];
+    let responses = 0;
+    await Promise.all(this.peers.map(async peer => {
+      const r = await get(`${peer.url}/bft/state-attest?validator=${encodeURIComponent(this.id)}`);
+      if (!r || !("attestation" in r)) return;
+      responses++;
+      const a = r.attestation;
+      if (a && verifyStateAttestation(a, me.publicKeyHex, ctx) && a.validatorId === this.id) found.push(a);
+    }));
+    return { responses, ...compareWithAttestations(local, found) };
+  }
+
+  /** Fetch the newest certified checkpoint any peer has and verify it (no state change beyond keeping it). */
+  async bftFetchCheckpoint(): Promise<CertifiedCheckpoint | null> {
+    let best: CertifiedCheckpoint | null = null;
+    for (const peer of this.peers) {
+      const cp = await get(peer.url + "/bft/checkpoint") as unknown as CertifiedCheckpoint | undefined;
+      if (!cp?.body) continue;
+      try { verifyCertifiedCheckpoint(cp, this.checkpointContext()); } catch { continue; }
+      if (!best || cp.body.height > best.body.height) best = cp;
+    }
+    return best;
+  }
+
   private requireBft(): BftConsensusKernel {
     if (!this.bftKernel) throw new Error("BFT_TRANSPORT_NOT_CONFIGURED");
     return this.bftKernel;
@@ -467,6 +586,13 @@ export class PeerNet {
         if (req.method === "GET" && url.pathname === "/snapshot") {
           return send(res, 200, this.ledger.snapshot());
         }
+        if (req.method === "GET" && url.pathname === "/bft/state-attest") {
+          const v = url.searchParams.get("validator") ?? "";
+          return send(res, 200, { attestation: this.attestations?.get(v) ?? null });
+        }
+        if (req.method === "GET" && url.pathname === "/bft/checkpoint") {
+          return send(res, this.latestCheckpoint ? 200 : 404, this.latestCheckpoint ?? { error: "NO_CHECKPOINT" });
+        }
         if (req.method === "GET" && url.pathname === "/bft/commits" && this.committer) {
           const from = Math.max(0, Number(url.searchParams.get("from") ?? 0) | 0);
           const out = [];
@@ -482,7 +608,7 @@ export class PeerNet {
           return send(res, 200, { id: this.id, height: this.ledger.height, stateRoot: this.ledger.stateRoot().toHex(), txCount: this.ledger.txs.length, recent: txs });
         }
         const raw = await readJson(req);
-        const peerPaths = new Set(["/tx", "/vote", "/commit", "/bft/proposal", "/bft/prevote-certificate", "/bft/commit-certificate", "/bft/round-change", "/bft/proposal-seen", "/bft/equivocation"]);
+        const peerPaths = new Set(["/tx", "/vote", "/commit", "/bft/proposal", "/bft/prevote-certificate", "/bft/commit-certificate", "/bft/round-change", "/bft/proposal-seen", "/bft/equivocation", "/bft/checkpoint-sign", "/bft/state-attest"]);
         let body = raw;
         let authenticatedFrom: string | undefined;
         if (req.method === "POST" && peerPaths.has(url.pathname)) {
@@ -511,6 +637,17 @@ export class PeerNet {
         if (req.method === "POST" && url.pathname.startsWith("/bft/")) {
           const kernel = this.requireBft();
           if (!authenticatedFrom) return send(res, 401, { error: "PEER_AUTH" });
+          if (url.pathname === "/bft/state-attest") {
+            const a = body.attestation as StateAttestation;
+            const signer = kernel.validators.find(v => v.id === authenticatedFrom);
+            if (!this.attestations || !signer || !a || a.validatorId !== authenticatedFrom || !verifyStateAttestation(a, signer.publicKeyHex, this.attestationContext())) return send(res, 400, { error: "BFT_STATE_ATTESTATION_INVALID" });
+            return send(res, 200, { kept: this.attestations.offer(a) });
+          }
+          if (url.pathname === "/bft/checkpoint-sign") {
+            const body0 = body.body as CheckpointBody;
+            try { return send(res, 200, { signature: this.signCheckpointIfApplied(body0) }); }
+            catch (e) { return send(res, 409, { error: (e as Error).message }); }
+          }
           if (url.pathname === "/bft/round-change") {
             const rc = body.roundChange as BftRoundChange;
             if (!rc || rc.validatorId !== authenticatedFrom || !kernel.verifyRoundChange(rc)) return send(res, 400, { error: "BFT_ROUND_CHANGE_INVALID" });
@@ -744,6 +881,17 @@ export class PeerNet {
       const floor = this.heightFloor?.read()?.height ?? 0;
       const next = UepLedger.restore(snap, trust, keys, { minHeight: Math.max(this.ledger.height, floor) });
       if (!extendsHistory(this.ledger, next, this.committer)) return false;
+      if (this.requireCertifiedCheckpoint) {
+        // 0.5.84 item 2: the snapshot must match a quorum-signed checkpoint above what this node has.
+        const cpRaw = await get(ahead.peer.url + "/bft/checkpoint") as unknown as CertifiedCheckpoint | undefined;
+        if (!cpRaw?.body) return false;
+        acceptSnapshotAgainstCheckpoint(cpRaw, this.checkpointContext(), next, {
+          ledger: this.ledger, lastCheckpoint: this.latestCheckpoint,
+          appliedAt: (h) => { const e = this.committer?.log.all().find(x => x.type === "APPLIED" && x.height === h); return e ? { blockId: e.blockId, postRoot: e.postRoot } : undefined; },
+        });
+        this.latestCheckpoint = structuredClone(cpRaw);
+        this.committer?.log.store?.append([{ kind: "checkpoint", checkpoint: this.latestCheckpoint }]);
+      }
       this.heightFloor?.check(next, { heightOnly: true });
       this.ledger = next;
       this.heightFloor?.record(next);
@@ -845,6 +993,8 @@ async function get(url: string): Promise<Record<string, unknown> | undefined> {
 }
 
 /** True iff `next` keeps every transaction of `current` in the same order and contains every BFT-applied transaction. */
+type CheckpointSignatureLike = { validatorId: string; signature: string };
+
 export function extendsHistory(current: UepLedger, next: UepLedger, committer?: CertifiedCommitter): boolean {
   if (next.height < current.height || next.txs.length < current.txs.length) return false;
   for (let i = 0; i < current.txs.length; i++) if (next.txs[i]!.txId.toHex() !== current.txs[i]!.txId.toHex()) return false;

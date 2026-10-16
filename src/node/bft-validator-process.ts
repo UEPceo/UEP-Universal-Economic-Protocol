@@ -15,9 +15,14 @@ import { join } from "node:path";
 import { signEd25519 } from "../core/ed25519.ts";
 import { UepLedger } from "../testnet/ledger.ts";
 import { createDurableBftConsensusKernel } from "./bft-durable-store.ts";
+import { openUnifiedValidatorState } from "./unified-node-state.ts";
+import type { CommitLog as CommitLogT } from "./certified-commit.ts";
 import type { BftProposal, BftValidator } from "./bft-consensus.ts";
 import { txFromWire, txToWire } from "./certified-commit.ts";
 import { PeerNet, type Peer } from "./peer-net.ts";
+import { attestationRegistryPath, continuityFromEnv, PENDING_PEER_CHECK, type ContinuityOptions } from "./bft-store-continuity.ts";
+import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 
 type Config = {
   id: string; voterPem: string; stateDir: string; peerPort: number; controlPort: number;
@@ -41,8 +46,65 @@ const ledger = UepLedger.restore(genesis, cfg.trust);
 const voters = new Map(cfg.validators.map(v => [v.id, v.publicKeyHex]));
 const net = new PeerNet(cfg.id, ledger, key, me.publicKeyHex, cfg.peers, voters, 2, cfg.stateDir);
 const domain = { networkId: ledger.networkId, domainId: ledger.domainId };
-const kernel = createDurableBftConsensusKernel(domain, cfg.validators, cfg.faultTolerance, join(cfg.stateDir, "bft-kernel.json"));
-net.configureBftConsensus(kernel);
+// 0.5.84 item 1: the unified store (one WAL for journal + BFT state + economic head) is the default;
+// UEP_STATE_BACKEND=legacy keeps the 0.5.83 files (bft-kernel.json + bft-commit-log.jsonl).
+const backend = process.env.UEP_STATE_BACKEND === "legacy" ? "legacy" : "unified";
+let unifiedLog: CommitLogT | undefined;
+let unifiedStore: import("./unified-state-store.ts").UnifiedStateStore | undefined;
+let kernel: import("./bft-consensus.ts").BftConsensusKernel;
+// 0.5.84 store continuity: refuse to start without the store unless UEP_BFT_STORE_INIT=genesis (first start
+// of a new identity) or UEP_BFT_REJOIN=retire (re-key/rejoin: this identity becomes watch-only for good).
+// UEP_TEST_BYZANTINE_STATELESS=1 is a TEST-HARNESS-ONLY switch that models a Byzantine validator which
+// ignores its own store (it signs from whatever state it has); an honest binary never sets it.
+const byzantineStateless = process.env.UEP_TEST_BYZANTINE_STATELESS === "1";
+const continuity: ContinuityOptions = byzantineStateless
+  ? { init: "genesis", anchorPath: join(tmpdir(), `uep-byz-anchor-${randomBytes(6).toString("hex")}.json`), validatorId: cfg.id }
+  : { ...continuityFromEnv(), validatorId: cfg.id };
+let continuityState: import("./unified-node-state.ts").ContinuityState | undefined;
+if (backend === "unified") {
+  const crash = process.env.UEP_CRASH_AT?.match(/^(frame-torn|checkpoint-written|wal-reset)@(\d+)$/);
+  const u = openUnifiedValidatorState(cfg.stateDir, domain, cfg.validators, cfg.faultTolerance, {}, crash ? {
+    faultInjector: (p) => { if (p === crash[1] && net.bftOpenHeight() === Number(crash[2])) { if (p === "frame-torn") throw new Error("CRASH_TORN"); process.kill(process.pid, "SIGKILL"); } },
+    afterTornWrite: () => process.kill(process.pid, "SIGKILL"),
+  } : {}, continuity);
+  kernel = u.kernel; unifiedLog = u.log; unifiedStore = u.store; continuityState = u.continuity;
+  if (u.migration.migrated) console.log(`[unified-store] ${cfg.id} migrated ${u.migration.commits} journal entries, bftState=${u.migration.bftState}`);
+} else {
+  kernel = createDurableBftConsensusKernel(domain, cfg.validators, cfg.faultTolerance, join(cfg.stateDir, "bft-kernel.json"), {}, continuity);
+}
+net.configureBftConsensus(kernel, { log: unifiedLog, requireDurable: true });
+// 0.5.84 store continuity (C): attest the store position to peers after each durable frame, and do not
+// sign until 2f peers have answered the "what is my latest attested state?" check.
+let peerCheck: { responses: number; stale: boolean; maxSeen: number; done: boolean } = { responses: 0, stale: false, maxSeen: 0, done: false };
+if (continuityState) {
+  net.configureStateAttestation(attestationRegistryPath(cfg.stateDir));
+  const cs = continuityState;
+  cs.onDurable.add(p => net.attestState(p));
+  if (cs.verdict === "ok" && !byzantineStateless) {
+    kernel.suspendSigning(PENDING_PEER_CHECK);
+    const need = 2 * cfg.faultTolerance;
+    const check = async (): Promise<void> => {
+      const local = cs.position();
+      const r = await net.bftCheckStateAgainstPeers(local).catch(() => ({ responses: 0, stale: false, maxSeen: 0 }));
+      peerCheck = { ...r, done: false };
+      if (r.stale) {
+        peerCheck.done = true;
+        kernel.suspendSigning("BFT_STORE_STALE");
+        console.error(`[store-continuity] ${cfg.id} BFT_STORE_STALE: peers attest stateSeq ${r.maxSeen} > local ${local.seq}; signing stays suspended, rejoin with a new identity (UEP_BFT_REJOIN=retire)`);
+        return;
+      }
+      if (r.responses >= need) {
+        peerCheck.done = true;
+        kernel.resumeSigning();
+        net.attestState(local);
+        console.log(`[store-continuity] ${cfg.id} peer check passed (${r.responses} answers, local seq ${local.seq})`);
+        return;
+      }
+      setTimeout(() => { void check(); }, 300).unref();
+    };
+    setTimeout(() => { void check(); }, 50).unref();
+  }
+}
 // 0.5.83 Block C: crash injection (test harness only). UEP_CRASH_AT="<write point>@<height>" kills this
 // process with SIGKILL (kill -9) at that write point of that BFT height: no cleanup, no flush.
 const crashAt = process.env.UEP_CRASH_AT?.match(/^([a-z-]+)@(\d+)$/);
@@ -117,6 +179,9 @@ const state = () => ({
   committed: kernel.exportState().committed,
   status: Object.fromEntries(kernel.exportState().committed.map(([h]) => [h, net.bftCommitStatus(Number(h))])),
   expectedHeight: (net as unknown as { committer: { expectedHeight(): number } }).committer.expectedHeight(),
+  signing: kernel.signingSuspended ?? "ok",
+  storeSeq: continuityState?.position().seq ?? null,
+  peerCheck,
 });
 
 createServer(async (req, res) => {
@@ -137,7 +202,11 @@ createServer(async (req, res) => {
       // 0.5.83 Block C: re-open the commit log from disk (hash chain verified by CommitLog), then check
       // height continuity, that the ledger applied exactly the APPLIED blocks in order, and the state root.
       const { CommitLog } = await import("./certified-commit.ts");
-      const log = new CommitLog(join(cfg.stateDir, "bft-commit-log.jsonl"));
+      let log: CommitLogT;
+      if (unifiedStore) {
+        const { UnifiedStateStore } = await import("./unified-state-store.ts");
+        log = CommitLog.unified(UnifiedStateStore.open(cfg.stateDir, unifiedStore.context)); // re-read from disk: checksums + hash chains
+      } else log = new CommitLog(join(cfg.stateDir, "bft-commit-log.jsonl"));
       const entries = log.all();
       const decided = entries.filter(e => e.type !== "INTENT");
       const problems: string[] = [];
@@ -150,12 +219,32 @@ createServer(async (req, res) => {
       const lastRoot = applied.at(-1)?.postRoot ?? null;
       if (lastRoot && lastRoot !== net.ledger.stateRoot().toHex()) problems.push("state root differs from last APPLIED post-root");
       if (net.bftCommitStatus(net.bftOpenHeight() - 1) === "CERTIFIED_NOT_APPLIED") problems.push("certified height left unapplied");
-      return reply(res, 200, { ok: problems.length === 0, problems, head: log.headHash, entries: entries.length, repairedTornBytes: (net as unknown as { committer: { log: { repairedTornBytes: number } } }).committer.log.repairedTornBytes, pending: (net as unknown as { committer: { pending(): number[] } }).committer.pending(), recoveredAtStart: recovered, ...state() });
+      if (unifiedStore) {
+        // The economic head written in the same frame as the last APPLIED entry must match it.
+        const { UnifiedStateStore } = await import("./unified-state-store.ts");
+        const head = UnifiedStateStore.open(cfg.stateDir, unifiedStore.context).economicHead;
+        if (lastRoot && head && head.stateRoot !== lastRoot) problems.push("economic head differs from last APPLIED post-root");
+      }
+      return reply(res, 200, { ok: problems.length === 0, problems, head: log.headHash, entries: entries.length, repairedTornBytes: (net as unknown as { committer: { log: { repairedTornBytes: number } } }).committer.log.repairedTornBytes, pending: (net as unknown as { committer: { pending(): number[] } }).committer.pending(), recoveredAtStart: recovered, backend, ...state() });
     }
     if (url.pathname === "/ctl/submit") {
       const tx = txFromWire(body.tx as never);
       mempool.set(tx.txId.toHex(), tx);
       return reply(res, 200, { pending: mempool.size });
+    }
+    if (url.pathname === "/ctl/checkpoint") {
+      // 0.5.84 item 2: build a certified checkpoint for this validator's head (needs 2f + 1 signatures).
+      const cp = await net.bftCertifyCheckpoint();
+      return reply(res, 200, { checkpoint: cp });
+    }
+    if (url.pathname === "/ctl/checkpoint-fetch") {
+      const cp = await net.bftFetchCheckpoint();
+      if (cp) net.acceptCheckpoint(cp);
+      return reply(res, 200, { checkpoint: net.latestCheckpoint });
+    }
+    if (url.pathname === "/ctl/checkpoint-accept") {
+      net.acceptCheckpoint(body.checkpoint as never);
+      return reply(res, 200, { checkpoint: net.latestCheckpoint });
     }
     if (url.pathname === "/ctl/evidence") return reply(res, 200, { evidence: net.bftEquivocationEvidence(), round: net.bftRound(), openHeight: net.bftOpenHeight() });
     if (url.pathname === "/ctl/tick") { await autoStep(); return reply(res, 200, { tick, round: net.bftRound() }); }
@@ -171,7 +260,14 @@ createServer(async (req, res) => {
         const proposal: BftProposal = { ...domain, height, round: Number(body.round ?? 0), proposerId: cfg.id, parentRoot, blockId: tx.txId.toHex() };
         const payload = { proposal, proposalSignature: kernel.signProposal(proposal, key), tx: txToWire(tx) };
         const signature = signEd25519(`uep-peer:${cfg.id}:/bft/proposal:${JSON.stringify(payload)}`, key);
-        const r = await fetch(peer.url + "/bft/proposal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: cfg.id, payload, signature }, encode) }).then(x => x.json()).catch(() => null);
+        // The links may drop requests (fault proxy). A real equivocator retries until each half has its
+        // proposal; a single unretried send could leave a half without it (then no equivocation exists).
+        // Retry only transport failures (no reply); any HTTP reply, including PEER_REPLAY, means delivered.
+        let r: unknown = null;
+        for (let attempt = 0; attempt < 10 && r === null; attempt++) {
+          r = await fetch(peer.url + "/bft/proposal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: cfg.id, payload, signature }, encode) }).then(x => x.json()).catch(() => null);
+          if (r === null) await new Promise(resolve => setTimeout(resolve, 50));
+        }
         out.push({ peer: peer.id, block: proposal.blockId, vote: !!(r as { vote?: unknown } | null)?.vote });
       }
       return reply(res, 200, { height, out });

@@ -245,3 +245,22 @@ Off-node code run by attesters or in the lab, never by a node, `src/` or the led
 ## 26. Spend circuit v6 and zk accounts (`uep-core/uep-26-spend-circuit`, `src/core/zk-account.ts`)
 - **Purpose:** circuit v6 (`UEP-27-SPEND-POSEIDON-D64-v6-rotblind`, depth 64, in-circuit blinding rotation, empty receiving slots) and its ledger path: 13 public inputs bound to the transaction, the ledger domain and the projected roots. zk accounts (`H_ACCOUNT` ids) are linked to Ed25519 accounts by a signed link and spend with a v6 proof as authorization, to another zk account or (exit) to an Ed25519 account, which receives a deterministic exit note. Lab helper `src/lab/zk-account-spend.ts` proves with `uep-zk` and builds the transaction.
 - **Status:** Experimental (lab, development keys only). v5 kept for historical proofs. Since 0.5.83. Tests: `spend_v6_tests.rs`, nightly `exp_rr_2026_10_15_003.rs` (`--ignored`), `zk-v6-ledger.test.ts`, `zk-v6-real-proof.test.ts`, `zk-account-e2e.test.ts`, `zk-account-exit.test.ts` (depth-64 case opt-in with `UEP_ZK_D64=1`).
+
+## 27. Unified certified-state store (`src/node/unified-state-store.ts`)
+
+One write-ahead log (`uep-state.wal`: frames `UEPW | length | SHA-256(domain, prevHash, payload) | JSON`, `fsync` per frame) and one checkpoint replaced by atomic rename (`uep-state.checkpoint`). Holds the certified-commit journal, the BFT safety state and the economic head; the APPLIED entry and the post-apply head share one frame. Torn last frame truncated at open, other damage stops the node (`UNIFIED_STORE_CORRUPT`). Migration of the 0.5.83 files in `unified-node-state.ts` (idempotent, legacy files renamed `*.migrated`); `UEP_STATE_BACKEND=legacy` keeps the old layout. Details: [`STATE-PERSISTENCE-0.5.84.md`](./STATE-PERSISTENCE-0.5.84.md). Tests: `unified-state-store.test.ts` (including a SIGKILLed writer), `bft-unified-store-multiprocess.test.ts`, `bft-crash-points-multiprocess.test.ts`.
+
+**Store continuity checks** (`src/node/bft-store-continuity.ts`, 0.5.84): missing store refused (`BFT_STORE_MISSING`) except explicit genesis or retire-only rejoin; monotonic `stateSeq` + hash chain with an anchor outside the state directory (`BFT_STORE_STALE`); Ed25519 peer state attestations checked at start (signing suspended until 2f peers answer). Tests: `bft-store-continuity.test.ts`, `bft-store-continuity-multiprocess.test.ts`.
+
+## 28. Certified checkpoints (`src/node/certified-checkpoint.ts`)
+
+Checkpoint body `{networkId, domainId, height, blockId, stateRoot, validatorSetHash, txCount, ledgerHeight}` signed by 2f + 1 validators of the pinned set; validators sign only their own journaled head. Snapshot acceptance rejects stale, incompatible, conflicting and uncertified snapshots. PeerNet routes `/bft/checkpoint-sign`, `/bft/checkpoint`. Details: [`CERTIFIED-CHECKPOINTS-0.5.84.md`](./CERTIFIED-CHECKPOINTS-0.5.84.md). Tests: `certified-checkpoint.test.ts`, `bft-checkpoint-multiprocess.test.ts`.
+
+## 29. Production conditions and governance key ceremony (`src/network/production-conditions.ts`)
+
+Values in `config/production-conditions.json` (approved by the director on 2026-10-16): v1 signature sunset per network type and asset-registry requirement per network type and height. The governance key ceremony is prepared (procedure and public-key-only tooling in `scripts/governance-ceremony.mjs`), not performed. Details: [`PRODUCTION-CONDITIONS.md`](./PRODUCTION-CONDITIONS.md), [`GOVERNANCE-KEY-CEREMONY.md`](./GOVERNANCE-KEY-CEREMONY.md).
+
+## 30. TLA+ model of BFT locking (`docs/formal/tla/`)
+
+`UepBftLocking.tla` models prevote locking, POL observation, precommit, signed round changes and proposal selection with one Byzantine (equivocating) validator and crash/restart. TLC results (bounded rounds, one height) are committed in `docs/formal/tla/out/`. Mapping to Tendermint and deviations: [`formal/BFT-SPEC-MAPPING.md`](./formal/BFT-SPEC-MAPPING.md).
+

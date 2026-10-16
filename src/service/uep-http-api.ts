@@ -24,6 +24,8 @@ export type EconomicReadModel = {
 
 export type HttpApiOptions = {
   api: UepServiceApi;
+  /** Maximum registered Marketplace identities before POST /identities answers 429 (default 1024). */
+  identityCap?: number;
   economic?: EconomicReadModel;
   host?: string;
   port?: number;

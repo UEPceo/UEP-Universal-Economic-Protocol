@@ -19,7 +19,7 @@ import {
   type UepTelemetry,
 } from "./observability.ts";
 import type { ProviderHealth } from "./provider-model.ts";
-import { SpendInbox, type LabCompute, type LabRelay, type LabOracle, type SpendSubmitInput } from "./uep-service-backends.ts";
+import { SpendInbox, type LabComputeLike, type LabRelayLike, type LabOracleLike, type SpendSubmitInput } from "./uep-service-backends.ts";
 import { SpendQuorum, type Groth16SpendQueue } from "./groth16-spend-queue.ts";
 import type { DigitalServicesMarketplace } from "../marketplace/marketplace.ts";
 import type { ValueBridge } from "../settlement/value-bridge.ts";
@@ -51,9 +51,9 @@ export type ServiceApiConfig = {
   defaultStorageProviderId?: string;
   telemetry?: UepTelemetry;
   spends?: SpendInbox;
-  compute?: LabCompute;
-  relay?: LabRelay;
-  oracle?: LabOracle;
+  compute?: LabComputeLike;
+  relay?: LabRelayLike;
+  oracle?: LabOracleLike;
   groth16?: Groth16SpendQueue;
   quorum?: SpendQuorum;
   marketplace?: DigitalServicesMarketplace;
@@ -74,9 +74,9 @@ export class UepServiceApi {
   private tel: UepTelemetry;
 
   spends?: SpendInbox;
-  compute?: LabCompute;
-  relay?: LabRelay;
-  oracle?: LabOracle;
+  compute?: LabComputeLike;
+  relay?: LabRelayLike;
+  oracle?: LabOracleLike;
   groth16?: Groth16SpendQueue;
   quorum?: SpendQuorum;
   marketplace?: DigitalServicesMarketplace;

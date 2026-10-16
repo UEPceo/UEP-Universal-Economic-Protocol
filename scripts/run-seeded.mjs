@@ -43,6 +43,7 @@ for (const suite of suites) for (const seed of seeds.slice(0, suite.maxSeeds ?? 
   const failures = ok ? [] : out.split("\n").filter((l) => /^(✖ |not ok )/.test(l)).slice(0, 20);
   record.runs.push({ suite: suite.name, file: suite.file, seedEnv: suite.env, seed, ok, pass: num("pass"), fail: num("fail"), ms: Date.now() - t0, failures, reproduce: `${suite.env}=${seed} node --experimental-strip-types --test ${suite.file}` });
   console.log(`${ok ? "ok  " : "FAIL"} ${suite.name} seed=${seed} pass=${num("pass")} fail=${num("fail")}`);
+  if (!ok) console.log(out.split("\n").filter((l) => /Error|timeout|✖|not ok|log tail|BFT_|\[store-continuity\]/.test(l)).slice(-60).join("\n"));
 }
 record.finishedAt = new Date().toISOString();
 record.summary = { runs: record.runs.length, failed };

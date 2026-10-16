@@ -1,0 +1,23 @@
+{
+  "format": "uep-governance-ceremony",
+  "version": 1,
+  "networkId": "uep-testnet-1",
+  "networkKind": "testnet",
+  "ceremonyId": "TBD",
+  "threshold": 2,
+  "participants": [
+    { "id": "TBD-1", "role": "governance" },
+    { "id": "TBD-2", "role": "governance" },
+    { "id": "TBD-3", "role": "governance" }
+  ],
+  "decisions": {
+    "participants": "TBD",
+    "threshold": "TBD",
+    "custody": "TBD",
+    "venue": "TBD",
+    "witnesses": "TBD",
+    "rotationPolicy": "TBD",
+    "lossProcedure": "TBD",
+    "effectiveHeight": "TBD"
+  }
+}

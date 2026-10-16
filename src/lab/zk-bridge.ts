@@ -27,6 +27,7 @@ export type UepZkDemoResult = {
   vkId?: string;
   artifactBundleId?: string;
   constraints?: number;
+  leaves?: Record<string, number | string>;
   tag?: string;
   raw: string;
 };

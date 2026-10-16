@@ -14,7 +14,7 @@ const serve = process.argv.includes("--serve");
 const custody = await identityFromMnemonic(await generateMnemonic(128));
 const feeAccount = await identityFromMnemonic(await generateMnemonic(128));
 const node = assembleNode({ custody, feeAccount, adminId: "admin-1" });
-const iot = new IoTM2MService(node.marketplace, { height: () => node.ledger.height });
+const iot = new IoTM2MService(node.marketplace); // time comes from the Marketplace height
 const started = await node.listen(serve ? 8787 : 0);
 const base = `http://127.0.0.1:${started.port}`;
 console.log(`uep-sandbox node=${node.circuitTag} iot=${iot ? "attached" : "missing"} ${base}`);

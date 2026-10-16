@@ -1,0 +1,20 @@
+{
+  "format": "uep-production-conditions",
+  "version": 1,
+  "status": "APPROVED (0.5.84): heights approved by the director on 2026-10-16; see docs/PRODUCTION-CONDITIONS.md",
+  "referenceBlockTimeMs": 5000,
+  "networks": {
+    "lab": {
+      "v1Signatures": { "mode": "relative", "sunsetHeights": 6307200 },
+      "assetRegistry": { "required": false }
+    },
+    "testnet": {
+      "v1Signatures": { "mode": "absolute", "sunsetHeight": 3153600 },
+      "assetRegistry": { "required": true, "requiredFromHeight": 3153600 }
+    },
+    "mainnet": {
+      "v1Signatures": { "mode": "refused" },
+      "assetRegistry": { "required": true, "requiredFromHeight": 0 }
+    }
+  }
+}

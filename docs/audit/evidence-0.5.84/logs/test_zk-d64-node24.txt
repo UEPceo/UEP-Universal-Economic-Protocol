@@ -1,0 +1,10 @@
+ZK_D64_RECORD {"test":"zk depth 64 real proof through submit()","depth":64,"node":"v24.21.0","ms":{"devVk":7698,"proveIncludingSetup":14054,"submitIncludingVerify":455},"vkSha256":"cbf3b9b84f9c570ed1238163e6c772e49b00050dc31e5c99aaf540fd47b8122d","proofSha256":"3f0ac965df18af0df30652b6cd7b8b00a0996681ba46f61c14d4c191b8cecfee","publicInputsSha256":"28a1387d6be8df196759e05f87247e3758d30ef36a8689327754177ac8405e96","txId":"25cb089071a7d3bd00faf08e9b7d2baa09367bc11ce80cd594a9399df9e23ee1","result":"OK","replay":"REPLAY"}
+✔ zk depth 64: real proof through submit() (opt-in: UEP_ZK_D64=1) (22757.258763ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 22944.625778

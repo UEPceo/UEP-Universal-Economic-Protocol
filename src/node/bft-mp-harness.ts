@@ -55,7 +55,9 @@ function linkProxy(targetPort: () => number, link: () => Link, r: () => number, 
   });
 }
 
-export type St = { stateRoot: string; committed: [string, string][]; status: Record<string, string>; expectedHeight: number; txCount: number };
+export type St = { stateRoot: string; committed: [string, string][]; status: Record<string, string>; expectedHeight: number; txCount: number;
+  /** 0.5.84 store continuity: "ok" or the reason signing is suspended; store seq; peer attestation check. */
+  signing: string; storeSeq: number | null; peerCheck: { responses: number; stale: boolean; maxSeen: number; done: boolean } };
 
 export type ClusterOptions = { n?: number; seed: number; spends?: number; autoTickMs?: number; roundTimer?: { baseTicks: number; maxDoublings: number }; extraConfig?: Record<string, unknown>; env?: Record<string, string> };
 
@@ -130,8 +132,13 @@ export async function startCluster(o: ClusterOptions) {
     }), { mode: 0o600 });
     return file;
   });
+  // 0.5.84 store continuity: a validator refuses to start without its store, so the very first start
+  // of each validator is an explicit genesis start; later starts (restarts) are not.
+  const everStarted = new Set<number>();
   const start = (i: number, env: Record<string, string> = {}) => new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/node/bft-validator-process.ts", configs[i]!], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...(o.env ?? {}), ...env } });
+    const initEnv: Record<string, string> = everStarted.has(i) ? {} : { UEP_BFT_STORE_INIT: "genesis" };
+    everStarted.add(i);
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/node/bft-validator-process.ts", configs[i]!], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...(o.env ?? {}), ...initEnv, ...env } });
     children.set(i, child);
     let out = "";
     const timer = setTimeout(() => reject(new Error(`v${i} did not start: ${logs.get(i)}`)), 60_000);
@@ -149,7 +156,24 @@ export async function startCluster(o: ClusterOptions) {
     const c = children.get(i)!; if (!alive(c)) return;
     await new Promise<void>(f => { c.removeAllListeners("exit"); c.once("exit", () => f()); c.kill("SIGKILL"); });
   };
+  // 0.5.84 store continuity: a (re)started validator signs nothing until its peer attestation check has
+  // 2f answers. Before a proposal, give live validators still in that check up to 10 s (on slow CI runners
+  // the first proposal otherwise races the check). Validators that cannot finish it (partitioned) are skipped.
+  const settleSigning = async () => {
+    const until = Date.now() + 10_000;
+    for (;;) {
+      const pending = await Promise.all(live().map(async j => {
+        try {
+          const r = await fetch(`http://127.0.0.1:${ctlPorts[j]}/ctl/state`);
+          return ((await r.json()) as St).signing === "BFT_SIGNING_PENDING_PEER_CHECK";
+        } catch { return false; }
+      }));
+      if (!pending.some(Boolean) || Date.now() > until) return;
+      await new Promise(f => setTimeout(f, 100));
+    }
+  };
   const ctl = async (i: number, path: string, body?: unknown) => {
+    if (path === "/ctl/propose" || path === "/ctl/equivocate") await settleSigning();
     const res = await fetch(`http://127.0.0.1:${ctlPorts[i]}${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body, encode) });
     return { status: res.status, body: await res.json() as any };
   };

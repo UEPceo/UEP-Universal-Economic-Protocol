@@ -2423,7 +2423,7 @@ export class UepLedger {
         const b = bound as { networkId?: unknown; version?: unknown; hash?: unknown };
         if (typeof b.hash !== "string" || !Number.isSafeInteger(b.version) || b.networkId !== data.networkId) fail("ASSET_REGISTRY", "malformed registry binding");
         if (!trust.assetRegistry) fail("ASSET_REGISTRY", "the snapshot binds an asset registry; pass trust.assetRegistry");
-        const chain = trust.assetRegistry.chain();
+        const chain = trust.assetRegistry!.chain();
         const at = chain.find((m) => m.version === b.version);
         if (!at || at.manifestHash !== b.hash) fail("ASSET_REGISTRY", "the snapshot's registry hash is not in the trusted registry chain");
       }
@@ -2438,7 +2438,7 @@ export class UepLedger {
     }
     l.installSigningKeys(keys.snapshotSigningKeys ?? [], keys.faucetSigningKey, keys.issuerSigningKeys);
     l.state = SparseMerkleTree.fromJSON(data.state);
-    l.balances = new Map(data.balances.map(([k, v]) => { try { return [k, parseAmount(v as never, "balance")]; } catch { fail("AMOUNT", `balance ${k} is not a u64 amount`); } }));
+    l.balances = new Map(data.balances.map(([k, v]): [string, bigint] => { try { return [k, parseAmount(v as never, "balance")]; } catch { return fail("AMOUNT", `balance ${k} is not a u64 amount`); } }));
     l.notes = data.notes.map(deserializeNote);
     l.rebuildOwnerIndex();
     l.txs = data.txs.map(deserializeTx);

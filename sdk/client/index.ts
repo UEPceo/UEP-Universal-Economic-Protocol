@@ -22,7 +22,7 @@ export class UepClient {
     const response = await fetch(this.baseUrl + path, {
       method: "POST",
       headers: { "content-type": "application/octet-stream", "x-uep-actor-id": auth.actorId, "x-uep-signature": auth.signature },
-      body: body,
+      body: body as Uint8Array<ArrayBuffer>,
     });
     return { status: response.status, json: await response.json() };
   }

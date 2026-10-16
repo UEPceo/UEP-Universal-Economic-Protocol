@@ -16,7 +16,7 @@ import { CertifiedCommitter, CommitLog } from "./certified-commit.ts";
 
 const SNAP = generateEd25519KeyPair(), FAUCET = generateEd25519KeyPair(), GOV = generateEd25519KeyPair(), NS = generateEd25519KeyPair();
 const EUR = "uep-test/teur";
-const tmpl = (a: AssetRecord): AssetDefinitionTemplate => {
+const tmpl = (a: AssetRecord): AssetDefinitionTemplate & { issuer: { keys: string[] } } => {
   const { issuer: _i, network: _n, minProtocolFee, ...rest } = a;
   return { ...rest, ...(minProtocolFee !== undefined ? { minProtocolFee: minProtocolFee.toString() } : {}), issuer: { keys: [generateEd25519KeyPair().publicKeyHex] } } as never;
 };

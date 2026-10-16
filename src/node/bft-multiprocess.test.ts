@@ -133,8 +133,12 @@ test(`item 3: four validator processes under loss/delay/duplication, restart, pa
       }), { mode: 0o600 });
       return file;
     });
+    // 0.5.84 store continuity: the first start of each validator is an explicit genesis start.
+    const everStarted = new Set<number>();
     const start = (i: number) => new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/node/bft-validator-process.ts", configs[i]!], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+      const env = everStarted.has(i) ? process.env : { ...process.env, UEP_BFT_STORE_INIT: "genesis" };
+      everStarted.add(i);
+      const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/node/bft-validator-process.ts", configs[i]!], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], env });
       children.set(i, child);
       let out = "", err = "";
       const timer = setTimeout(() => reject(new Error(`v${i} did not start: ${out} ${err}`)), 60_000);
@@ -192,6 +196,14 @@ test(`item 3: four validator processes under loss/delay/duplication, restart, pa
     await commit(2);
     await commit(3);
     await start(victim);
+    // 0.5.84 store continuity: the restarted validator signs nothing until its peer attestation check
+    // completes; it may be a later leader (phase 3 uses it), so wait for that check to finish.
+    for (const until = Date.now() + 30_000; ;) {
+      const signing = ((await ctl(victim, "/ctl/state")).body as { signing?: string }).signing;
+      if (signing === "ok") break;
+      assert.ok(Date.now() < until, `restarted v${victim} signing state still ${signing}`);
+      await new Promise(f => setTimeout(f, 100));
+    }
     await ctl(victim, "/ctl/sync");
     assert.equal((await st(victim)).stateRoot, roots[3], "restarted validator recovers its log and syncs");
 

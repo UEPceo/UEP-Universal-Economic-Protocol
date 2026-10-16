@@ -93,6 +93,7 @@ export class BftConsensusKernel {
   private readonly locks = new Map<string, BftLock>();
   private readonly roundChanges = new Map<string, string>();
   private readonly persistState?: (state: BftState) => void;
+  private signingSuspendedReason: string | null = null;
 
   constructor(
     domain: BftDomain,
@@ -140,7 +141,18 @@ export class BftConsensusKernel {
     return stableStringify({ protocol: "uep-bft-v1", ...proposal });
   }
 
+  /**
+   * 0.5.84 store continuity: while suspended, the kernel releases no signature (proposal, vote or
+   * round change) and throws `reason`. Used for a retired identity, a stale store, and until the
+   * peer attestation check has a quorum of answers.
+   */
+  suspendSigning(reason: string): void { this.signingSuspendedReason = reason; }
+  resumeSigning(): void { this.signingSuspendedReason = null; }
+  get signingSuspended(): string | null { return this.signingSuspendedReason; }
+  private assertMaySign(): void { if (this.signingSuspendedReason) throw new Error(this.signingSuspendedReason); }
+
   signProposal(proposal: BftProposal, privateKey: PrivateKeyLike): string {
+    this.assertMaySign();
     return signEd25519(`uep-bft-proposal-v1:${this.proposalDigest(proposal)}`, privateKey);
   }
 
@@ -154,6 +166,7 @@ export class BftConsensusKernel {
   }
 
   createVote(proposal: BftProposal, phase: BftPhase, voterId: string, privateKey: PrivateKeyLike, proposalSignature: string): BftVote {
+    this.assertMaySign();
     this.assertProposal(proposal);
     if (!this.verifyProposal(proposal, proposalSignature)) throw new Error("BFT_PROPOSAL_SIGNATURE_INVALID");
     const validator = this.validatorById.get(voterId);
@@ -294,6 +307,7 @@ export class BftConsensusKernel {
   }
 
   createRoundChange(height: number, targetRound: number, validatorId: string, privateKey: PrivateKeyLike): BftRoundChange {
+    this.assertMaySign();
     if (!validInt(height) || height < 1 || !validInt(targetRound) || targetRound < 1) throw new Error("BFT_ROUND_CHANGE_POSITION_INVALID");
     const validator = this.validatorById.get(validatorId);
     if (!validator) throw new Error("BFT_UNKNOWN_VALIDATOR");

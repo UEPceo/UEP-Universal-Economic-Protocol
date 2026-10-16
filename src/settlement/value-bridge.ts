@@ -34,7 +34,7 @@ function feeOf(ledger: { networkId: string }, asset: string, amount: bigint): bi
 
 function received(tx: UepTransaction, recipient: Fr): bigint {
   const want = recipient.toHex();
-  const note = tx.outputNotes?.find((n) => (typeof n.owner === "string" ? n.owner : n.owner.toHex()) === want);
+  const note = tx.outputNotes?.find((n) => (typeof n.owner === "string" ? n.owner : (n.owner as { toHex(): string }).toHex()) === want);
   if (!note) throw new Error("BRIDGE_OUTPUT_MISSING");
   return parseAmount(note.amount as never, "bridge.output");
 }

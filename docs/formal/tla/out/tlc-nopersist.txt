@@ -1,0 +1,335 @@
+TLC2 Version 2026.10.15.145915 (rev: 932d35e)
+Running breadth-first search Model-Checking with fp 57 and seed 8123083190889511665 with 6 workers on 8 cores with 3557MB heap and 64MB offheap memory [pid: 419141] (Linux 6.12.94+ amd64, Eclipse Adoptium 21.0.12.1 64bit, MSBDiskFPSet, DiskStateQueue).
+Parsing file /workspace/repo-0584/docs/formal/tla/UepBftLocking.tla (file:/workspace/repo-0584/docs/formal/tla/out/../UepBftLocking.tla)
+Parsing file /tmp/tlc-7270079090049786924/Integers.tla (jar:file:/workspace/tools/tla/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /tmp/tlc-7270079090049786924/FiniteSets.tla (jar:file:/workspace/tools/tla/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /tmp/tlc-7270079090049786924/_TLCTrace.tla (jar:file:/workspace/tools/tla/tla2tools.jar!/tla2sany/StandardModules/_TLCTrace.tla)
+Parsing file /tmp/tlc-7270079090049786924/Naturals.tla (jar:file:/workspace/tools/tla/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Parsing file /tmp/tlc-7270079090049786924/Sequences.tla (jar:file:/workspace/tools/tla/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /tmp/tlc-7270079090049786924/TLC.tla (jar:file:/workspace/tools/tla/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /tmp/tlc-7270079090049786924/TLCExt.tla (jar:file:/workspace/tools/tla/tla2tools.jar!/tla2sany/StandardModules/TLCExt.tla)
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module TLCExt
+Semantic processing of module _TLCTrace
+Semantic processing of module UepBftLocking
+Linting of module TLCExt
+Linting of module _TLCTrace
+Linting of module UepBftLocking
+Starting... (2026-10-16 04:59:34)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-10-16 04:59:34.
+Progress(14) at 2026-10-16 04:59:37: 1,297,581 states generated (1,297,581 s/min), 320,298 distinct states found (320,298 ds/min), 135,666 states left on queue.
+Error: Invariant Agreement is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> -1, v |-> "none"],
+  b |-> [r |-> -1, v |-> "none"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = {}
+/\ proposals = {}
+/\ prevote = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+
+State 2: <ByzPropose(0,"v1",-1) line 68, col 3 to line 71, col 80 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> -1, v |-> "none"],
+  b |-> [r |-> -1, v |-> "none"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = {}
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+
+State 3: <ByzPropose(0,"v2",-1) line 68, col 3 to line 71, col 80 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> -1, v |-> "none"],
+  b |-> [r |-> -1, v |-> "none"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = {}
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+
+State 4: <Next line 148, col 6 to line 148, col 53 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> -1, v |-> "none"],
+  b |-> [r |-> -1, v |-> "none"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = {[r |-> 0, v |-> "v1", h |-> "a"]}
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+
+State 5: <Next line 148, col 6 to line 148, col 53 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> -1, v |-> "none"],
+  b |-> [r |-> -1, v |-> "none"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = {[r |-> 0, v |-> "v1", h |-> "a"], [r |-> 0, v |-> "v1", h |-> "b"]}
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+
+State 6: <Next line 148, col 6 to line 148, col 53 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> -1, v |-> "none"],
+  b |-> [r |-> -1, v |-> "none"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 7: <ObservePol("a",0,"v1") line 107, col 3 to line 110, col 85 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> 0, v |-> "v1"],
+  b |-> [r |-> -1, v |-> "none"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 8: <ObservePol("b",0,"v1") line 107, col 3 to line 110, col 85 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> 0, v |-> "v1"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 9: <Precommit("a") line 115, col 3 to line 121, col 72 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "none" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {[r |-> 0, v |-> "v1", h |-> "a"]}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> 0, v |-> "v1"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 10: <Precommit("b") line 115, col 3 to line 121, col 72 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {[r |-> 0, v |-> "v1", h |-> "a"], [r |-> 0, v |-> "v1", h |-> "b"]}
+/\ restarts = 0
+/\ lock = [ a |-> [r |-> 0, v |-> "v1"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v1" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 11: <Restart("a") line 137, col 3 to line 143, col 55 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {[r |-> 0, v |-> "v1", h |-> "a"], [r |-> 0, v |-> "v1", h |-> "b"]}
+/\ restarts = 1
+/\ lock = [ a |-> [r |-> -1, v |-> "none"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 12: <Next line 148, col 6 to line 148, col 53 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {[r |-> 0, v |-> "v1", h |-> "a"], [r |-> 0, v |-> "v1", h |-> "b"]}
+/\ restarts = 1
+/\ lock = [ a |-> [r |-> -1, v |-> "none"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "a"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v2" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 13: <ObservePol("a",0,"v2") line 107, col 3 to line 110, col 85 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {[r |-> 0, v |-> "v1", h |-> "a"], [r |-> 0, v |-> "v1", h |-> "b"]}
+/\ restarts = 1
+/\ lock = [ a |-> [r |-> 0, v |-> "v2"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> -1, v |-> "none"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "a"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v2" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 14: <ObservePol("c",0,"v2") line 107, col 3 to line 110, col 85 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "none" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = {[r |-> 0, v |-> "v1", h |-> "a"], [r |-> 0, v |-> "v1", h |-> "b"]}
+/\ restarts = 1
+/\ lock = [ a |-> [r |-> 0, v |-> "v2"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> 0, v |-> "v2"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "a"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v2" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 15: <Precommit("a") line 115, col 3 to line 121, col 72 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "v2" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "none" @@ 1 :> "none") ]
+/\ pcMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "a"] }
+/\ restarts = 1
+/\ lock = [ a |-> [r |-> 0, v |-> "v2"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> 0, v |-> "v2"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "a"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v2" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+State 16: <Precommit("c") line 115, col 3 to line 121, col 72 of module UepBftLocking>
+/\ rc = {}
+/\ precommit = [ a |-> (0 :> "v2" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+/\ pcMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "a"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ restarts = 1
+/\ lock = [ a |-> [r |-> 0, v |-> "v2"],
+  b |-> [r |-> 0, v |-> "v1"],
+  c |-> [r |-> 0, v |-> "v2"] ]
+/\ round = [a |-> 0, b |-> 0, c |-> 0]
+/\ pvMsgs = { [r |-> 0, v |-> "v1", h |-> "a"],
+  [r |-> 0, v |-> "v1", h |-> "b"],
+  [r |-> 0, v |-> "v2", h |-> "a"],
+  [r |-> 0, v |-> "v2", h |-> "c"] }
+/\ proposals = {[r |-> 0, v |-> "v1", vr |-> -1], [r |-> 0, v |-> "v2", vr |-> -1]}
+/\ prevote = [ a |-> (0 :> "v2" @@ 1 :> "none"),
+  b |-> (0 :> "v1" @@ 1 :> "none"),
+  c |-> (0 :> "v2" @@ 1 :> "none") ]
+
+2588377 states generated, 612280 distinct states found, 234819 states left on queue.
+The depth of the complete state graph search is 16.
+Finished in 05s at (2026-10-16 04:59:39)
+Trace exploration spec path: ../UepBftLocking_TTrace_1792119574.tla

@@ -39,6 +39,7 @@ export type AssembledNode = {
   api: UepServiceApi;
   relay: CategoryRelayAdapter;
   oracle: PolicyOracleAdapter;
+  attachedCategories: string[];
   categories: { swap: SwapCategory; relay: RelayCategory; dispute: DisputeCategory; drip: DripController };
   arbiter: ReturnType<typeof createMarketplaceIdentity>;
   circuitTag: string;
@@ -87,7 +88,7 @@ export function assembleNode(input: {
   const faucetKey = input.faucetKey ?? generateEd25519KeyPair();
   const ledger = input.ledger ?? newNodeLedger({ snapshotKey, faucetKey, noteBlindingDomain: input.noteBlindingDomain, assetRegistry: input.assetRegistry });
   // 0.5.83 Block D: refuse to operate without the registry when the network policy requires it.
-  if (input.registryPolicy) assertRegistryPolicy(input.registryPolicy, ledger.assetRegistry, ledger.networkId);
+  if (input.registryPolicy) assertRegistryPolicy(input.registryPolicy, ledger.assetRegistry, ledger.networkId, ledger.height);
   const admin = createMarketplaceIdentity(input.adminId ?? "uep-node-admin");
   const marketplace = new DigitalServicesMarketplace({
     adminIdentity: admin.identityId,

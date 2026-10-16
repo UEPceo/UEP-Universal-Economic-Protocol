@@ -1,0 +1,51 @@
+{
+  "ceremony": {
+    "format": "uep-governance-ceremony",
+    "version": 1,
+    "networkId": "uep-testnet-1",
+    "networkKind": "testnet",
+    "ceremonyId": "uep-testnet-1-gov-2026-10-16",
+    "threshold": 2,
+    "participants": [
+      {
+        "id": "director-device-1",
+        "role": "governance"
+      },
+      {
+        "id": "director-device-2",
+        "role": "governance"
+      },
+      {
+        "id": "director-device-3",
+        "role": "governance"
+      }
+    ],
+    "decisions": {
+      "participants": "director, 3 separate devices",
+      "threshold": "2-of-3",
+      "custody": "director custody on 3 separate devices; each private key encrypted with a separate passphrase",
+      "venue": "director, 2026-10-16",
+      "witnesses": "none (director only); transcript hash recorded in the repository",
+      "rotationPolicy": "every 12 months, rotation manifest signed by 2-of-3",
+      "lossProcedure": "loss or compromise of one key: the remaining 2-of-3 quorum signs a manifest that revokes it and rotates in a new key; loss of two keys: the set cannot sign and a new ceremony plus network configuration change is required",
+      "effectiveHeight": 3153600
+    }
+  },
+  "submissions": [
+    {
+      "participantId": "director-device-1",
+      "publicKeyHex": "ccdd958bea502d521244619170ed54de1e91072d25f188d6f40a2e1e9425b891",
+      "popSignatureHex": "0eec02aa30d3f3b8e45261ca55b867a98db143ef19202ca46a2b34d587d246e3b2f5ca913ed5aae1627ce107f885fd8ded3b222f420dbd96ee27cf0a1d1d4404"
+    },
+    {
+      "participantId": "director-device-2",
+      "publicKeyHex": "2f160e57097798dba50b0ca04a4d5549a547a24bd65d6cfd856227aa31fceb13",
+      "popSignatureHex": "39a90af0d0e76b4de80f3cbe72175fdb24b722bb2af3956ee0e7e9b4cfa0cc21d9332e1d11dc3cd76db2da0b5f44e1fcfe189abe1ffdfcc33b011e32eacfdf0a"
+    },
+    {
+      "participantId": "director-device-3",
+      "publicKeyHex": "580e950863e0c0e4da2179239a3a1fbd981d02b12efa0af9224e1ace82e04cd8",
+      "popSignatureHex": "09c086d659896481390579f54ab6d4ddc4528dc027740dada4d673c6987cf9e6410268056258448bf7b5ae05bfaf604f872ffa57f263af227cfff82aee23550b"
+    }
+  ]
+}

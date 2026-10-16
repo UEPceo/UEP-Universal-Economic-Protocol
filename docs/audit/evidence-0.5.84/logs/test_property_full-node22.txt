@@ -1,0 +1,25 @@
+ok   marketplace-state-machine seed=20261015 pass=3 fail=0
+ok   marketplace-state-machine seed=1 pass=3 fail=0
+ok   marketplace-state-machine seed=7 pass=3 fail=0
+ok   marketplace-state-machine seed=42 pass=3 fail=0
+ok   marketplace-state-machine seed=2026 pass=3 fail=0
+ok   marketplace-state-machine seed=31337 pass=3 fail=0
+ok   numeric-amounts seed=20261015 pass=5 fail=0
+ok   numeric-amounts seed=1 pass=5 fail=0
+ok   numeric-amounts seed=7 pass=5 fail=0
+ok   numeric-amounts seed=42 pass=5 fail=0
+ok   numeric-amounts seed=2026 pass=5 fail=0
+ok   numeric-amounts seed=31337 pass=5 fail=0
+ok   bft-multiprocess seed=20261015 pass=1 fail=0
+ok   bft-multiprocess seed=1 pass=1 fail=0
+ok   bft-multiprocess seed=7 pass=1 fail=0
+ok   bft-multiprocess seed=42 pass=1 fail=0
+ok   bft-multiprocess seed=2026 pass=1 fail=0
+ok   bft-multiprocess seed=31337 pass=1 fail=0
+ok   bft-recovery-multiprocess seed=20261015 pass=1 fail=0
+ok   bft-recovery-multiprocess seed=1 pass=1 fail=0
+ok   bft-recovery-multiprocess seed=7 pass=1 fail=0
+ok   bft-crash-points-multiprocess seed=20261015 pass=1 fail=0
+ok   bft-crash-points-multiprocess seed=1 pass=1 fail=0
+ok   bft-crash-points-multiprocess seed=7 pass=1 fail=0
+seeded runs: 24, failed: 0; record: /workspace/repo-0584/artifacts/test-runs/1bfa198436e5-node22.json

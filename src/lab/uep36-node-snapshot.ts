@@ -26,7 +26,7 @@ export type NodeConsensusSnapshot = {
 
 export function snapshotNodeConsensus(node: IndependentNode): NodeConsensusSnapshot {
   return {
-    version: "36.9",
+    version: "36.9" as NodeConsensusSnapshot["version"],
     nodeId: node.id,
     epoch: 0, // LAB single-epoch
     sequence: node.economic.sequence,

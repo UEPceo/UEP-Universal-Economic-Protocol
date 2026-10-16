@@ -36,7 +36,7 @@ describe("UEP-32.5b pinned vk_id", () => {
       vkHex: "bb".repeat(32),
       ts: 1,
     });
-    assert.equal(node.apply(env).error, "VK_ID_NOT_PINNED");
+    assert.equal((node.apply(env) as { error?: string }).error, "VK_ID_NOT_PINNED");
   });
 
   it("rejects vkHex that does not match pin", () => {
@@ -66,7 +66,7 @@ describe("UEP-32.5b pinned vk_id", () => {
       vkHex: "cc".repeat(32), // mismatch
       ts: 1,
     });
-    assert.equal(node.apply(env).error, "VK_HEX_PIN_MISMATCH");
+    assert.equal((node.apply(env) as { error?: string }).error, "VK_HEX_PIN_MISMATCH");
   });
 
   it("requires vkId when registry is configured", () => {
@@ -96,6 +96,6 @@ describe("UEP-32.5b pinned vk_id", () => {
       // no vkId
       ts: 1,
     });
-    assert.equal(node.apply(env).error, "VK_ID_REQUIRED");
+    assert.equal((node.apply(env) as { error?: string }).error, "VK_ID_REQUIRED");
   });
 });
