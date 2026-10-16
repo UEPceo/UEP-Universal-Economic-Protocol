@@ -62,6 +62,8 @@ async function replay(mode: Mode) {
     await c.kill(BYZ); await c.kill(R);
     await c.start(BYZ, { UEP_CRASH_AT: `before-intent@${h}` });
     await c.start(R, { UEP_CRASH_AT: `before-intent@${h}` });
+    // Restarted validators sign only after their peer attestation check (2f answers).
+    await waitFor("byz and r may sign", async () => (await c.st(BYZ)).signing === "ok" && (await c.st(R)).signing === "ok", 30_000, 200);
     c.partition([BYZ, R, H0]);
     const x = c.txs[k]!, y = c.conflicting(k);
     for (const i of [BYZ, R, H0]) await c.ctl(i, "/ctl/submit", { tx: txToWire(x) }).catch(() => {});

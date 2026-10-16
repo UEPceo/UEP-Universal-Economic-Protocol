@@ -133,8 +133,12 @@ test(`item 3: four validator processes under loss/delay/duplication, restart, pa
       }), { mode: 0o600 });
       return file;
     });
+    // 0.5.84 store continuity: the first start of each validator is an explicit genesis start.
+    const everStarted = new Set<number>();
     const start = (i: number) => new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/node/bft-validator-process.ts", configs[i]!], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+      const env = everStarted.has(i) ? process.env : { ...process.env, UEP_BFT_STORE_INIT: "genesis" };
+      everStarted.add(i);
+      const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "src/node/bft-validator-process.ts", configs[i]!], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], env });
       children.set(i, child);
       let out = "", err = "";
       const timer = setTimeout(() => reject(new Error(`v${i} did not start: ${out} ${err}`)), 60_000);
