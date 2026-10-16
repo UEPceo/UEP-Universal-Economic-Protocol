@@ -43,10 +43,12 @@ for (const s of suites) {
   const log = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   const file = join(out, "logs", `${s.replace(/[^a-z0-9_-]/gi, "_")}-node${process.versions.node.split(".")[0]}.txt`);
   writeFileSync(file, log);
-  const count = (k) => [...log.matchAll(new RegExp(`^ℹ ${k} (\\d+)`, "gm"))].reduce((a, m) => a + Number(m[1]), 0);
+  const count = (k) => [...log.matchAll(new RegExp(`^(?:ℹ|#) ${k} (\\d+)`, "gm"))].reduce((a, m) => a + Number(m[1]), 0);
   const entry = { suite: s, exitCode: r.status, signal: r.signal, durationMs: Date.now() - t0, tests: count("tests"), pass: count("pass"), fail: count("fail"), skipped: count("skipped"), logSha256: createHash("sha256").update(log).digest("hex"), log: file };
   record.suites.push(entry);
   const seeded = /seeded runs: (\d+), failed: (\d+)/.exec(log);
+  const lab = /lab suites: (\d+) files, (\d+) tests passed, (\d+) failed/.exec(log);
+  if (lab) Object.assign(entry, { tests: Number(lab[2]) + Number(lab[3]), pass: Number(lab[2]), fail: Number(lab[3]) });
   if (seeded) entry.seededRuns = { runs: Number(seeded[1]), failed: Number(seeded[2]) };
   console.log(`[evidence] ${s}: exit=${r.status} ${entry.pass}/${entry.tests} pass, ${entry.fail} fail, ${Math.round(entry.durationMs / 1000)} s`);
   if (r.status !== 0) failed = true;
