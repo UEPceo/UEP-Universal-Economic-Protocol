@@ -20,7 +20,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "04ee6f61b3a780d5c36dc5b16cb3abe104f97e11bf1547d16cfb0a80683978b9",
-      "log": "/workspace/ev-0584/logs/test_security-node24.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_security-node24.txt"
     },
     {
       "suite": "test:core",
@@ -32,7 +32,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "4ec5ff816a52742b39e61b40fbb219a19571a33310092dff469ac39f7dc3326a",
-      "log": "/workspace/ev-0584/logs/test_core-node24.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_core-node24.txt"
     },
     {
       "suite": "test:property:full",
@@ -44,7 +44,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "aff8680ef183ce92a9c099bd942b808fb99e31acac6836ea44e67199eb980c5d",
-      "log": "/workspace/ev-0584/logs/test_property_full-node24.txt",
+      "log": "docs/audit/evidence-0.5.84/logs/test_property_full-node24.txt",
       "seededRuns": {
         "runs": 24,
         "failed": 0
@@ -60,7 +60,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "819b3b3ad35422ddb30b7ea53b1022d9a755358cfb31f42c550b1bc3f48e89a2",
-      "log": "/workspace/ev-0584/logs/test_bft-adversarial-node24.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_bft-adversarial-node24.txt"
     },
     {
       "suite": "test:lab",
@@ -72,7 +72,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "e2a57ce7f25bc0211bbead630a7946dc3557a1547f83a77a6cabd5cabfd187dc",
-      "log": "/workspace/ev-0584/logs/test_lab-node24.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_lab-node24.txt"
     },
     {
       "suite": "test:zk-d64",
@@ -84,7 +84,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "a3bab07fd3eacd8d8d711998f82a1524b6994033eee7fc19f9ee39c1c6e87c6c",
-      "log": "/workspace/ev-0584/logs/test_zk-d64-node24.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_zk-d64-node24.txt"
     }
   ],
   "seededRuns": [

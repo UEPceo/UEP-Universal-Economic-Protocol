@@ -20,7 +20,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "a61874ab3e7473c9dbc0a4b99c56960d6f4495658dcf925cc5d36b1c831947fc",
-      "log": "/workspace/ev-0584/logs/test_security-node22.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_security-node22.txt"
     },
     {
       "suite": "test:core",
@@ -32,7 +32,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "5749858026b77feb7e4d7843d3781b87f882487e8bb1fbd62632f0705c633dda",
-      "log": "/workspace/ev-0584/logs/test_core-node22.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_core-node22.txt"
     },
     {
       "suite": "test:property:full",
@@ -44,7 +44,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "50cdd820deb0b232e05b9a445beb64f118e7c3c47bc0cdeaa3e3209f4fbe62bd",
-      "log": "/workspace/ev-0584/logs/test_property_full-node22.txt",
+      "log": "docs/audit/evidence-0.5.84/logs/test_property_full-node22.txt",
       "seededRuns": {
         "runs": 24,
         "failed": 0
@@ -60,7 +60,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "48fee5ac0785fc875214189e4b0a7d4dd057974707110bfe65ed96c1798bcf8e",
-      "log": "/workspace/ev-0584/logs/test_bft-adversarial-node22.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_bft-adversarial-node22.txt"
     },
     {
       "suite": "test:lab",
@@ -72,7 +72,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "b0f771aa44b8f84a0fb12a02107ccc8060e4fc61cefeac5956c8d91b9eafd7ff",
-      "log": "/workspace/ev-0584/logs/test_lab-node22.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_lab-node22.txt"
     },
     {
       "suite": "test:zk-d64",
@@ -84,7 +84,7 @@
       "fail": 0,
       "skipped": 0,
       "logSha256": "302913641a1b9deffb7d8cd803ff6d0c5e70e9668cde1539db74408d416a5f90",
-      "log": "/workspace/ev-0584/logs/test_zk-d64-node22.txt"
+      "log": "docs/audit/evidence-0.5.84/logs/test_zk-d64-node22.txt"
     }
   ],
   "seededRuns": [
