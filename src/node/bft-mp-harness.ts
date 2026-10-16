@@ -156,7 +156,24 @@ export async function startCluster(o: ClusterOptions) {
     const c = children.get(i)!; if (!alive(c)) return;
     await new Promise<void>(f => { c.removeAllListeners("exit"); c.once("exit", () => f()); c.kill("SIGKILL"); });
   };
+  // 0.5.84 store continuity: a (re)started validator signs nothing until its peer attestation check has
+  // 2f answers. Before a proposal, give live validators still in that check up to 10 s (on slow CI runners
+  // the first proposal otherwise races the check). Validators that cannot finish it (partitioned) are skipped.
+  const settleSigning = async () => {
+    const until = Date.now() + 10_000;
+    for (;;) {
+      const pending = await Promise.all(live().map(async j => {
+        try {
+          const r = await fetch(`http://127.0.0.1:${ctlPorts[j]}/ctl/state`);
+          return ((await r.json()) as St).signing === "BFT_SIGNING_PENDING_PEER_CHECK";
+        } catch { return false; }
+      }));
+      if (!pending.some(Boolean) || Date.now() > until) return;
+      await new Promise(f => setTimeout(f, 100));
+    }
+  };
   const ctl = async (i: number, path: string, body?: unknown) => {
+    if (path === "/ctl/propose") await settleSigning();
     const res = await fetch(`http://127.0.0.1:${ctlPorts[i]}${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body, encode) });
     return { status: res.status, body: await res.json() as any };
   };
