@@ -1,7 +1,7 @@
 {
   "format": "uep-production-conditions",
   "version": 1,
-  "status": "PROPOSAL (0.5.84): values below are proposals awaiting the maintainer's decision; see docs/PRODUCTION-CONDITIONS.md",
+  "status": "APPROVED (0.5.84): heights approved by the director on 2026-10-16; see docs/PRODUCTION-CONDITIONS.md",
   "referenceBlockTimeMs": 5000,
   "networks": {
     "lab": {

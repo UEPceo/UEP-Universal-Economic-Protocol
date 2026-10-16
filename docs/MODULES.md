@@ -256,7 +256,7 @@ Checkpoint body `{networkId, domainId, height, blockId, stateRoot, validatorSetH
 
 ## 29. Production conditions and governance key ceremony (`src/network/production-conditions.ts`)
 
-Proposal values in `config/production-conditions.json`: v1 signature sunset per network type and asset-registry requirement per network type and height. The governance key ceremony is prepared (procedure and public-key-only tooling in `scripts/governance-ceremony.mjs`), not performed. Details: [`PRODUCTION-CONDITIONS.md`](./PRODUCTION-CONDITIONS.md), [`GOVERNANCE-KEY-CEREMONY.md`](./GOVERNANCE-KEY-CEREMONY.md).
+Values in `config/production-conditions.json` (approved by the director on 2026-10-16): v1 signature sunset per network type and asset-registry requirement per network type and height. The governance key ceremony is prepared (procedure and public-key-only tooling in `scripts/governance-ceremony.mjs`), not performed. Details: [`PRODUCTION-CONDITIONS.md`](./PRODUCTION-CONDITIONS.md), [`GOVERNANCE-KEY-CEREMONY.md`](./GOVERNANCE-KEY-CEREMONY.md).
 
 ## 30. TLA+ model of BFT locking (`docs/formal/tla/`)
 
