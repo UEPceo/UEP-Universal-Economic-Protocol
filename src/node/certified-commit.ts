@@ -31,6 +31,7 @@ import { sha256Hex, stableStringify } from "../core/ed25519.ts";
 import { deserializeTx, serializeTx, txNullifiers, type UepTransaction } from "../core/transaction.ts";
 import type { UepLedger } from "../testnet/ledger.ts";
 import type { BftCertificate, BftConsensusKernel, BftProposal } from "./bft-consensus.ts";
+import type { StoreRecord, UnifiedStateStore } from "./unified-state-store.ts";
 
 export type WireTx = Parameters<typeof deserializeTx>[0];
 export type CommitStatus = "UNKNOWN" | "CERTIFIED_NOT_APPLIED" | "APPLIED" | "ABORTED";
@@ -55,6 +56,8 @@ export type CommitResult = {
   postRoot: string | null;
   /** Item 5: the asset registry (version, hash) the transition was applied under; null without a registry. */
   registry?: { version: number; hash: string } | null;
+  /** 0.5.84: true when the APPLIED entry was fsync'd to disk before this result was returned. */
+  durable?: boolean;
 };
 
 export type CommitLogEntry = {
@@ -99,6 +102,29 @@ export class CommitLog {
   private entries: CommitLogEntry[] = [];
   /** Bytes dropped from a torn last line at open (0 if none). */
   readonly repairedTornBytes: number = 0;
+  /** 0.5.84: when set, entries live in the unified state store (one atomic frame per append). */
+  readonly store: UnifiedStateStore | null = null;
+  /** 0.5.84: extra records written in the same atomic frame as an entry (set by the committer). */
+  extraRecords?: (entry: CommitLogEntry) => StoreRecord[];
+
+  /** 0.5.84: a commit log backed by the unified state store. */
+  static unified(store: UnifiedStateStore): CommitLog {
+    const log = new CommitLog(null);
+    (log as { store: UnifiedStateStore | null }).store = store;
+    (log as { repairedTornBytes: number }).repairedTornBytes = store.repairedTornBytes;
+    let prev = COMMIT_LOG_GENESIS;
+    for (const [i, entry] of store.commits.entries()) {
+      const { hash, ...rest } = entry;
+      if (entry.v !== 1 || entry.seq !== i || entry.prevHash !== prev || entryHash(rest) !== hash) throw new Error(`COMMIT_LOG_CORRUPT: entry ${i} breaks the hash chain`);
+      prev = hash;
+      log.entries.push(entry);
+    }
+    log.checkStructure();
+    return log;
+  }
+
+  /** True when appended entries survive a restart. */
+  get durable(): boolean { return this.path !== null || this.store !== null; }
 
   constructor(path: string | null) {
     this.path = path;
@@ -142,6 +168,11 @@ export class CommitLog {
     const base = { v: 1 as const, seq: this.entries.length, ...fields, prevHash: this.headHash };
     const entry: CommitLogEntry = { ...base, hash: entryHash(base) };
     const line = JSON.stringify(entry) + "\n";
+    if (this.store) {
+      this.store.append([{ kind: "commit", entry }, ...(this.extraRecords?.(entry) ?? [])], { torn, afterTornWrite });
+      this.entries.push(entry);
+      return entry;
+    }
     if (this.path === null) {
       if (torn) throw new Error("CRASH_INJECTED: torn write");
       this.entries.push(entry);
@@ -196,6 +227,11 @@ export type CommitterOptions = {
   faultInjector?: (point: CommitWritePoint) => void;
   /** 0.5.83 Block C: called after a torn (half) line was fsync'd, before the simulated failure is thrown. */
   afterTornWrite?: () => void;
+  /**
+   * 0.5.84: refuse to report a commit as final unless the log is durable (file or unified store).
+   * An in-memory log cannot be recovered after a restart, so its results are never final.
+   */
+  requireDurable?: boolean;
 };
 
 export class CertifiedCommitter {
@@ -211,6 +247,18 @@ export class CertifiedCommitter {
     this.getLedger = getLedger;
     this.inject = opts.faultInjector ?? (() => {});
     this.afterTorn = opts.afterTornWrite;
+    if (opts.requireDurable && !log.durable) throw new Error("BFT_COMMIT_LOG_NOT_DURABLE");
+    if (log.store) {
+      // Same frame as the APPLIED entry: the post-apply economic head and the BFT safety state.
+      log.extraRecords = (entry) => {
+        if (entry.type !== "APPLIED") return [];
+        const l = this.getLedger();
+        return [
+          { kind: "economic", head: { height: l.height, stateRoot: l.stateRoot().toHex(), txCount: l.txs.length } },
+          { kind: "bft", state: this.kernel.exportState() },
+        ];
+      };
+    }
   }
 
   /** Status of a BFT height in the commit log. A certificate alone never reads as APPLIED. */
@@ -350,6 +398,7 @@ export class CertifiedCommitter {
       status: "APPLIED", height: intent.height, round: intent.round, blockId: intent.blockId, certHash: intent.certHash,
       txId: tx.txId.toHex(), preRoot: intent.preRoot, postRoot: observable ? ledger.stateRoot().toHex() : null,
       registry: registryOf(ledger),
+      ...(this.log.durable ? { durable: true } : {}),
     };
     this.log.append({ type: "APPLIED", height: intent.height, round: intent.round, blockId: intent.blockId, certHash: intent.certHash,
       preRoot: intent.preRoot, postRoot: result.postRoot, result }, this.injectTorn("applied-torn"), this.afterTorn);

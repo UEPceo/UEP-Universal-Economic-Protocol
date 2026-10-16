@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { signEd25519 } from "../core/ed25519.ts";
 import { UepLedger } from "../testnet/ledger.ts";
 import { createDurableBftConsensusKernel } from "./bft-durable-store.ts";
+import { openUnifiedValidatorState } from "./unified-node-state.ts";
+import type { CommitLog as CommitLogT } from "./certified-commit.ts";
 import type { BftProposal, BftValidator } from "./bft-consensus.ts";
 import { txFromWire, txToWire } from "./certified-commit.ts";
 import { PeerNet, type Peer } from "./peer-net.ts";
@@ -41,8 +43,24 @@ const ledger = UepLedger.restore(genesis, cfg.trust);
 const voters = new Map(cfg.validators.map(v => [v.id, v.publicKeyHex]));
 const net = new PeerNet(cfg.id, ledger, key, me.publicKeyHex, cfg.peers, voters, 2, cfg.stateDir);
 const domain = { networkId: ledger.networkId, domainId: ledger.domainId };
-const kernel = createDurableBftConsensusKernel(domain, cfg.validators, cfg.faultTolerance, join(cfg.stateDir, "bft-kernel.json"));
-net.configureBftConsensus(kernel);
+// 0.5.84 item 1: the unified store (one WAL for journal + BFT state + economic head) is the default;
+// UEP_STATE_BACKEND=legacy keeps the 0.5.83 files (bft-kernel.json + bft-commit-log.jsonl).
+const backend = process.env.UEP_STATE_BACKEND === "legacy" ? "legacy" : "unified";
+let unifiedLog: CommitLogT | undefined;
+let unifiedStore: import("./unified-state-store.ts").UnifiedStateStore | undefined;
+let kernel: import("./bft-consensus.ts").BftConsensusKernel;
+if (backend === "unified") {
+  const crash = process.env.UEP_CRASH_AT?.match(/^(frame-torn|checkpoint-written|wal-reset)@(\d+)$/);
+  const u = openUnifiedValidatorState(cfg.stateDir, domain, cfg.validators, cfg.faultTolerance, {}, crash ? {
+    faultInjector: (p) => { if (p === crash[1] && net.bftOpenHeight() === Number(crash[2])) { if (p === "frame-torn") throw new Error("CRASH_TORN"); process.kill(process.pid, "SIGKILL"); } },
+    afterTornWrite: () => process.kill(process.pid, "SIGKILL"),
+  } : {});
+  kernel = u.kernel; unifiedLog = u.log; unifiedStore = u.store;
+  if (u.migration.migrated) console.log(`[unified-store] ${cfg.id} migrated ${u.migration.commits} journal entries, bftState=${u.migration.bftState}`);
+} else {
+  kernel = createDurableBftConsensusKernel(domain, cfg.validators, cfg.faultTolerance, join(cfg.stateDir, "bft-kernel.json"));
+}
+net.configureBftConsensus(kernel, { log: unifiedLog, requireDurable: true });
 // 0.5.83 Block C: crash injection (test harness only). UEP_CRASH_AT="<write point>@<height>" kills this
 // process with SIGKILL (kill -9) at that write point of that BFT height: no cleanup, no flush.
 const crashAt = process.env.UEP_CRASH_AT?.match(/^([a-z-]+)@(\d+)$/);
@@ -137,7 +155,11 @@ createServer(async (req, res) => {
       // 0.5.83 Block C: re-open the commit log from disk (hash chain verified by CommitLog), then check
       // height continuity, that the ledger applied exactly the APPLIED blocks in order, and the state root.
       const { CommitLog } = await import("./certified-commit.ts");
-      const log = new CommitLog(join(cfg.stateDir, "bft-commit-log.jsonl"));
+      let log: CommitLogT;
+      if (unifiedStore) {
+        const { UnifiedStateStore } = await import("./unified-state-store.ts");
+        log = CommitLog.unified(UnifiedStateStore.open(cfg.stateDir, unifiedStore.context)); // re-read from disk: checksums + hash chains
+      } else log = new CommitLog(join(cfg.stateDir, "bft-commit-log.jsonl"));
       const entries = log.all();
       const decided = entries.filter(e => e.type !== "INTENT");
       const problems: string[] = [];
@@ -150,7 +172,13 @@ createServer(async (req, res) => {
       const lastRoot = applied.at(-1)?.postRoot ?? null;
       if (lastRoot && lastRoot !== net.ledger.stateRoot().toHex()) problems.push("state root differs from last APPLIED post-root");
       if (net.bftCommitStatus(net.bftOpenHeight() - 1) === "CERTIFIED_NOT_APPLIED") problems.push("certified height left unapplied");
-      return reply(res, 200, { ok: problems.length === 0, problems, head: log.headHash, entries: entries.length, repairedTornBytes: (net as unknown as { committer: { log: { repairedTornBytes: number } } }).committer.log.repairedTornBytes, pending: (net as unknown as { committer: { pending(): number[] } }).committer.pending(), recoveredAtStart: recovered, ...state() });
+      if (unifiedStore) {
+        // The economic head written in the same frame as the last APPLIED entry must match it.
+        const { UnifiedStateStore } = await import("./unified-state-store.ts");
+        const head = UnifiedStateStore.open(cfg.stateDir, unifiedStore.context).economicHead;
+        if (lastRoot && head && head.stateRoot !== lastRoot) problems.push("economic head differs from last APPLIED post-root");
+      }
+      return reply(res, 200, { ok: problems.length === 0, problems, head: log.headHash, entries: entries.length, repairedTornBytes: (net as unknown as { committer: { log: { repairedTornBytes: number } } }).committer.log.repairedTornBytes, pending: (net as unknown as { committer: { pending(): number[] } }).committer.pending(), recoveredAtStart: recovered, backend, ...state() });
     }
     if (url.pathname === "/ctl/submit") {
       const tx = txFromWire(body.tx as never);

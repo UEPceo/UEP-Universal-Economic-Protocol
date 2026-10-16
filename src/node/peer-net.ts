@@ -119,7 +119,7 @@ export class PeerNet {
   /** Attach the experimental BFT kernel to this authenticated validator transport.
    * The BFT validator identity must be the same pinned key as this PeerNet identity.
    */
-  configureBftConsensus(kernel: BftConsensusKernel): void {
+  configureBftConsensus(kernel: BftConsensusKernel, opts: { log?: CommitLog; requireDurable?: boolean } = {}): void {
     const validator = kernel.validators.find(item => item.id === this.id);
     if (!validator || validator.publicKeyHex !== this.publicKeyHex) throw new Error("BFT_TRANSPORT_VALIDATOR_KEY_MISMATCH");
     if (kernel.domain.networkId !== this.ledger.networkId || kernel.domain.domainId !== this.ledger.domainId) {
@@ -128,12 +128,13 @@ export class PeerNet {
     this.bftKernel = kernel;
     this.evidence = new EquivocationEvidenceStore(this.evidencePath, kernel);
     // H1: one durable, hash-chained commit log per node; the 0.5.80 JSON journal is migrated once.
-    const log = new CommitLog(this.commitLogPath ?? null);
+    // 0.5.84: a validator may pass the unified-store commit log (openUnifiedValidatorState).
+    const log = opts.log ?? new CommitLog(this.commitLogPath ?? null);
     if (this.bftJournalPath && existsSync(this.bftJournalPath)) {
       migrateJournalV1(this.bftJournalPath, log);
       renameSync(this.bftJournalPath, this.bftJournalPath + ".migrated");
     }
-    this.committer = new CertifiedCommitter(log, kernel, () => this.ledger, { faultInjector: (p) => this.commitFaultInjector?.(p), afterTornWrite: () => this.commitAfterTornWrite?.() });
+    this.committer = new CertifiedCommitter(log, kernel, () => this.ledger, { faultInjector: (p) => this.commitFaultInjector?.(p), afterTornWrite: () => this.commitAfterTornWrite?.(), requireDurable: opts.requireDurable });
   }
 
   /** Use another round-change timeout (ticks are producer heights). */
