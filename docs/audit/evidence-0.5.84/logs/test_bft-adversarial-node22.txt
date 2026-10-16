@@ -1,0 +1,39 @@
+TAP version 13
+# [bft-checkpoint] seed=20261017 height=2 signers=v1,v0,v2,v3 root=2d2687cfcd0a82d17cfaaaef9d14b20fa0c81b68dd8e979fd2e302ec7116a8b0
+# Subtest: certified checkpoints: partition, heal, convergence, persistence, rejection (seed 20261017)
+ok 1 - certified checkpoints: partition, heal, convergence, persistence, rejection (seed 20261017)
+  ---
+  duration_ms: 6610.335072
+  type: 'test'
+  ...
+# [bft-crash-points] seed=20261015 [{"point":"before-intent","height":1,"victim":"v2","repairedTornBytes":0,"recoveredAtStart":0,"head":"120132339d56b91bca6b6840a5fa483f935b98a7f5585178074ba2fd48106fb5","stateRoot":"20fe101b46001aa7989e180c88bccf583897e3b2ff1f6f4d9361770d64cb3c13"},{"point":"intent-torn","height":2,"victim":"v0","repairedTornBytes":10003,"recoveredAtStart":1,"head":"62220d2b5a35c44161d63002199eead16484a6aff2fde92c7e3e7f893e828ef1","stateRoot":"17ed626b17f4e1bffc4f2b0cf4eadfa191c77c0c838520faf9ff8bd1a67503d2"},{"point":"after-intent","height":3,"victim":"v0","repairedTornBytes":0,"recoveredAtStart":3,"head":"50a57ac22a806bc98c9a6c56cf9fb9229dd97c5b398248a00346636a233e2c06","stateRoot":"0d4de589847d44323467e9dcd3cee03523ef73fc77e588fe3bc4e49a6c5e2de6"},{"point":"after-apply","height":4,"victim":"v1","repairedTornBytes":0,"recoveredAtStart":4,"head":"e6c47434e9e9e50f859ff94dfeb7a4d09d75dfd2b1c71e474d7b03fc187171d5","stateRoot":"2b9cfa599a3a77d24dff129408cd4315733267b46b8ae6ba41e5e19b4f165c75"},{"point":"applied-torn","height":5,"victim":"v2","repairedTornBytes":7423,"recoveredAtStart":5,"head":"9130336a5ed22fbb956163e85e1a5c04174e8d319a7af3e015f7999e4baf3665","stateRoot":"0102fca3924c11aaa97605daff737317fca71be617e7b508aec44830b4fbec7d"},{"point":"after-applied","height":6,"victim":"v0","repairedTornBytes":0,"recoveredAtStart":6,"head":"5767be8ab879f7c5c36f247544a4280f13657bad59ba2ee42110a61815c01a60","stateRoot":"2f8f6c5def8cfde79105b039236f05bceeb473e56279e78182761f9596dfa6ae"},{"point":"after-kernel-commit","height":7,"victim":"v0","repairedTornBytes":0,"recoveredAtStart":7,"head":"f2127a98cc74428d4e0e6ac4416bb21043bc22e6f3e5f8c0c6fa529dcba81ebb","stateRoot":"06dc323db4a99aaf1815c67fba624ce9a6b3c65b8944993d2498ac1246207eba"}]
+# Subtest: Block C: SIGKILL at each commit write point, restart, idempotent recovery, continuity and state root (seed 20261015)
+ok 2 - Block C: SIGKILL at each commit write point, restart, idempotent recovery, continuity and state root (seed 20261015)
+  ---
+  duration_ms: 49001.768108
+  type: 'test'
+  ...
+# [bft-recovery] seed=20261015 equivocation at h=2 by v1; finalized txs[1] in round>=1
+# [bft-recovery] seed=20261015 stats={"dropped":166,"duplicated":100,"forwarded":388}
+# Subtest: Block B: equivocation evidence, automatic round change, liveness under a new leader, partitions and restarts (seed 20261015)
+ok 3 - Block B: equivocation evidence, automatic round change, liveness under a new leader, partitions and restarts (seed 20261015)
+  ---
+  duration_ms: 25864.449137
+  type: 'test'
+  ...
+# [bft-unified-store] seed=20261016 migrated=v1 tornVictim=v0 repairedTornBytes=1514 head=78202d24ee38ab80568a49bc10be4fd88142cd9435518c219f279264501336fe
+# Subtest: unified store in validator processes: legacy migration and SIGKILL mid-frame (seed 20261016)
+ok 4 - unified store in validator processes: legacy migration and SIGKILL mid-frame (seed 20261016)
+  ---
+  duration_ms: 8654.375299
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 141176.148353
